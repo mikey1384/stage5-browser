@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "stage5_browser": {
+      "command": "node",
+      "args": [
+        "./dist/mcp-server.js"
+      ],
+      "cwd": ".",
+      "enabled": true,
+      "env_vars": [
+        "HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "PATH",
+        "STAGE5_BROWSER_PROFILE_DIR",
+        "STAGE5_BROWSER_ARTIFACTS_DIR",
+        "STAGE5_BROWSER_HEADLESS",
+        "STAGE5_BROWSER_OPERATION_TIMEOUT_MS",
+        "STAGE5_BROWSER_NAVIGATION_TIMEOUT_MS"
+      ],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": ".playwright-browsers"
+      },
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 75,
+      "default_tools_approval_mode": "writes"
+    }
+  }
+}

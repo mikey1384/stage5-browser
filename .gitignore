@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+artifacts/
+.profiles/
+.playwright-browsers/
+playwright-report/
+test-results/
+.DS_Store
+.env
+.env.*
+!.env.example
