@@ -195,8 +195,17 @@ interface SnapshotRoot {
   warnings: BrowserCommandOutput<'snapshot'>['warnings'];
 }
 
+interface SearchableTextLine {
+  line: number;
+  text: string;
+}
+
 const MAX_SEARCHABLE_TEXT_CHARACTERS = 2_000_000;
 const TEXT_SNIPPET_CONTEXT = 100;
+const TEXT_SNIPPET_SURROUNDING_LINES = 2;
+const TEXT_SNIPPET_CONTEXT_SCAN_LINES = 12;
+const TEXT_SNIPPET_CONTEXT_LINE_CHARACTERS = 160;
+const CLICK_REF_SCROLL_INTO_VIEW_TIMEOUT_MS = 2_000;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
@@ -866,68 +875,85 @@ export class BrowserController {
     }
 
     const locator = frame.locator(`aria-ref=${input.ref}`);
-    const count = await locator.count();
-    if (count !== 1) {
-      this.pageDiagnostics.recordAction(
-        page,
-        this.targetingFailureDiagnostic(
-          'click_by_ref',
-          page,
-          count === 0 ? 'target_missing' : 'ambiguous_target',
-        ),
-      );
-      throw new Stage5BrowserError(
-        count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
-        count === 0
-          ? 'The observed reference no longer resolves in the current document.'
-          : 'The observed reference resolved to multiple elements; Stage5 Browser will not choose one.',
-        { details: { reason: 'reference_resolution_changed', ref: input.ref, matchCount: count } },
-      );
-    }
-
-    const targetState = await inspectTargetState(locator);
     const startedAt = Date.now();
     const actionStartedAt = new Date(startedAt).toISOString();
     this.pageDiagnostics.beginAction(page, actionStartedAt);
     try {
-      await locator.click({ timeout: input.timeoutMs });
-    } catch (error) {
-      const diagnostic = actionDiagnosticForFailure(
-        'click_by_ref',
-        page,
-        error,
-        await inspectTargetState(locator) ?? targetState,
-        actionStartedAt,
-      );
-      this.pageDiagnostics.recordAction(page, diagnostic);
-      throw this.clickFailureError(diagnostic, error);
-    }
-    try {
-      const postcondition = await this.verifyClickPostcondition(
-        page,
-        frame,
-        locator,
-        input.postcondition,
-        Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
-      );
-      this.pageDiagnostics.recordAction(
-        page,
-        this.successfulActionDiagnostic('click_by_ref', page, targetState, actionStartedAt),
-      );
-      this.lastKnownUrl = page.url();
-      return {
-        page: await this.pageSummary(page),
-        frame: this.frameSummary(frame, page),
-        postcondition,
-      };
-    } catch (error) {
-      if (error instanceof Stage5BrowserError && error.code === 'POSTCONDITION_FAILED') {
-        this.pageDiagnostics.recordAction(
+      let count: number;
+      try {
+        count = await locator.count();
+      } catch {
+        this.failClickBeforeDispatch(
           page,
-          this.postconditionFailureDiagnostic('click_by_ref', page, targetState, actionStartedAt),
+          actionStartedAt,
+          null,
+          'target_missing',
+          'reference_resolution_failed',
+          'The observed reference could not be resolved before click preparation.',
+          'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+          'TARGET_NOT_FOUND',
         );
       }
-      throw error;
+      if (count !== 1) {
+        this.failClickBeforeDispatch(
+          page,
+          actionStartedAt,
+          null,
+          count === 0 ? 'target_missing' : 'ambiguous_target',
+          'reference_resolution_changed',
+          count === 0
+            ? 'The observed reference no longer resolves in the current document.'
+            : 'The observed reference resolved to multiple elements; Stage5 Browser will not choose one.',
+          'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+          count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
+        );
+      }
+      const targetState = await this.prepareObservedClickTarget(
+        page,
+        locator,
+        actionStartedAt,
+        input.timeoutMs,
+      );
+      try {
+        await locator.click({ timeout: Math.max(1, input.timeoutMs - (Date.now() - startedAt)) });
+      } catch (error) {
+        const diagnostic = actionDiagnosticForFailure(
+          'click_by_ref',
+          page,
+          error,
+          await inspectTargetState(locator) ?? targetState,
+          actionStartedAt,
+        );
+        this.pageDiagnostics.recordAction(page, diagnostic);
+        throw this.clickFailureError(diagnostic, error);
+      }
+      try {
+        const postcondition = await this.verifyClickPostcondition(
+          page,
+          frame,
+          locator,
+          input.postcondition,
+          Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
+        );
+        this.pageDiagnostics.recordAction(
+          page,
+          this.successfulActionDiagnostic('click_by_ref', page, targetState, actionStartedAt),
+        );
+        this.lastKnownUrl = page.url();
+        return {
+          page: await this.pageSummary(page),
+          frame: this.frameSummary(frame, page),
+          postcondition,
+        };
+      } catch (error) {
+        if (error instanceof Stage5BrowserError && error.code === 'POSTCONDITION_FAILED') {
+          this.pageDiagnostics.recordAction(
+            page,
+            this.postconditionFailureDiagnostic('click_by_ref', page, targetState, actionStartedAt),
+          );
+        }
+        throw error;
+      }
     } finally {
       this.discardObservedSnapshot(frame);
     }
@@ -1343,29 +1369,34 @@ export class BrowserController {
     const rawText = await body.innerText({ timeout: input.timeoutMs });
     const textTruncated = rawText.length > MAX_SEARCHABLE_TEXT_CHARACTERS;
     const text = rawText.slice(0, MAX_SEARCHABLE_TEXT_CHARACTERS);
-    const lines = text.split(/\r?\n/);
+    const lines: SearchableTextLine[] = text
+      .split(/\r?\n/)
+      .map((line, index) => ({ line: index + 1, text: line.replace(/\s+/g, ' ').trim() }))
+      .filter(({ text: line }) => line.length > 0);
     const needle = input.caseSensitive ? input.query : input.query.toLocaleLowerCase();
     const matches: Array<{ line: number; snippet: string }> = [];
     let matchCount = 0;
 
-    for (const [index, originalLine] of lines.entries()) {
-      const line = originalLine.trim();
-      if (line.length === 0) {
-        continue;
-      }
-      const candidate = input.caseSensitive ? line : line.toLocaleLowerCase();
+    for (const [index, renderedLine] of lines.entries()) {
+      const candidate = input.caseSensitive
+        ? renderedLine.text
+        : renderedLine.text.toLocaleLowerCase();
       const matched = input.mode === 'exact_line' ? candidate === needle : candidate.includes(needle);
       if (!matched) {
         continue;
       }
       matchCount += 1;
       if (matches.length < input.maxResults) {
-        const position = input.mode === 'exact_line' ? 0 : Math.max(0, candidate.indexOf(needle));
-        const start = Math.max(0, position - TEXT_SNIPPET_CONTEXT);
-        const end = Math.min(line.length, position + input.query.length + TEXT_SNIPPET_CONTEXT);
         matches.push({
-          line: index + 1,
-          snippet: `${start > 0 ? '…' : ''}${line.slice(start, end)}${end < line.length ? '…' : ''}`,
+          line: renderedLine.line,
+          snippet: this.contextualTextSnippet(
+            lines,
+            index,
+            needle,
+            input.query.length,
+            input.caseSensitive,
+            input.mode,
+          ),
         });
       }
     }
@@ -1381,6 +1412,70 @@ export class BrowserController {
       textTruncated,
       matches,
     };
+  }
+
+  private contextualTextSnippet(
+    lines: SearchableTextLine[],
+    matchIndex: number,
+    needle: string,
+    queryLength: number,
+    caseSensitive: boolean,
+    mode: 'contains' | 'exact_line',
+  ): string {
+    const matchedLine = lines[matchIndex];
+    if (matchedLine === undefined) {
+      return '';
+    }
+    const seen = new Set([matchedLine.text.toLocaleLowerCase()]);
+    const collect = (direction: -1 | 1): SearchableTextLine[] => {
+      const selected: SearchableTextLine[] = [];
+      let scanned = 0;
+      let index = matchIndex + direction;
+      while (
+        index >= 0 &&
+        index < lines.length &&
+        selected.length < TEXT_SNIPPET_SURROUNDING_LINES &&
+        scanned < TEXT_SNIPPET_CONTEXT_SCAN_LINES
+      ) {
+        const candidate = lines[index];
+        index += direction;
+        scanned += 1;
+        if (candidate === undefined) {
+          continue;
+        }
+        const duplicateKey = candidate.text.toLocaleLowerCase();
+        if (seen.has(duplicateKey)) {
+          continue;
+        }
+        seen.add(duplicateKey);
+        selected.push(candidate);
+      }
+      return direction === -1 ? selected.reverse() : selected;
+    };
+    const contextualLines = [...collect(-1), matchedLine, ...collect(1)];
+    return contextualLines.map((line) => {
+      const isMatch = line === matchedLine;
+      const boundedText = isMatch
+        ? this.boundedMatchingText(line.text, needle, queryLength, caseSensitive, mode)
+        : line.text.length <= TEXT_SNIPPET_CONTEXT_LINE_CHARACTERS
+          ? line.text
+          : `${line.text.slice(0, TEXT_SNIPPET_CONTEXT_LINE_CHARACTERS - 1)}…`;
+      return `${isMatch ? '>' : ' '} ${line.line}: ${boundedText}`;
+    }).join('\n');
+  }
+
+  private boundedMatchingText(
+    line: string,
+    needle: string,
+    queryLength: number,
+    caseSensitive: boolean,
+    mode: 'contains' | 'exact_line',
+  ): string {
+    const candidate = caseSensitive ? line : line.toLocaleLowerCase();
+    const position = mode === 'exact_line' ? 0 : Math.max(0, candidate.indexOf(needle));
+    const start = Math.max(0, position - TEXT_SNIPPET_CONTEXT);
+    const end = Math.min(line.length, position + queryLength + TEXT_SNIPPET_CONTEXT);
+    return `${start > 0 ? '…' : ''}${line.slice(start, end)}${end < line.length ? '…' : ''}`;
   }
 
   async waitForUrl(input: BrowserCommandInput<'waitForUrl'>): Promise<BrowserCommandOutput<'waitForUrl'>> {
@@ -3469,11 +3564,20 @@ export class BrowserController {
   ): Promise<ScrollContentObservation> {
     if (target !== null) {
       return target.evaluate((element) => {
+        const surfaceRect = element.getBoundingClientRect();
+        const clip = {
+          top: Math.max(0, surfaceRect.top),
+          right: Math.min(window.innerWidth, surfaceRect.right),
+          bottom: Math.min(window.innerHeight, surfaceRect.bottom),
+          left: Math.max(0, surfaceRect.left),
+        };
         const visible = (candidate: Element): boolean => {
           const rect = candidate.getBoundingClientRect();
           const style = getComputedStyle(candidate);
           return rect.width > 0 && rect.height > 0 && style.display !== 'none'
-            && style.visibility !== 'hidden' && style.opacity !== '0';
+            && style.visibility !== 'hidden' && style.opacity !== '0'
+            && rect.bottom > clip.top && rect.right > clip.left
+            && rect.top < clip.bottom && rect.left < clip.right;
         };
         const articleCount = element.querySelectorAll('article, [role="article"]').length
           + (element.matches('article, [role="article"]') ? 1 : 0);
@@ -3505,19 +3609,47 @@ export class BrowserController {
       });
     }
     return frame.evaluate(() => {
+      const viewportIntersects = (candidate: Element): boolean => {
+        const rect = candidate.getBoundingClientRect();
+        const style = getComputedStyle(candidate);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none'
+          && style.visibility !== 'hidden' && style.opacity !== '0'
+          && rect.bottom > 0 && rect.right > 0
+          && rect.top < window.innerHeight && rect.left < window.innerWidth;
+      };
+      const visibleFeeds = Array.from(document.querySelectorAll('[role="feed"]'))
+        .filter(viewportIntersects);
+      const observationRoot: Document | Element = visibleFeeds.length === 1
+        ? visibleFeeds[0] ?? document
+        : document;
+      const surfaceRect = observationRoot instanceof Element
+        ? observationRoot.getBoundingClientRect()
+        : { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };
+      const clip = {
+        top: Math.max(0, surfaceRect.top),
+        right: Math.min(window.innerWidth, surfaceRect.right),
+        bottom: Math.min(window.innerHeight, surfaceRect.bottom),
+        left: Math.max(0, surfaceRect.left),
+      };
       const visible = (candidate: Element): boolean => {
         const rect = candidate.getBoundingClientRect();
         const style = getComputedStyle(candidate);
         return rect.width > 0 && rect.height > 0 && style.display !== 'none'
-          && style.visibility !== 'hidden' && style.opacity !== '0';
+          && style.visibility !== 'hidden' && style.opacity !== '0'
+          && rect.bottom > clip.top && rect.right > clip.left
+          && rect.top < clip.bottom && rect.left < clip.right;
       };
-      const articleCount = document.querySelectorAll('article, [role="article"]').length;
-      const known = new Set<Element>(document.querySelectorAll(
+      const articleCount = observationRoot.querySelectorAll('article, [role="article"]').length
+        + (observationRoot instanceof Element && observationRoot.matches('article, [role="article"]') ? 1 : 0);
+      const known = new Set<Element>(observationRoot.querySelectorAll(
         '[aria-busy="true"], [role="progressbar"], progress, [class*="skeleton" i], [class*="placeholder" i], [class*="shimmer" i], [class*="loading" i]',
       ));
+      if (observationRoot instanceof Element && observationRoot.matches('[aria-busy="true"], [role="progressbar"], progress')) {
+        known.add(observationRoot);
+      }
       let loadingIndicatorCount = [...known].filter(visible).length;
       if (loadingIndicatorCount === 0) {
-        for (const candidate of Array.from(document.querySelectorAll('*')).slice(0, 5_000)) {
+        for (const candidate of Array.from(observationRoot.querySelectorAll('*')).slice(0, 5_000)) {
           if (!visible(candidate) || (candidate.textContent ?? '').trim().length > 0) {
             continue;
           }
@@ -3856,6 +3988,130 @@ export class BrowserController {
       });
     }
     return inspectTargetState(locator);
+  }
+
+  private async prepareObservedClickTarget(
+    page: Page,
+    locator: Locator,
+    startedAt: string,
+    timeoutMs: number,
+  ): Promise<SafeTargetState> {
+    let targetState = await inspectTargetState(locator);
+    if (targetState?.inViewport !== true) {
+      try {
+        await locator.scrollIntoViewIfNeeded({
+          timeout: Math.min(timeoutMs, CLICK_REF_SCROLL_INTO_VIEW_TIMEOUT_MS),
+        });
+      } catch {
+        targetState = await inspectTargetState(locator) ?? targetState;
+        this.failClickBeforeDispatch(
+          page,
+          startedAt,
+          targetState,
+          targetState === null ? 'detached' : 'not_visible',
+          'scroll_into_view_failed',
+          'The observed element could not be brought into the viewport before the click deadline.',
+          'Take a fresh snapshot of the current page state and inspect its scroll surface before choosing another action.',
+        );
+      }
+    }
+
+    let count: number;
+    try {
+      count = await locator.count();
+    } catch {
+      this.failClickBeforeDispatch(
+        page,
+        startedAt,
+        await inspectTargetState(locator),
+        'detached',
+        'reference_revalidation_failed_after_scroll',
+        'The observed reference could not be revalidated after viewport preparation.',
+        'The page may have changed during scrolling. Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+        'TARGET_NOT_FOUND',
+      );
+    }
+    if (count !== 1) {
+      this.failClickBeforeDispatch(
+        page,
+        startedAt,
+        null,
+        count === 0 ? 'target_missing' : 'ambiguous_target',
+        'reference_resolution_changed_after_scroll',
+        count === 0
+          ? 'The observed reference detached while it was being brought into view.'
+          : 'The observed reference became ambiguous while it was being brought into view.',
+        'Take one fresh semantic snapshot; Stage5 Browser will not click a changed or ambiguous reference.',
+        count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
+      );
+    }
+
+    targetState = await inspectTargetState(locator);
+    if (targetState === null) {
+      this.failClickBeforeDispatch(
+        page,
+        startedAt,
+        null,
+        'detached',
+        'target_detached_after_scroll',
+        'The observed element detached before Stage5 Browser could safely click it.',
+        'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+        'TARGET_NOT_FOUND',
+      );
+    }
+    const failure = !targetState.visible || !targetState.inViewport
+      ? { diagnostic: 'not_visible' as const, reason: 'target_not_actionable_in_viewport' }
+      : !targetState.enabled
+        ? { diagnostic: 'not_enabled' as const, reason: 'target_not_enabled_after_scroll' }
+        : targetState.receivesPointerEvents === false
+          ? { diagnostic: 'pointer_intercepted' as const, reason: 'target_covered_after_scroll' }
+          : null;
+    if (failure !== null) {
+      this.failClickBeforeDispatch(
+        page,
+        startedAt,
+        targetState,
+        failure.diagnostic,
+        failure.reason,
+        'The observed element was not safely actionable after viewport preparation.',
+        'Take a fresh snapshot and resolve the reported visibility, enabled-state, or covering element before another click.',
+      );
+    }
+    return targetState;
+  }
+
+  private failClickBeforeDispatch(
+    page: Page,
+    startedAt: string,
+    targetState: SafeTargetState | null,
+    diagnosticReason: SanitizedActionDiagnostic['reason'],
+    reason: string,
+    message: string,
+    suggestedAction: string,
+    code: 'AMBIGUOUS_TARGET' | 'OPERATION_FAILED' | 'TARGET_NOT_FOUND' = 'OPERATION_FAILED',
+  ): never {
+    const diagnostic: SanitizedActionDiagnostic = {
+      action: 'click_by_ref',
+      outcome: 'blocked',
+      reason: diagnosticReason,
+      actionDispatched: false,
+      clickDispatched: false,
+      targetState,
+      pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
+      startedAt,
+      occurredAt: new Date().toISOString(),
+    };
+    this.pageDiagnostics.recordAction(page, diagnostic);
+    throw new Stage5BrowserError(code, message, {
+      recoverable: true,
+      details: {
+        reason,
+        actionDispatched: false,
+        clickDispatched: false,
+        targetState,
+        suggestedAction,
+      },
+    });
   }
 
   private targetingFailureDiagnostic(

@@ -42,7 +42,7 @@ describe('RuntimeArtifactMonitor', () => {
       restartReason: null,
     });
 
-    await writeFile(artifact, JSON.stringify(stamp({ version: '0.6.0', buildId: 'build-2' })));
+    await writeFile(artifact, JSON.stringify(stamp({ version: '0.6.1', buildId: 'build-2' })));
     expect(monitor.inspect()).toMatchObject({
       compatibleUpdateAvailable: true,
       restartRequired: false,

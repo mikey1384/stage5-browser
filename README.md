@@ -60,11 +60,11 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound element, hidden-file-input, and nested-scroll references |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
 | `browser_click_by_role` | Click one unique role/name target, optionally verifying URL, selected state, or visible state |
-| `browser_click_ref` | Click one reference from the latest exact semantic snapshot, failing closed when stale |
+| `browser_click_ref` | Bring one fresh observed reference into view, revalidate it, and click only when safely actionable |
 | `browser_set_input_files` | Select authorized regular local files through a fresh file-input ref and report attachment preview, progress, completion, and error evidence |
 | `browser_fill_by_role` | Fill one unique role/name target in the main document or an observed frame |
 | `browser_scroll` | Scroll the document or an observed nested container, optionally wait for article growth/loading completion, and distinguish confirmed ends from stalled feeds |
-| `browser_find_text` | Search bounded rendered page/frame text and return matching snippets |
+| `browser_find_text` | Search bounded rendered page/frame text and return matching lines with nearby unique rendered context |
 | `browser_wait_for_url` | Wait for an exact, prefix, or substring URL postcondition |
 | `browser_auth_status` | Report the authentication-handoff lifecycle, actual runtime profile, three-phase storage boundary, native application, marker label, and exact profile binding |
 | `browser_request_login_handoff` | Close current control and launch the same isolated profile with a Stage5 marker tab for private login; returned instructions distinguish continuous Chromium attachment from Firefox restart |
@@ -106,6 +106,8 @@ Key implementation files:
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
 - `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, consumed-input, active-tab, selected-state, and dynamic-feed regressions plus the 0.5.0–0.5.1 remedies
 - `docs/dogfooding-2026-08-24-facebook-scroll.md` — Facebook nested-scroll, skeleton-wait, fractional-boundary, and scroll-diagnostics regressions plus the 0.6.0 remedy
+- `docs/dogfooding-2026-08-24-facebook-find-context.md` — Facebook snapshot-noise finding and the compatible 0.6.1 contextual-search remedy
+- `docs/dogfooding-2026-08-24-facebook-offscreen-click.md` — Facebook offscreen-ref and unrelated-loader findings plus the compatible 0.6.1 remedies
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -119,13 +121,16 @@ Key implementation files:
 - A timed-out consequential action is never retried automatically.
 - A zero-match or multi-match semantic locator fails explicitly.
 - Snapshot references are accepted only from the latest snapshot of the same document and frame.
+- Text search preserves the matching rendered line number and returns at most two nearby unique non-empty lines on each side, scanning only a bounded neighborhood so repeated navigation and quote blocks do not swamp the result.
 - Hidden file-input references follow the same document-bound, one-use capability model. Local selection accepts only explicit absolute paths to readable regular files, rejects symlinks/directories, never opens a native picker, and never journals or returns absolute paths.
 - A unique visible modal becomes the snapshot root; multiple unresolved modals produce a warning instead of an arbitrary choice.
 - A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened. The postcondition loop performs a final deadline-bound reconciliation so a state change during its last wait is not falsely reported as failure.
+- A fresh offscreen snapshot ref receives one bounded scroll-into-view preparation followed by uniqueness and actionability revalidation. Preparation failures consume the ref and return `actionDispatched: false`; only the later click phase may return an ambiguous dispatch outcome.
 - File selection confirms privacy-minimized name/size metadata during the capture-phase input event or from the retained browser `FileList` before returning. Sites may consume and clear the input without creating a false failure. `observationMs` is a quick-sampling window from 0–5,000 ms; a supplied semantic `completion.timeoutMs` can wait up to 60,000 ms within the overall timeout. The bounded processing result is `completion_observed`, `in_progress`, `error_observed`, or `unverified`; temporal network activity is never presented as proof of upload completion.
 - A live agent-selected tab remains active when a transient popup or auxiliary player page appears. If the selected page disappears and exactly one live page remains, the controller deterministically selects that sole page instead of returning `activePageIndex: null`.
 - Snapshots expose a bounded set of visible nested vertical scroll containers as opaque one-use refs. Container scrolling requires the exact latest snapshot/frame/document capability and never accepts selectors or guesses a target.
 - Downward scrolling uses a one-CSS-pixel boundary tolerance and reports target geometry separately from a confirmed feed end. Earlier growth, a remaining loading indicator, or an unmet bounded article/loading wait followed by no movement is `dynamic_content_stalled`, not `endReached: true`, unless the caller supplies a visible end marker.
+- Loading waits count only indicators intersecting the selected scroll surface's visible region. A uniquely visible semantic feed scopes document waits; unrelated page loaders do not prevent feed completion evidence.
 - Scroll is recorded as the latest sanitized page action, allowing diagnostics to isolate successful, redirected, failed, and HTTP-error requests within that bounded action window.
 - A click that cannot dispatch records sanitized visibility, enabled-state, viewport, and pointer-interception evidence.
 - Human login bootstrap releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume.
@@ -139,7 +144,7 @@ Key implementation files:
 - Worker recovery reports whether a browser was actually running afterward; it never implies that the MCP catalog was refreshed.
 - Diagnostic journaling is best-effort and cannot change an operation's result. Page diagnostics include bounded success/redirect/error response classes and the events within the last click window, but exclude raw console/exception text, request metadata beyond method/type/status/sanitized URL, and all URL queries/fragments.
 
-Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, hidden-file-input and nested-scroll capabilities, local-file preflight and attachment confirmation, click actionability and deadline-edge postconditions, upload progress/error evidence, scroll-correlated successful requests, fractional scroll boundaries, content-growth waits, dynamic-feed stall classification, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, private human authentication, same-process Chromium session continuity across worker replacement, configured-to-runtime profile verification, Firefox restart-boundary storage diagnostics, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
+Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, offscreen-ref preparation and pre-dispatch failure certainty, hidden-file-input and nested-scroll capabilities, local-file preflight and attachment confirmation, click actionability and deadline-edge postconditions, upload progress/error evidence, scroll-correlated successful requests, fractional scroll boundaries, feed-scoped loading waits, content-growth waits, dynamic-feed stall classification, contextual timeline text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, private human authentication, same-process Chromium session continuity across worker replacement, configured-to-runtime profile verification, Firefox restart-boundary storage diagnostics, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
 
 ## Browser selection
 

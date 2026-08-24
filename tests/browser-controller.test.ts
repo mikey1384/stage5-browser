@@ -299,6 +299,151 @@ describe('BrowserController', () => {
     expect(tabs.activePageIndex).toBe(0);
   });
 
+  it('returns bounded unique rendered-line context around text matches', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Noisy social feed</title></head><body>
+        <nav>Management navigation</nav>
+        <article>
+          <h2>Concise Korean video title</h2>
+          <blockquote>Repeated quoted context</blockquote>
+          <blockquote>Repeated quoted context</blockquote>
+          <blockquote>Repeated quoted context</blockquote>
+          <p>The Economist interview excerpt</p>
+          <a href="https://example.com/post/123">Corresponding social post link</a>
+          <p>Full thumbnail beneath the link</p>
+        </article>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-find-context-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const found = await controller.findText({
+      query: 'Economist',
+      mode: 'contains',
+      caseSensitive: false,
+      maxResults: 10,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+
+    expect(found).toMatchObject({ matchCount: 1, returnedCount: 1, truncated: false });
+    const snippet = found.matches[0]?.snippet ?? '';
+    expect(snippet.split('\n')).toHaveLength(5);
+    expect(snippet).toContain('Concise Korean video title');
+    expect(snippet).toContain('Repeated quoted context');
+    expect(snippet.match(/Repeated quoted context/g)).toHaveLength(1);
+    expect(snippet).toMatch(/> \d+: The Economist interview excerpt/);
+    expect(snippet).toContain('Corresponding social post link');
+    expect(snippet).toContain('Full thumbnail beneath the link');
+  });
+
+  it('brings fresh offscreen refs into view and fails closed before an impossible click', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Offscreen references</title><style>
+        body { margin: 0; }
+        #spacer { height: 2200px; }
+        #impossible { position: fixed; top: 2000px; left: 10px; }
+      </style></head><body>
+        <button id="impossible" type="button">Impossible action</button>
+        <div id="spacer"></div>
+        <button type="button" onclick="document.querySelector('#expanded').hidden = false">See more</button>
+        <a id="expanded" href="#expanded" hidden>Expanded caption</a>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-offscreen-ref-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/post`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const observed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    const seeMoreLine = observed.snapshot.split('\n').find((line) => line.includes('See more'));
+    const seeMoreRef = seeMoreLine?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(seeMoreRef).toBeDefined();
+    if (seeMoreRef === undefined) {
+      throw new Error('Fixture did not expose the offscreen See more reference.');
+    }
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: seeMoreRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: { role: 'link', name: 'Expanded caption', exact: true, frameId: null },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
+      targetState: { inViewport: true },
+    });
+
+    const impossibleObservation = await controller.snapshot({
+      depth: 8,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    const impossibleLine = impossibleObservation.snapshot.split('\n')
+      .find((line) => line.includes('Impossible action'));
+    const impossibleRef = impossibleLine?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(impossibleRef).toBeDefined();
+    if (impossibleRef === undefined) {
+      throw new Error('Fixture did not expose the impossible offscreen reference.');
+    }
+    const failedAt = Date.now();
+    await expect(controller.clickRef({
+      snapshotId: impossibleObservation.snapshotId,
+      ref: impossibleRef,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        actionDispatched: false,
+        clickDispatched: false,
+        targetState: { inViewport: false },
+      },
+    });
+    expect(Date.now() - failedAt).toBeLessThan(3_000);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'blocked',
+      actionDispatched: false,
+      clickDispatched: false,
+      targetState: { inViewport: false },
+    });
+    await expect(controller.clickRef({
+      snapshotId: impossibleObservation.snapshotId,
+      ref: impossibleRef,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'TARGET_NOT_FOUND',
+      details: { reason: 'stale_or_unknown_snapshot' },
+    });
+  });
+
   it('handles timeline scrolling, text search, observed refs, click postconditions, redirects, and rate limits', async () => {
     server = createServer((request, response) => {
       const requestUrl = request.url ?? '/';
@@ -746,6 +891,64 @@ describe('BrowserController', () => {
     });
     expect(stalled.warnings).toContainEqual(expect.objectContaining({ code: 'content_wait_timed_out' }));
     expect(stalled.warnings).toContainEqual(expect.objectContaining({ code: 'dynamic_content_stalled' }));
+  });
+
+  it('scopes document loader waits to the visible semantic feed', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Scoped feed wait</title><style>
+        body { margin: 0; }
+        #unrelated { position: fixed; top: 5px; right: 5px; width: 80px; height: 20px; }
+        #feed-spacer { height: 800px; }
+        #feed-loader { width: 120px; height: 20px; }
+        #tail { height: 900px; }
+      </style></head><body>
+        <nav><div id="unrelated" role="progressbar" aria-label="Unrelated management loading"></div></nav>
+        <section role="feed" aria-label="Posts">
+          <article>Already rendered post</article>
+          <div id="feed-spacer"></div>
+          <div id="feed-loader" role="progressbar" aria-label="Loading more posts"></div>
+          <div id="tail"></div>
+        </section>
+        <script>
+          let scheduled = false;
+          addEventListener('scroll', () => {
+            if (scheduled) return;
+            scheduled = true;
+            setTimeout(() => document.querySelector('#feed-loader')?.remove(), 150);
+          });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-scoped-feed-wait-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const scrolled = await controller.scroll({
+      direction: 'down',
+      amount: 'viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'loading_indicators_disappear', timeoutMs: 1_000 },
+      timeoutMs: 5_000,
+    });
+    expect(scrolled.wait).toMatchObject({
+      requested: true,
+      satisfied: true,
+      evidence: 'loading_indicators_disappeared',
+      before: { articleCount: 1, loadingIndicatorCount: 1 },
+      after: { articleCount: 1, loadingIndicatorCount: 0 },
+    });
+    expect(scrolled.warnings).not.toContainEqual(expect.objectContaining({ code: 'content_wait_timed_out' }));
   });
 
   it('discovers hidden file inputs and sets only fresh snapshot-bound regular files', async () => {

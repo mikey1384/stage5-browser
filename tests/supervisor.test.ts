@@ -94,7 +94,7 @@ describe('BrowserSupervisor', () => {
     runtime = {
       ...runtime,
       currentArtifactFingerprint: 'build-2',
-      currentVersion: '0.6.0',
+      currentVersion: '0.6.1',
       compatibleUpdateAvailable: true,
       suggestedAction: 'No host restart is needed.',
     };
@@ -104,7 +104,7 @@ describe('BrowserSupervisor', () => {
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
     expect(Date.now() - reloadStartedAt).toBeGreaterThanOrEqual(250);
     expect(supervisor.workerRuntimeInfo).toMatchObject({
-      version: '0.6.0',
+      version: '0.6.1',
       artifactFingerprint: 'build-2',
     });
   });
@@ -148,7 +148,7 @@ describe('BrowserSupervisor', () => {
     runtime = {
       ...runtime,
       currentArtifactFingerprint: 'build-2',
-      currentVersion: '0.6.0',
+      currentVersion: '0.6.1',
       compatibleUpdateAvailable: true,
       suggestedAction: 'No host restart is needed.',
     };
