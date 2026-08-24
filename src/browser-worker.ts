@@ -52,12 +52,20 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
     return { ready: true, workerPid: process.pid, runtime: workerRuntime };
   }
 
-  runtimeMonitor.assertCurrent();
-
   if (controller === undefined) {
     throw new Stage5BrowserError('BROWSER_NOT_READY', 'The browser worker has not been initialized.', {
       recoverable: true,
     });
+  }
+
+  const runtime = runtimeMonitor.inspect();
+  if (runtime.restartRequired) {
+    const authentication = await controller.authStatus();
+    const humanBootstrapOwnsProfile =
+      authentication.controlMode === 'human_bootstrap' && authentication.state === 'awaiting_user';
+    if (!humanBootstrapOwnsProfile) {
+      runtimeMonitor.assertCurrent();
+    }
   }
 
   switch (request.command) {
@@ -89,8 +97,22 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
       return controller.frames();
     case 'clickByRole':
       return controller.clickByRole(request.payload);
+    case 'clickRef':
+      return controller.clickRef(request.payload);
     case 'fillByRole':
       return controller.fillByRole(request.payload);
+    case 'scroll':
+      return controller.scroll(request.payload);
+    case 'findText':
+      return controller.findText(request.payload);
+    case 'waitForUrl':
+      return controller.waitForUrl(request.payload);
+    case 'authStatus':
+      return controller.authStatus();
+    case 'requestLoginHandoff':
+      return controller.requestLoginHandoff(request.payload);
+    case 'resumeAfterLogin':
+      return controller.resumeAfterLogin(request.payload);
     case 'testHang':
       if (process.env.STAGE5_BROWSER_TEST_MODE !== '1') {
         throw new Stage5BrowserError('OPERATION_FAILED', 'The test-only command is disabled.');

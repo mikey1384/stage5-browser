@@ -60,19 +60,20 @@ describe('BrowserSupervisor', () => {
       ...process.env,
       STAGE5_BROWSER_TEST_MODE: '1',
       STAGE5_BROWSER_TEST_BUILD_FINGERPRINT: 'build-1',
+      STAGE5_BROWSER_TEST_SHUTDOWN_DELAY_MS: '300',
     };
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
-      version: '0.3.0',
-      protocolVersion: 2,
+      version: '0.4.2',
+      protocolVersion: 3,
       processId: 123,
       startedAt: '2026-08-24T01:00:00.000Z',
       buildModifiedAt: '2026-08-24T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
-      currentVersion: '0.3.0',
-      currentProtocolVersion: 2,
-      currentToolCatalogVersion: 2,
+      currentVersion: '0.4.2',
+      currentProtocolVersion: 3,
+      currentToolCatalogVersion: 3,
       compatibleUpdateAvailable: false,
       restartRequired: false,
       restartReason: null,
@@ -93,17 +94,73 @@ describe('BrowserSupervisor', () => {
     runtime = {
       ...runtime,
       currentArtifactFingerprint: 'build-2',
-      currentVersion: '0.3.1',
+      currentVersion: '0.4.2',
       compatibleUpdateAvailable: true,
       suggestedAction: 'No host restart is needed.',
     };
+    const reloadStartedAt = Date.now();
     const after = await supervisor.execute('status', {});
 
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
+    expect(Date.now() - reloadStartedAt).toBeGreaterThanOrEqual(250);
     expect(supervisor.workerRuntimeInfo).toMatchObject({
-      version: '0.3.0',
+      version: '0.4.2',
       artifactFingerprint: 'build-2',
     });
+  });
+
+  it('defers a compatible worker reload until a human authentication handoff resumes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-deferred-auth-reload-'));
+    temporaryRoots.push(root);
+    const environment = {
+      ...process.env,
+      STAGE5_BROWSER_TEST_MODE: '1',
+      STAGE5_BROWSER_TEST_BUILD_FINGERPRINT: 'build-1',
+    };
+    let runtime: RuntimeProcessInfo = {
+      component: 'mcp',
+      version: '0.4.2',
+      protocolVersion: 3,
+      processId: 123,
+      startedAt: '2026-08-24T01:00:00.000Z',
+      buildModifiedAt: '2026-08-24T01:00:00.000Z',
+      artifactFingerprint: 'build-1',
+      currentArtifactFingerprint: 'build-1',
+      currentVersion: '0.4.2',
+      currentProtocolVersion: 3,
+      currentToolCatalogVersion: 3,
+      compatibleUpdateAvailable: false,
+      restartRequired: false,
+      restartReason: null,
+      suggestedAction: null,
+    };
+    const supervisor = new BrowserSupervisor(configFor(root), {
+      workerUrl: new URL('./fixtures/fake-worker.mjs', import.meta.url),
+      environment,
+      expectedBuildFingerprint: 'build-1',
+      runtimeInfoProvider: () => runtime,
+    });
+    supervisors.push(supervisor);
+
+    const before = await supervisor.execute('status', {});
+    await supervisor.execute('requestLoginHandoff', { url: null, timeoutMs: 500 });
+    environment.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT = 'build-2';
+    runtime = {
+      ...runtime,
+      currentArtifactFingerprint: 'build-2',
+      currentVersion: '0.4.3',
+      compatibleUpdateAvailable: true,
+      suggestedAction: 'No host restart is needed.',
+    };
+
+    const during = await supervisor.execute('authStatus', {});
+    expect((await supervisor.execute('status', {})).result.workerPid).toBe(before.result.workerPid);
+    expect(during.result).toMatchObject({ state: 'awaiting_user', controlMode: 'human_bootstrap' });
+
+    await supervisor.execute('resumeAfterLogin', { expected: null, timeoutMs: 500 });
+    const after = await supervisor.execute('status', {});
+    expect(after.result.workerPid).not.toBe(before.result.workerPid);
+    expect(supervisor.workerRuntimeInfo).toMatchObject({ artifactFingerprint: 'build-2' });
   });
 
   it('kills and replaces a worker that exceeds the outer hard deadline', async () => {
@@ -159,6 +216,31 @@ describe('BrowserSupervisor', () => {
           record.recovery === 'succeeded',
       ),
     ).toBe(true);
+  });
+
+  it('refuses worker recovery while a private human authentication handoff is active', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-human-recovery-'));
+    temporaryRoots.push(root);
+    const supervisor = new BrowserSupervisor(configFor(root), {
+      workerUrl: new URL('./fixtures/fake-worker.mjs', import.meta.url),
+      environment: { ...process.env, STAGE5_BROWSER_TEST_MODE: '1' },
+    });
+    supervisors.push(supervisor);
+
+    const handoff = await supervisor.execute('requestLoginHandoff', { url: null, timeoutMs: 500 });
+    const workerPid = handoff.result.humanBootstrap?.processId ?? (await supervisor.execute('status', {})).result.workerPid;
+    await expect(supervisor.forceRecover(false)).rejects.toMatchObject({
+      code: 'AUTH_HANDOFF_REQUIRED',
+      recovery: 'not_needed',
+      details: { reason: 'human_authentication_in_progress' },
+    });
+    expect((await supervisor.execute('status', {})).result.workerPid).toBe(workerPid);
+
+    await supervisor.execute('resumeAfterLogin', { expected: null, timeoutMs: 500 });
+    await expect(supervisor.forceRecover(false)).resolves.toMatchObject({
+      recovery: 'succeeded',
+      workerRecovered: true,
+    });
   });
 
   it('rejects a worker from an incompatible build with MCP_RESTART_REQUIRED', async () => {

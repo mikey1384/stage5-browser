@@ -15,12 +15,12 @@ afterEach(async () => {
 
 describe('RuntimeArtifactMonitor', () => {
   const stamp = (overrides: Partial<RuntimeBuildStamp> = {}): RuntimeBuildStamp => ({
-    version: '0.3.0',
+    version: '0.4.2',
     buildId: 'build-1',
     builtAt: '2026-08-24T01:00:00.000Z',
-    workerProtocolVersion: 2,
-    toolCatalogVersion: 2,
-    toolCount: 15,
+    workerProtocolVersion: 3,
+    toolCatalogVersion: 3,
+    toolCount: 22,
     ...overrides,
   });
 
@@ -42,7 +42,7 @@ describe('RuntimeArtifactMonitor', () => {
       restartReason: null,
     });
 
-    await writeFile(artifact, JSON.stringify(stamp({ version: '0.3.1', buildId: 'build-2' })));
+    await writeFile(artifact, JSON.stringify(stamp({ version: '0.4.2', buildId: 'build-2' })));
     expect(monitor.inspect()).toMatchObject({
       compatibleUpdateAvailable: true,
       restartRequired: false,
@@ -60,7 +60,7 @@ describe('RuntimeArtifactMonitor', () => {
 
     await writeFile(
       artifact,
-      JSON.stringify(stamp({ buildId: 'build-2', toolCatalogVersion: 3, toolCount: 16 })),
+      JSON.stringify(stamp({ buildId: 'build-2', toolCatalogVersion: 4, toolCount: 23 })),
     );
     expect(monitor.inspect()).toMatchObject({
       compatibleUpdateAvailable: false,

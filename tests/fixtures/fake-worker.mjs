@@ -2,20 +2,21 @@ import { spawn } from 'node:child_process';
 
 let initialized = false;
 let browser = 'chromium';
+let humanAuthenticationInProgress = false;
 const startedAt = new Date().toISOString();
 const buildFingerprint = process.env.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT ?? 'fake-worker';
 const runtime = {
   component: 'worker',
-  version: '0.3.0',
-  protocolVersion: 2,
+  version: '0.4.2',
+  protocolVersion: 3,
   processId: process.pid,
   startedAt,
   buildModifiedAt: startedAt,
   artifactFingerprint: buildFingerprint,
   currentArtifactFingerprint: buildFingerprint,
-  currentVersion: '0.3.0',
-  currentProtocolVersion: 2,
-  currentToolCatalogVersion: 2,
+  currentVersion: '0.4.2',
+  currentProtocolVersion: 3,
+  currentToolCatalogVersion: 3,
   compatibleUpdateAvailable: false,
   restartRequired: false,
   restartReason: null,
@@ -48,6 +49,43 @@ process.on('message', (message) => {
   }
 
   if (message.command === 'testHang') {
+    return;
+  }
+
+  if (message.command === 'requestLoginHandoff') {
+    humanAuthenticationInProgress = true;
+    respond(message.id, {
+      browser,
+      browserConnected: false,
+      state: 'awaiting_user',
+      controlMode: 'human_bootstrap',
+      authenticated: 'unknown',
+      userActionRequired: true,
+    });
+    return;
+  }
+
+  if (message.command === 'resumeAfterLogin') {
+    humanAuthenticationInProgress = false;
+    respond(message.id, {
+      browser,
+      browserConnected: true,
+      state: 'ready_for_agent_verification',
+      controlMode: 'playwright',
+      authenticated: 'unknown',
+      userActionRequired: false,
+    });
+    return;
+  }
+
+  if (message.command === 'authStatus') {
+    respond(message.id, {
+      browser,
+      browserConnected: !humanAuthenticationInProgress,
+      state: humanAuthenticationInProgress ? 'awaiting_user' : 'profile_ready',
+      controlMode: humanAuthenticationInProgress ? 'human_bootstrap' : 'playwright',
+      authenticated: 'unknown',
+    });
     return;
   }
 
@@ -130,5 +168,8 @@ process.on('message', (message) => {
   }
 });
 
-process.on('SIGTERM', () => process.exit(0));
+process.on('SIGTERM', () => {
+  const delay = Number.parseInt(process.env.STAGE5_BROWSER_TEST_SHUTDOWN_DELAY_MS ?? '0', 10);
+  setTimeout(() => process.exit(0), Number.isFinite(delay) ? Math.max(0, delay) : 0);
+});
 process.on('disconnect', () => process.exit(0));

@@ -12,11 +12,19 @@ Stage5 Browser treats failures according to the layer that owns recovery. A gene
 | Browser process | crash, orphan, profile lock | Playwright disconnect or failed launch | supervisor and worker | close or kill the owned process tree; relaunch the dedicated profile |
 | Browser context | unexpected close, unusable persistent context | context close event or operation error | worker | recreate the context; preserve only the dedicated profile |
 | Page/renderer | page crash, closed target, unresponsive renderer | page events or failed health probe | worker | discard the page and create a new one; escalate to worker restart if needed |
-| Navigation lifecycle | commit succeeds but `load` never arrives | URL commit plus bounded readiness probe | worker | return committed state with a warning instead of a false timeout |
+| Navigation lifecycle | commit succeeds but readiness stalls, client redirect follows, or HTTP response is non-2xx | URL commit, bounded readiness/stabilization, redirect observation, and response status | worker and caller | return committed state plus structured warning/redirect evidence instead of declaring workflow success |
 | Frame lifecycle | observed frame detaches or belongs to an old tab | opaque frame-ID lookup plus attachment check | caller | return `TARGET_NOT_FOUND`; inventory frames again before retrying |
+| Human authentication lifecycle | native browser still running, profile locks remain, or Chromium reports an unclean exit | native-process state, known profile locks, effective clean-exit boolean, and evidence source | user and worker | never force-close or edit profile state; ask the user to quit the exact named application normally, then resume once |
+| Authentication launch identity | native and controlled executable, backend, user-data root, or profile partition differ | exact launch-identity comparison before and after the process boundary | worker | return `AUTH_NOT_PERSISTED`; do not ask the user to repeat login in an untrusted window |
+| Authentication storage continuity | the human phase adds target-origin session metadata but a caller-supplied non-root post-login route is not reached | offline database existence/mtime, presence booleans, non-exported cookie-key hashes, exact route postcondition, and bounded preview; never cookie values | worker and caller | return `AUTH_NOT_PERSISTED`; retain the controlled page for bounded diagnosis instead of replaying login. Treat live Chromium SQLite presence as unknown, not absent |
+| Authentication boundary evidence | exact human clicks and native-window requests are not instrumented, or storage survives while the site still renders signed out | sanitized before/after route and keyed semantic fingerprints plus bounded semantic preview | caller | treat storage and boundary comparisons as evidence only; stop on signed-out controls and require a fresh full snapshot to prove signed-in state |
+| Modal inspection | portal controls exceed document snapshot depth, or several dialogs compete | unique visible-modal root and ambiguity count | worker and caller | preserve one ref map for the unique modal; otherwise warn and inspect the document without choosing a modal |
 | Element targeting | missing or ambiguous role/name | locator count and actionability checks | caller | return candidates/error; never click an arbitrary first match |
+| Snapshot reference lifecycle | ref is stale, reused, absent, or from another document/frame | latest snapshot ID, document version, and observed-ref membership | caller | return `TARGET_NOT_FOUND`; take a fresh snapshot |
+| Click outcome | click dispatches but URL/selection/visibility postcondition is unmet | bounded postcondition probe | caller | return `POSTCONDITION_FAILED` with `clickDispatched: true`; inspect before any retry |
+| Click actionability | target is hidden, disabled, out of viewport, detached, or covered | sanitized pre/post-failure target state and Playwright outcome | caller | return `OPERATION_FAILED` with dispatch certainty when known; inspect the page diagnostic before correcting or retrying |
 | Consequential ambiguity | click or submission times out after it may have fired | timeout after dispatch | caller and service adapter | do not retry; verify authoritative external state first |
-| Authentication/site policy | CAPTCHA, expired login, bot rejection | visible page state and service response | user or service adapter | request the smallest user-only action or switch to API/CLI |
+| Authentication/site policy | CAPTCHA, expired login, bot rejection | explicit uncontrolled bootstrap, fresh post-resume page state, and service response | user or service adapter | hand the native dedicated window to the user, require a normal close, resume, then verify with a fresh snapshot; or switch to API/CLI |
 
 `browser_recover` recovers the worker boundary only. Its terminal result explicitly reports either `worker_recovered_browser_running` or `worker_recovered_browser_stopped`; neither outcome claims that an MCP tool catalog was reloaded.
 
@@ -26,5 +34,6 @@ Stage5 Browser treats failures according to the layer that owns recovery. A gene
 - Consequential operations are never retried merely because their response timed out.
 - Killing a worker must kill the browser descendants it owns.
 - Recovery never attaches to or modifies the user's default Chrome profile.
+- Recovery never kills a human authentication browser, removes its profile locks, or rewrites browser shutdown preferences.
 - Every operation ends as `succeeded`, `failed`, or `timed_out`; there is no permanently pending state.
 - Evidence identifies the failed layer without recording page contents or sensitive inputs.

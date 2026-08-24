@@ -86,6 +86,7 @@ export class BrowserSupervisor {
   private selectedBrowser: BrowserProduct;
   private lastKnownUrl: string | null = null;
   private browserWasConnected = false;
+  private humanAuthenticationInProgress = false;
   private closing = false;
 
   constructor(
@@ -129,6 +130,7 @@ export class BrowserSupervisor {
         this.captureSelectedBrowser(result);
         this.captureLastKnownUrl(result);
         this.captureBrowserConnection(result);
+        this.captureAuthenticationState(result);
         await this.appendJournal({
           operationId,
           command,
@@ -175,6 +177,32 @@ export class BrowserSupervisor {
       const startedAtMs = Date.now();
       const startedAt = new Date(startedAtMs).toISOString();
       const candidateUrl = reopenLastUrl ? this.lastKnownUrl : null;
+
+      if (this.humanAuthenticationInProgress) {
+        const serialized = new Stage5BrowserError(
+          'AUTH_HANDOFF_REQUIRED',
+          'Worker recovery is disabled while the private human authentication browser owns the profile.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'human_authentication_in_progress',
+              suggestedAction: 'Finish authentication and quit the exact browser application named by the handoff result so its process exits, then call browser_resume_after_login. On macOS, use Cmd-Q in that application; closing only a tab or window may leave it running. Do not recover or force-close the browser.',
+            },
+          },
+        ).serialize();
+        await this.appendJournal({
+          operationId,
+          command: 'recover',
+          startedAt,
+          durationMs: Date.now() - startedAtMs,
+          outcome: 'failed',
+          recovery: 'not_needed',
+          errorCode: serialized.code,
+          browser: this.selectedBrowser,
+          ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
+        });
+        throw new SupervisedOperationError(serialized, operationId, 'not_needed');
+      }
 
       try {
         await this.replaceWorker();
@@ -234,7 +262,7 @@ export class BrowserSupervisor {
 
   async close(): Promise<void> {
     this.closing = true;
-    await this.queue.run(async () => this.terminateWorker());
+    await this.queue.run(async () => this.terminateWorker(undefined, 'graceful'));
   }
 
   private async ensureWorker(): Promise<void> {
@@ -326,9 +354,13 @@ export class BrowserSupervisor {
       return;
     }
 
+    if (this.humanAuthenticationInProgress) {
+      return;
+    }
+
     const reopenUrl = this.browserWasConnected ? this.lastKnownUrl : null;
     const restartBrowser = this.browserWasConnected;
-    await this.terminateWorker();
+    await this.terminateWorker(undefined, 'graceful');
     this.expectedBuildFingerprint = runtime.currentArtifactFingerprint;
     await this.ensureWorker();
 
@@ -453,7 +485,10 @@ export class BrowserSupervisor {
     }
   }
 
-  private async terminateWorker(specificChild?: ChildProcess): Promise<void> {
+  private async terminateWorker(
+    specificChild?: ChildProcess,
+    mode: 'graceful' | 'hard' = 'hard',
+  ): Promise<void> {
     const child = specificChild ?? this.child;
     if (child === undefined) {
       return;
@@ -469,7 +504,10 @@ export class BrowserSupervisor {
     }
 
     this.signalProcessTree(child, 'SIGTERM');
-    const exitedGracefully = await this.waitForExit(child, this.config.workerShutdownGraceMs);
+    const gracefulDeadlineMs = mode === 'graceful'
+      ? Math.max(this.config.workerShutdownGraceMs, 10_000)
+      : this.config.workerShutdownGraceMs;
+    const exitedGracefully = await this.waitForExit(child, gracefulDeadlineMs);
     if (!exitedGracefully) {
       this.signalProcessTree(child, 'SIGKILL');
       await this.waitForExit(child, this.config.workerShutdownGraceMs);
@@ -518,6 +556,7 @@ export class BrowserSupervisor {
       'PATH',
       'PLAYWRIGHT_BROWSERS_PATH',
       'STAGE5_BROWSER_TEST_BUILD_FINGERPRINT',
+      'STAGE5_BROWSER_TEST_SHUTDOWN_DELAY_MS',
       'STAGE5_BROWSER_TEST_MODE',
       'TMPDIR',
       'USERPROFILE',
@@ -597,6 +636,18 @@ export class BrowserSupervisor {
     if ('page' in result) {
       this.browserWasConnected = true;
     }
+  }
+
+  private captureAuthenticationState(result: unknown): void {
+    if (typeof result !== 'object' || result === null) {
+      return;
+    }
+    const candidate = result as { controlMode?: unknown; state?: unknown };
+    if (typeof candidate.controlMode !== 'string' || typeof candidate.state !== 'string') {
+      return;
+    }
+    this.humanAuthenticationInProgress =
+      candidate.controlMode === 'human_bootstrap' && candidate.state === 'awaiting_user';
   }
 
   private isBrowserProduct(value: string): value is BrowserProduct {

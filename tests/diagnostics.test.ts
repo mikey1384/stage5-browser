@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  browserLaunchPolicyDiagnostics,
   classifyLaunchFailure,
   inspectProfile,
   launchFailureDiagnostic,
@@ -19,6 +20,25 @@ afterEach(async () => {
 });
 
 describe('browser diagnostics', () => {
+  it('enables the Chromium sandbox on macOS and exposes only known safe launch-policy facts', () => {
+    expect(browserLaunchPolicyDiagnostics('brave', false, 'installed', 'darwin')).toEqual({
+      headless: false,
+      persistentIsolatedProfile: true,
+      executableSource: 'installed',
+      sandbox: 'enabled',
+      knownSecurityRelevantArguments: ['--enable-automation'],
+      argumentsComplete: false,
+    });
+    expect(browserLaunchPolicyDiagnostics('chromium', true, 'bundled', 'linux')).toMatchObject({
+      sandbox: 'playwright_default_disabled',
+      knownSecurityRelevantArguments: ['--enable-automation', '--no-sandbox'],
+    });
+    expect(browserLaunchPolicyDiagnostics('firefox', true, 'bundled', 'darwin')).toMatchObject({
+      sandbox: 'not_applicable',
+      knownSecurityRelevantArguments: [],
+    });
+  });
+
   it('classifies common launch failures without exposing raw error text', () => {
     expect(classifyLaunchFailure(new Error('Failed to create a ProcessSingleton for this profile'))).toBe(
       'profile_locked',

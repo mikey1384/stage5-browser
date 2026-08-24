@@ -68,6 +68,13 @@ try {
     'browser_frames',
     'browser_snapshot',
     'browser_screenshot',
+    'browser_click_ref',
+    'browser_scroll',
+    'browser_find_text',
+    'browser_wait_for_url',
+    'browser_auth_status',
+    'browser_request_login_handoff',
+    'browser_resume_after_login',
     'browser_recover',
   ]) {
     if (!names.has(required)) {
@@ -124,10 +131,32 @@ try {
   const diagnostics = await client.callTool({ name: 'browser_diagnostics', arguments: {} });
   assertToolSuccess(diagnostics, 'browser_diagnostics');
   const diagnosticResult = (diagnostics.structuredContent as {
-    result?: { browser?: { availability?: { available?: unknown }; profile?: { writable?: unknown } } };
+    result?: {
+      browser?: {
+        availability?: { available?: unknown; engine?: unknown };
+        profile?: { writable?: unknown };
+        launchPolicy?: {
+          sandbox?: unknown;
+          knownSecurityRelevantArguments?: unknown;
+          argumentsComplete?: unknown;
+        };
+      };
+    };
   } | undefined)?.result?.browser;
   if (diagnosticResult?.availability?.available !== true || diagnosticResult.profile?.writable !== true) {
     throw new Error('browser_diagnostics did not confirm executable availability and profile writability.');
+  }
+  if (
+    process.platform === 'darwin' &&
+    diagnosticResult.availability.engine === 'chromium' &&
+    (
+      diagnosticResult.launchPolicy?.sandbox !== 'enabled' ||
+      !Array.isArray(diagnosticResult.launchPolicy.knownSecurityRelevantArguments) ||
+      diagnosticResult.launchPolicy.knownSecurityRelevantArguments.includes('--no-sandbox') ||
+      diagnosticResult.launchPolicy.argumentsComplete !== false
+    )
+  ) {
+    throw new Error('browser_diagnostics did not confirm the expected sanitized macOS Chromium sandbox policy.');
   }
 
   const frames = await client.callTool({ name: 'browser_frames', arguments: {} });
@@ -144,6 +173,28 @@ try {
     arguments: { frameId: null, depth: 8, boxes: false, timeoutMs: 20_000 },
   });
   assertToolSuccess(snapshot, 'browser_snapshot');
+
+  const found = await client.callTool({
+    name: 'browser_find_text',
+    arguments: {
+      query: 'translator',
+      mode: 'contains',
+      caseSensitive: false,
+      maxResults: 10,
+      frameId: null,
+      timeoutMs: 20_000,
+    },
+  });
+  assertToolSuccess(found, 'browser_find_text');
+
+  const waited = await client.callTool({
+    name: 'browser_wait_for_url',
+    arguments: { expected: { url: 'translator.tools', match: 'contains' }, timeoutMs: 5_000 },
+  });
+  assertToolSuccess(waited, 'browser_wait_for_url');
+
+  const authStatus = await client.callTool({ name: 'browser_auth_status', arguments: {} });
+  assertToolSuccess(authStatus, 'browser_auth_status');
 
   const screenshot = await client.callTool({
     name: 'browser_screenshot',
@@ -165,6 +216,7 @@ try {
       mcpVersion: statusPayload.mcp.version,
       frameCount: observedFrames.length,
       diagnosticsPassed: true,
+      sandbox: diagnosticResult.launchPolicy?.sandbox ?? null,
       persistentProfile: usePersistentProfile,
       snapshotCharacters: snapshotText.length,
       screenshotReturned: screenshot.content.some((item) => item.type === 'image'),

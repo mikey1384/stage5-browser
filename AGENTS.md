@@ -22,12 +22,56 @@ A browser action may fail, but the controller must never leave the agent or user
 - Never retry a consequential operation after an ambiguous timeout. Verify authoritative state first.
 - Navigation uses commit-first semantics with a separately bounded readiness probe.
 - Do not return an arbitrary first match for an ambiguous locator.
+- Treat a semantic snapshot's `snapshotId` and refs as document-bound capabilities. Never accept a ref that was not present in the latest snapshot of the same frame, and invalidate refs after navigation or mutation.
+- When a click is intended to change state, use a bounded postcondition. If it fails, report that the click was dispatched and never replay it without a fresh observation.
+- Return structured warnings for non-2xx navigation responses and explicit redirect evidence; a committed response is not automatically a successful workflow result.
+- Keep scrolling and text search bounded and generic. Do not add arbitrary agent-supplied JavaScript or service-specific timeline code.
+- Prefer one ARIA capture rooted at a uniquely established visible modal over stitching multiple snapshots or globally increasing document depth. Preserve one valid ref map; warn and fail back to the document when modal choice is ambiguous.
+- Page and click diagnostics must be bounded and sanitized. Expose categories, counts, status, and actionability facts—not raw console/exception text, request bodies or headers, query strings, fragments, entered values, or a full browser command line.
+
+## Authentication handoff
+
+- Isolated persistent profiles remain the default security boundary. Do not attach to or copy cookies from a person's everyday browser profile.
+- Agents call `browser_auth_status` before account-dependent work. The tool reports lifecycle state, not a guessed authenticated boolean.
+- Before login, explicitly select the intended backend; concurrent agents may legitimately have different Stage5 Brave, Chrome, Chromium, Edge, or Firefox windows. Login uses `browser_request_login_handoff` → user acts privately in the exact native application named by the result, using the adjacent Stage5 identity-marker tab and short handoff label to distinguish it → user quits that exact application normally so its process exits → `browser_resume_after_login` → returned bounded preview → fresh full semantic snapshot. On macOS, use Cmd-Q in the named application; closing only a tab/window may leave it running. Credentials, passkeys, CAPTCHAs, and OTPs never pass through agent arguments, messages, or logs.
+- The human bootstrap uses the same isolated profile but launches the selected browser without Playwright, remote debugging, or automation flags. Do not replace it with stealth flags or script-based `navigator.webdriver` overrides.
+- While `browser_auth_status.state` is `awaiting_user`, do not call tab, page, action, start, switch, recover, or stop tools. Stage5 Browser intentionally refuses control while the human window owns the profile.
+- A compatible completed build is deferred while the human window owns the profile. Resume through the already-running worker first; the supervisor rolls forward before the following operation.
+- Never force-close the human authentication browser or delete profile locks. Ask the user to quit the dedicated instance normally, then resume. If shutdown is reported unclean, start a new handoff and quit it normally; do not rewrite Chromium exit preferences.
+- The uncontrolled phase cannot observe exact manual clicks or network traffic. Treat `lastHandoffOutcome` as a sanitized before/after boundary comparison, then use a fresh snapshot to verify account state.
+- Treat the returned executable, application name, user-data directory, profile directory, and effective profile path as one binding. Resume must fail as `AUTH_NOT_PERSISTED` when that binding changes, or when the human phase added target-origin session metadata but reattachment cannot reach a caller-supplied non-root post-login route. Cookie values are never inspected. Do not infer live cookie absence from an open Chromium SQLite database; the browser may hold a valid in-memory jar while migrating stores. Storage continuity is still not proof of authentication; stop if the bounded preview or fresh snapshot shows signed-out controls.
+- Do not use an origin-only URL as an authentication postcondition. Use a non-root post-login route when one is stable, or omit the URL expectation and verify the preview plus a fresh snapshot.
+- A successful login persists per selected backend profile. It does not transfer between Brave, Chrome, Chromium, Edge, Firefox, or WebKit.
+
+## Host connection and update lifecycle
+
+Before browser work, distinguish a missing host connection from a failed browser runtime:
+
+1. Confirm the current agent exposes the `stage5_browser` tools. Read the expected count from `package.json` at `stage5Browser.toolCount`; do not rely on a remembered release number.
+2. If the tools are absent in ChatGPT, run `codex mcp list`. The expected entry is `stage5_browser`, enabled, pointing directly to this repository's `dist/launcher.js`.
+3. If the CLI entry is enabled but ChatGPT does not expose the tools or show the server, the running ChatGPT host predates the registration. Fully quit and reopen ChatGPT once, then start or resume an agent run. Do not rebuild, redeploy, reinstall, or rewrite the registration.
+4. When the tools are present, call `browser_status`. A normal build reports the version and tool count declared in `package.json`, plus `restartRequired: false`.
+5. `compatibleUpdateAvailable: true` is not a blocker. The next browser operation automatically rolls the worker onto the compatible completed build.
+6. Reconnect the MCP host only when `restartRequired: true`. That flag is reserved for a real tool-catalog or MCP-to-worker protocol change.
+
+Do not kill an observed MCP or worker PID merely because it is old; other active agent sessions may own it. Do not use `browser_recover` as an update mechanism. After a launch failure, call `browser_diagnostics` and follow its structured action.
+
+When changing Stage5 Browser itself:
+
+- Ordinary behavior fixes keep the existing tool-catalog and worker-protocol versions. `npm run build` publishes a completed build stamp last, and live hosts pick up the compatible worker automatically.
+- Adding, removing, or changing an MCP tool schema requires a tool-catalog version bump.
+- Changing the MCP-to-worker command contract requires a worker-protocol version bump.
+- Keep the contract metadata in `package.json`, constants in `src/runtime-info.ts`, package/plugin versions, and regression tests aligned.
+- Never tell the user to patch or deploy this local integration. The registered launcher reads this checkout directly.
+
+See `docs/agent-setup.md` for host-specific checks and the exact decision tree.
 
 ## Security and privacy
 
 - Never automate the default Chrome profile. Use the dedicated Stage5 Browser profile or a temporary test profile.
 - Do not add arbitrary JavaScript evaluation, credential extraction, CAPTCHA bypass, or unrestricted file navigation.
 - Do not log command arguments, page content, form values, cookies, headers, query strings, fragments, screenshots, credentials, or OTPs.
+- Enable Chromium sandboxing on macOS unless a documented, reproduced browser incompatibility requires a narrower exception. Do not expose raw launch arguments; diagnostics may list only known security-relevant policy facts.
 - Screenshots are explicit operations, stored outside the repository with restrictive permissions.
 - Browser tools that may change external state must be marked as writes in MCP annotations.
 

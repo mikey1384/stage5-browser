@@ -9,13 +9,15 @@ Stage5 Browser is a reliability-first local browser controller for AI agents. It
 The reliability and diagnostics slice is implemented and tested. A standard MCP client can:
 
 - preflight and switch among isolated Chromium, Chrome, Brave, Edge, Firefox, and WebKit profiles
-- open HTTP(S) pages with commit-first navigation
-- list and select tabs
-- inspect an AI-oriented ARIA snapshot
+- open HTTP(S) pages with commit-first navigation, bounded redirect stabilization, redirect evidence, and structured HTTP warnings
+- reconcile the uniquely visible tab, list tabs, and explicitly select the authentication target
+- inspect an AI-oriented ARIA snapshot, automatically scope a unique visible modal, and safely target an observed document-bound reference
 - capture a screenshot
-- click or fill one unique semantic target
+- click or fill one unique semantic target, with optional click postcondition verification
+- scroll infinite pages and search currently rendered text without arbitrary script evaluation
+- release a persistent isolated profile into a visibly marked, genuinely uncontrolled native browser for private human login, pin and verify the exact executable/profile identity across reattachment, and fail explicitly when human session evidence cannot satisfy a non-root post-login route
 - stop or explicitly recover the browser
-- detect a stale MCP build, diagnose launch preflight/profile failures, and distinguish worker recovery from browser recovery
+- detect a stale MCP build, diagnose launch preflight/profile failures, automation exposure, sandbox policy, successful/error request classes around the last click, and distinguish worker recovery from browser recovery
 
 The MCP process supervises a separate worker that owns Playwright and the selected browser. If a command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
 
@@ -39,25 +41,32 @@ npm run build
 npm start
 ```
 
-The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. After installing or registering it locally as `stage5_browser`, start a new agent process so its MCP tool catalog is rebuilt. For Claude Code, `claude mcp get stage5_browser` should report `Scope: User config` and `Status: ✔ Connected`; use `claude --continue` to resume the last conversation after restarting. See `docs/agent-setup.md` for registration, discovery, and authentication behavior.
+The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. A host reconnect is needed once after initial registration or a real tool-catalog change. Compatible runtime patches roll forward automatically on the next browser operation and do not require reinstalling or redeploying Stage5 Browser. See `docs/agent-setup.md` for the ChatGPT and Claude connection decision trees, discovery checks, and authentication behavior.
 
 ## MCP tools
 
 | Tool | Purpose |
 | --- | --- |
-| `browser_status` | Report MCP/build freshness plus worker, browser, tab, and active-page state |
+| `browser_status` | Report MCP/build freshness plus worker, browser, exact launch/profile identity, tab, and active-page state |
 | `browser_available` | Preflight every backend without launching or closing a browser |
-| `browser_diagnostics` | Diagnose build freshness, executable availability, profile writability/locks, and the last safe launch cause |
+| `browser_diagnostics` | Diagnose build freshness, executable/profile state, sandbox policy, automation exposure, sanitized page events, and successful/error requests around the last click |
 | `browser_start` | Launch a requested profile without closing another running browser |
 | `browser_switch` | Safely switch to a preflighted isolated browser profile |
-| `browser_open` | Navigate with bounded commit and readiness phases |
-| `browser_tabs` | List live tabs |
-| `browser_select_tab` | Select a tab by an observed index |
+| `browser_open` | Navigate with bounded commit, readiness, and client-redirect stabilization; report redirects and HTTP warnings |
+| `browser_tabs` | List live tabs and reconcile a uniquely visible user-selected tab |
+| `browser_select_tab` | Select a tab by an observed index while Stage5 Browser controls the profile |
 | `browser_frames` | Inventory the active page's main document and nested frames |
-| `browser_snapshot` | Read semantic structure from the main document or an observed frame |
+| `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound snapshot references |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
-| `browser_click_by_role` | Click one unique role/name target in the main document or an observed frame |
+| `browser_click_by_role` | Click one unique role/name target, optionally verifying URL, selected state, or visible state |
+| `browser_click_ref` | Click one reference from the latest exact semantic snapshot, failing closed when stale |
 | `browser_fill_by_role` | Fill one unique role/name target in the main document or an observed frame |
+| `browser_scroll` | Perform bounded page/frame scrolling and report position, growth, and end state |
+| `browser_find_text` | Search bounded rendered page/frame text and return matching snippets |
+| `browser_wait_for_url` | Wait for an exact, prefix, or substring URL postcondition |
+| `browser_auth_status` | Report the isolated profile's authentication-handoff lifecycle, native application, marker label, and exact profile binding |
+| `browser_request_login_handoff` | Close Playwright cleanly and launch the same isolated profile with a Stage5 marker tab as an uncontrolled native browser for private login |
+| `browser_resume_after_login` | Reattach only after the human browser process quits normally; verify launch/storage continuity, return a bounded semantic preview, and require a fresh signed-in check |
 | `browser_recover` | Replace the worker process group and optionally reopen the last URL |
 | `browser_stop` | Close the owned browser context |
 
@@ -71,9 +80,13 @@ MCP server + serialized supervisor
         │ Node IPC with per-command hard deadlines
         ▼
 Browser worker process group
-        │ direct Playwright protocol
-        ▼
-Selected Playwright browser backend + dedicated persistent profile
+        │
+        ├── normal work: direct Playwright protocol
+        │
+        └── authentication: close control → native browser → normal user close → reattach
+                                      │
+                                      ▼
+                         dedicated persistent profile
 ```
 
 The worker boundary is intentional. A stalled browser transport cannot wedge the MCP event loop, and recovery can kill browser descendants rather than merely dropping a stale JavaScript object.
@@ -87,6 +100,8 @@ Key implementation files:
 - `src/browser-provider.ts` — trusted browser selection and installed-browser discovery
 - `docs/agent-setup.md` — Claude connection checks, session restart, and login lifecycle
 - `docs/browser-support.md` — support matrix and required agent selection workflow
+- `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
+- `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.3 remedies
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -96,15 +111,23 @@ Key implementation files:
 - Browser operations are serialized; two agents cannot race the same active tab.
 - Playwright deadlines are backed by a supervisor-owned hard deadline.
 - Navigation succeeds at document commit and reports DOM readiness separately.
+- Navigation reports sanitized requested/final URLs, server redirects, observed client-side URL changes, and structured non-2xx warnings.
 - A timed-out consequential action is never retried automatically.
 - A zero-match or multi-match semantic locator fails explicitly.
+- Snapshot references are accepted only from the latest snapshot of the same document and frame.
+- A unique visible modal becomes the snapshot root; multiple unresolved modals produce a warning instead of an arbitrary choice.
+- A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened.
+- A click that cannot dispatch records sanitized visibility, enabled-state, viewport, and pointer-interception evidence.
+- Human login bootstrap releases Playwright completely, pins the selected Chromium partition, and launches the exact same executable/profile identity without automation or remote-debugging flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until the user quits that exact application normally.
+- Resume rejects a still-running, locked, explicitly unclean, or launch-identity-mismatched profile. When the human phase added target-origin session metadata but a caller-supplied non-root post-login route cannot be reached, it returns `AUTH_NOT_PERSISTED`. It never force-kills the human browser, deletes locks, rewrites Chromium shutdown preferences, or reads cookie values.
+- The uncontrolled phase records no exact manual clicks. Resume reports sanitized route, semantic, launch-identity, and storage-continuity evidence plus a bounded semantic preview, then requires a fresh full snapshot. Origin-only authentication URL checks are rejected as too weak.
 - A hung or disconnected worker is killed and replaced before another operation proceeds.
-- MCP and worker builds complete a versioned protocol handshake; incompatible builds fail with `MCP_RESTART_REQUIRED`.
-- A running MCP detects when its loaded artifact was rebuilt and refuses browser work until the host restarts.
+- MCP and worker builds complete a versioned protocol handshake; incompatible contract changes fail with `MCP_RESTART_REQUIRED`.
+- A running MCP automatically rolls its worker onto compatible completed builds; only tool-catalog or worker-protocol changes require a host reconnect.
 - Worker recovery reports whether a browser was actually running afterward; it never implies that the MCP catalog was refreshed.
-- Diagnostic journaling is best-effort and cannot change an operation's result.
+- Diagnostic journaling is best-effort and cannot change an operation's result. Page diagnostics include bounded success/redirect/error response classes and the events within the last click window, but exclude raw console/exception text, request metadata beyond method/type/status/sanitized URL, and all URL queries/fragments.
 
-Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, screenshots, ambiguous matches, cross-origin frames, browser switching, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
+Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, click actionability and postconditions, successful request capture, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, uncontrolled human authentication, exact executable/profile binding, native-to-controlled storage continuity, unambiguous clean/unclean profile shutdown, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
 
 ## Browser selection
 
@@ -146,9 +169,11 @@ WebKit provides Safari-engine coverage, not control of the installed Safari appl
 
 - Stage5 Browser never opens a person's default browser profile.
 - Bundled Chromium, Firefox, and WebKit are pinned under `.playwright-browsers/`; every selected backend keeps profile state in a dedicated Stage5 Browser application-data directory.
+- Chromium-engine browsers opt into Chromium sandboxing on macOS; diagnostics expose the resulting safe policy without exposing a raw process command line.
+- Human authentication launches only the selected browser, pinned dedicated-profile arguments, a new-window directive, a static Stage5 identity-marker data URL, and the target URL. It does not use Playwright, remote debugging, `--enable-automation`, `--no-sandbox`, or webdriver-masking scripts.
 - Only HTTP, HTTPS, and `about:blank` navigation are allowed.
 - URLs with embedded credentials are rejected.
-- The operation journal excludes arguments, page content, form values, cookies, headers, query strings, fragments, screenshots, credentials, and OTPs.
+- The operation journal excludes arguments, page content, form values, cookies, headers, query strings, fragments, screenshots, credentials, and OTPs. Offline authentication continuity returns only allowlisted database metadata and booleans; cookie values are never selected, and cookie-key hashes used for set comparison are never returned. Live Chromium cookie presence is reported as unknown because its in-memory jar can be authoritative while SQLite stores are migrating. Page-event fingerprints use a process-local keyed digest and cannot be compared across launches.
 - Screenshots are explicit and written with user-only permissions.
 - Arbitrary JavaScript evaluation, credential extraction, CAPTCHA bypass, and unrestricted local-file navigation are not exposed.
 

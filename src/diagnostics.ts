@@ -5,9 +5,12 @@ import path from 'node:path';
 import {
   BROWSER_ENGINES,
   type BrowserAvailability,
+  type BrowserExecutableSource,
   type BrowserProduct,
 } from './browser-provider.js';
 import { Stage5BrowserError } from './errors.js';
+import type { PageRuntimeDiagnostics } from './page-diagnostics.js';
+import type { BrowserLaunchIdentity, BrowserProfileBinding } from './profile-binding.js';
 
 export const LAUNCH_FAILURE_REASONS = [
   'browser_executable_missing',
@@ -48,7 +51,60 @@ export interface BrowserDiagnostics {
   availability: BrowserAvailability;
   preflightSuggestedAction: string | null;
   profile: ProfileDiagnostics;
+  profileBinding: BrowserProfileBinding;
+  launchIdentity: BrowserLaunchIdentity | null;
   lastLaunchFailure: LaunchFailureDiagnostic | null;
+  launchPolicy: BrowserLaunchPolicyDiagnostics;
+  automationExposure: AutomationExposureDiagnostics;
+  page: PageRuntimeDiagnostics | null;
+}
+
+export interface AutomationExposureDiagnostics {
+  controlMode: 'human_bootstrap' | 'none' | 'playwright';
+  controlledByPlaywright: boolean;
+  enableAutomationArgument: 'absent' | 'not_applicable' | 'present';
+  navigatorWebdriver: boolean | null;
+  navigatorWebdriverObserved: boolean;
+  observation:
+    | 'controlled_page_runtime'
+    | 'no_browser_running'
+    | 'uncontrolled_browser_not_instrumented';
+}
+
+export interface BrowserLaunchPolicyDiagnostics {
+  headless: boolean;
+  persistentIsolatedProfile: true;
+  executableSource: BrowserExecutableSource | null;
+  sandbox: 'enabled' | 'not_applicable' | 'playwright_default_disabled';
+  knownSecurityRelevantArguments: string[];
+  argumentsComplete: false;
+}
+
+export function browserLaunchPolicyDiagnostics(
+  browser: BrowserProduct,
+  headless: boolean,
+  executableSource: BrowserExecutableSource | null,
+  platform: NodeJS.Platform = process.platform,
+): BrowserLaunchPolicyDiagnostics {
+  const engine = BROWSER_ENGINES[browser];
+  const chromiumSandboxEnabled = engine === 'chromium' && platform === 'darwin';
+  const sandbox = engine !== 'chromium'
+    ? 'not_applicable'
+    : chromiumSandboxEnabled
+      ? 'enabled'
+      : 'playwright_default_disabled';
+  return {
+    headless,
+    persistentIsolatedProfile: true,
+    executableSource,
+    sandbox,
+    knownSecurityRelevantArguments: engine === 'chromium'
+      ? chromiumSandboxEnabled
+        ? ['--enable-automation']
+        : ['--enable-automation', '--no-sandbox']
+      : [],
+    argumentsComplete: false,
+  };
 }
 
 const SUGGESTED_ACTIONS: Record<LaunchFailureReason, string> = {
