@@ -92,8 +92,11 @@ import type {
   PostconditionCheck,
   PostconditionResult,
   RedirectHop,
+  ScrollContainerObservation,
+  ScrollContentObservation,
   ScrollPosition,
   ScrollEndState,
+  ScrollWaitResult,
   UrlExpectation,
   VisibleElementExpectation,
 } from './protocol.js';
@@ -122,11 +125,17 @@ interface ObservedSnapshot {
   documentVersion: number;
   refs: Set<string>;
   fileInputs: Map<string, ObservedFileInput>;
+  scrollContainers: Map<string, ObservedScrollContainer>;
 }
 
 interface ObservedFileInput {
   handle: ElementHandle<HTMLInputElement>;
   observation: FileInputObservation;
+}
+
+interface ObservedScrollContainer {
+  handle: ElementHandle<HTMLElement>;
+  observation: ScrollContainerObservation;
 }
 
 interface LocalFileSelection {
@@ -189,6 +198,8 @@ interface SnapshotRoot {
 const MAX_SEARCHABLE_TEXT_CHARACTERS = 2_000_000;
 const TEXT_SNIPPET_CONTEXT = 100;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
+const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
+const SCROLL_BOUNDARY_EPSILON_PX = 1;
 
 export class BrowserController {
   private context: BrowserContext | undefined;
@@ -625,8 +636,20 @@ export class BrowserController {
     });
     const refs = new Set(snapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? []);
     const observedFileInputs = await this.observeFileInputs(root.locator);
+    let observedScrollContainers: Awaited<ReturnType<BrowserController['observeScrollContainers']>>;
+    try {
+      observedScrollContainers = await this.observeScrollContainers(root.locator);
+    } catch (error) {
+      for (const { handle } of observedFileInputs.inputs.values()) {
+        await handle.dispose().catch(() => undefined);
+      }
+      throw error;
+    }
     if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
       for (const { handle } of observedFileInputs.inputs.values()) {
+        await handle.dispose().catch(() => undefined);
+      }
+      for (const { handle } of observedScrollContainers.containers.values()) {
         await handle.dispose().catch(() => undefined);
       }
       throw new Stage5BrowserError(
@@ -648,6 +671,7 @@ export class BrowserController {
       documentVersion,
       refs,
       fileInputs: observedFileInputs.inputs,
+      scrollContainers: observedScrollContainers.containers,
     });
 
     this.lastKnownUrl = page.url();
@@ -664,6 +688,8 @@ export class BrowserController {
       refCount: refs.size,
       fileInputCount: observedFileInputs.inputs.size,
       fileInputs: [...observedFileInputs.inputs.values()].map(({ observation }) => observation),
+      scrollContainerCount: observedScrollContainers.containers.size,
+      scrollContainers: [...observedScrollContainers.containers.values()].map(({ observation }) => observation),
       scope: root.scope,
       visibleModalCount: root.visibleModalCount,
       warnings: [
@@ -673,6 +699,13 @@ export class BrowserController {
               code: 'file_input_list_truncated' as const,
               message: `The frame contains more than ${MAX_FILE_INPUTS_PER_SNAPSHOT} file inputs; only the first bounded set was observed.`,
               suggestedAction: 'Narrow to the intended frame or page state before selecting a file input; Stage5 Browser will not guess among unobserved controls.',
+            }]
+          : []),
+        ...(observedScrollContainers.truncated
+          ? [{
+              code: 'scroll_container_list_truncated' as const,
+              message: `The snapshot scope contains more than ${MAX_SCROLL_CONTAINERS_PER_SNAPSHOT} vertical scroll surfaces; only the first bounded set was observed.`,
+              suggestedAction: 'Narrow to the intended modal or frame before scrolling; Stage5 Browser will not guess among unobserved containers.',
             }]
           : []),
       ],
@@ -1113,111 +1146,194 @@ export class BrowserController {
   async scroll(input: BrowserCommandInput<'scroll'>): Promise<BrowserCommandOutput<'scroll'>> {
     const page = await this.ensureActivePage(await this.ensureContext());
     const frame = this.resolveFrame(page, input.frameId);
-    const before = await this.scrollPosition(frame);
+    const observedTarget = this.resolveObservedScrollContainer(frame, input.target);
+    const targetHandle = observedTarget?.handle ?? null;
+    if (targetHandle !== null && await this.inspectScrollContainer(targetHandle) === null) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The observed nested scroll container is no longer attached or scrollable.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'scroll_container_no_longer_available',
+            ref: input.target?.ref ?? null,
+            suggestedAction: 'Take one fresh snapshot and select a currently exposed scroll-container ref.',
+          },
+        },
+      );
+    }
+    const before = await this.scrollPosition(frame, targetHandle);
+    const contentBefore = await this.scrollContentObservation(frame, targetHandle);
     const startedAt = Date.now();
+    const actionStartedAt = new Date(startedAt).toISOString();
+    this.pageDiagnostics.beginAction(page, actionStartedAt);
+    if (targetHandle !== null) {
+      this.consumeObservedSnapshot(frame, targetHandle);
+    }
     let stepsCompleted = 0;
     let previous = before;
     let contentGrew = false;
     let finalStepMoved = false;
     let finalStepGrew = false;
+    let actionDispatched: boolean | 'unknown' = false;
 
-    for (let step = 0; step < input.count; step += 1) {
-      if (Date.now() - startedAt + input.settleMs >= input.timeoutMs) {
-        break;
+    try {
+      for (let step = 0; step < input.count; step += 1) {
+        if (Date.now() - startedAt + input.settleMs >= input.timeoutMs) {
+          break;
+        }
+        actionDispatched = 'unknown';
+        await this.performScrollStep(frame, input.direction, input.amount, targetHandle);
+        actionDispatched = true;
+        stepsCompleted += 1;
+        if (input.settleMs > 0) {
+          await page.waitForTimeout(input.settleMs);
+        }
+        const current = await this.scrollPosition(frame, targetHandle);
+        finalStepMoved = previous.x !== current.x || previous.y !== current.y;
+        finalStepGrew =
+          current.contentHeight > previous.contentHeight ||
+          current.contentWidth > previous.contentWidth;
+        contentGrew ||= finalStepGrew;
+        previous = current;
+        if (input.amount === 'document_start' || input.amount === 'document_end') {
+          break;
+        }
       }
-      await this.performScrollStep(frame, input.direction, input.amount);
-      stepsCompleted += 1;
-      if (input.settleMs > 0) {
-        await page.waitForTimeout(input.settleMs);
-      }
-      const current = await this.scrollPosition(frame);
-      finalStepMoved = previous.x !== current.x || previous.y !== current.y;
-      finalStepGrew =
-        current.contentHeight > previous.contentHeight ||
-        current.contentWidth > previous.contentWidth;
-      contentGrew ||= finalStepGrew;
-      previous = current;
-      if (input.amount === 'document_start' || input.amount === 'document_end') {
-        break;
-      }
-    }
 
-    const after = stepsCompleted === 0 ? await this.scrollPosition(frame) : previous;
-    const moved = before.x !== after.x || before.y !== after.y;
-    contentGrew ||=
-      after.contentHeight > before.contentHeight ||
-      after.contentWidth > before.contentWidth;
-    const documentBoundaryReached = input.amount === 'document_start'
-      ? after.y <= 0
-      : input.amount === 'document_end'
-        ? after.y >= after.maxY
-        : input.direction === 'down'
-          ? after.y >= after.maxY
-          : after.y <= 0;
-    const priorHistory = this.scrollHistories.get(frame);
-    const dynamicGrowthObserved = contentGrew || priorHistory?.dynamicGrowthObserved === true;
-    this.scrollHistories.set(frame, { dynamicGrowthObserved });
-    const endMarkerObserved = input.endMarker === null
-      ? false
-      : await this.visibleExpectationObserved(page, input.endMarker);
-    const movingTowardDocumentStart =
-      input.amount === 'document_start' ||
-      (input.amount !== 'document_end' && input.direction === 'up');
-    const dynamicContentStalled =
-      documentBoundaryReached &&
-      !movingTowardDocumentStart &&
-      !finalStepMoved &&
-      !finalStepGrew &&
-      dynamicGrowthObserved;
-    let endState: ScrollEndState;
-    if (endMarkerObserved) {
-      endState = 'confirmed_by_marker';
-    } else if (documentBoundaryReached && movingTowardDocumentStart) {
-      endState = 'confirmed_document_start';
-    } else if (dynamicContentStalled) {
-      endState = 'dynamic_content_stalled';
-    } else if (documentBoundaryReached) {
-      endState = 'geometric_boundary_unconfirmed';
-    } else {
-      endState = 'not_at_boundary';
+      const wait = await this.waitForScrollContent(
+        page,
+        frame,
+        targetHandle,
+        contentBefore,
+        input.waitFor,
+        Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
+      );
+      const after = await this.scrollPosition(frame, targetHandle);
+      finalStepMoved ||= previous.x !== after.x || previous.y !== after.y;
+      finalStepGrew ||=
+        after.contentHeight > previous.contentHeight ||
+        after.contentWidth > previous.contentWidth;
+      const moved = before.x !== after.x || before.y !== after.y;
+      contentGrew ||=
+        finalStepGrew ||
+        after.contentHeight > before.contentHeight ||
+        after.contentWidth > before.contentWidth;
+      const movingTowardStart =
+        input.amount === 'document_start' ||
+        (input.amount !== 'document_end' && input.direction === 'up');
+      const targetBoundaryReached = input.amount === 'document_start'
+        ? after.y <= SCROLL_BOUNDARY_EPSILON_PX
+        : input.amount === 'document_end'
+          ? after.maxY - after.y <= SCROLL_BOUNDARY_EPSILON_PX
+          : input.direction === 'down'
+            ? after.maxY - after.y <= SCROLL_BOUNDARY_EPSILON_PX
+            : after.y <= SCROLL_BOUNDARY_EPSILON_PX;
+      const documentBoundaryReached = targetHandle === null && targetBoundaryReached;
+      const priorHistory = targetHandle === null ? this.scrollHistories.get(frame) : undefined;
+      const dynamicGrowthObserved = contentGrew || priorHistory?.dynamicGrowthObserved === true;
+      if (targetHandle === null) {
+        this.scrollHistories.set(frame, { dynamicGrowthObserved });
+      }
+      const endMarkerObserved = input.endMarker === null
+        ? false
+        : await this.visibleExpectationObserved(page, input.endMarker);
+      const waitUnmet = wait.requested && !wait.satisfied;
+      const dynamicContentStalled =
+        targetBoundaryReached &&
+        !movingTowardStart &&
+        !finalStepMoved &&
+        !finalStepGrew &&
+        (dynamicGrowthObserved || waitUnmet || wait.after.loadingIndicatorCount > 0);
+      let endState: ScrollEndState;
+      if (endMarkerObserved) {
+        endState = 'confirmed_by_marker';
+      } else if (targetBoundaryReached && movingTowardStart) {
+        endState = targetHandle === null ? 'confirmed_document_start' : 'confirmed_container_start';
+      } else if (dynamicContentStalled) {
+        endState = 'dynamic_content_stalled';
+      } else if (targetBoundaryReached) {
+        endState = 'geometric_boundary_unconfirmed';
+      } else {
+        endState = 'not_at_boundary';
+      }
+      const endReached =
+        endState === 'confirmed_by_marker' ||
+        endState === 'confirmed_document_start' ||
+        endState === 'confirmed_container_start';
+      const nestedScrollContainerCandidateCount = await this.countNestedScrollContainerCandidates(frame);
+      const warnings: BrowserCommandOutput<'scroll'>['warnings'] = [];
+      if (!moved && !contentGrew) {
+        warnings.push({
+          code: 'scroll_position_unchanged',
+          message: 'The requested scroll did not change the selected scroll surface position or size.',
+          suggestedAction: 'Inspect the current snapshot for an observed nested scroll container, a stalled dynamic feed, or an explicit end marker.',
+        });
+      }
+      if (targetHandle === null && !moved && nestedScrollContainerCandidateCount > 0) {
+        warnings.push({
+          code: 'nested_scroll_containers_available',
+          message: `${nestedScrollContainerCandidateCount} nested vertical scroll-container candidate(s) are available in the active frame.`,
+          suggestedAction: 'Take one fresh snapshot, select the intended scrollContainers ref, and pass it through browser_scroll.target. Do not guess a selector or container.',
+        });
+      }
+      if (waitUnmet) {
+        warnings.push({
+          code: 'content_wait_timed_out',
+          message: 'The bounded post-scroll wait did not observe the requested article growth or loading-indicator transition.',
+          suggestedAction: 'Treat the feed as stalled, inspect the fresh page state and diagnostics, and do not claim that the timeline is complete.',
+        });
+      }
+      if (dynamicContentStalled) {
+        warnings.push({
+          code: 'dynamic_content_stalled',
+          message: 'The selected scroll surface is at its current geometric boundary while dynamic content remains unresolved; the feed end is not confirmed.',
+          suggestedAction: 'Do not treat this as the end of the feed. Inspect loading state and scroll-correlated diagnostics, or target an observed nested container.',
+        });
+      } else if (endState === 'geometric_boundary_unconfirmed') {
+        warnings.push({
+          code: 'scroll_end_unconfirmed',
+          message: 'The selected scroll surface reached its current geometric boundary without an explicit end marker.',
+          suggestedAction: 'Treat the feed end as unconfirmed; inspect the page or provide a visible end marker instead of assuming all dynamic content loaded.',
+        });
+      }
+      this.lastKnownUrl = page.url();
+      this.pageDiagnostics.recordAction(
+        page,
+        this.scrollActionDiagnostic(page, actionStartedAt, actionDispatched, 'succeeded'),
+      );
+      return {
+        page: await this.pageSummary(page),
+        frame: this.frameSummary(frame, page),
+        target: observedTarget === null
+          ? { kind: 'document', ref: null }
+          : { kind: 'container', ref: observedTarget.observation.ref },
+        before,
+        after,
+        wait,
+        stepsCompleted,
+        moved,
+        contentGrew,
+        targetBoundaryReached,
+        documentBoundaryReached,
+        nestedScrollContainerCandidateCount,
+        endReached,
+        endState,
+        warnings,
+      };
+    } catch (error) {
+      this.pageDiagnostics.recordAction(
+        page,
+        this.scrollActionDiagnostic(page, actionStartedAt, actionDispatched, 'failed'),
+      );
+      throw error;
+    } finally {
+      if (targetHandle !== null) {
+        await targetHandle.dispose().catch(() => undefined);
+      } else {
+        this.discardObservedSnapshot(frame);
+      }
     }
-    const endReached = endState === 'confirmed_by_marker' || endState === 'confirmed_document_start';
-    this.lastKnownUrl = page.url();
-    this.discardObservedSnapshot(frame);
-    const warnings: BrowserCommandOutput<'scroll'>['warnings'] = [];
-    if (!moved && !contentGrew) {
-      warnings.push({
-        code: 'scroll_position_unchanged',
-        message: 'The requested scroll did not change the document position or size.',
-        suggestedAction: 'Inspect the current snapshot for a nested scroll container, a stalled dynamic feed, or an explicit end marker.',
-      });
-    }
-    if (dynamicContentStalled) {
-      warnings.push({
-        code: 'dynamic_content_stalled',
-        message: 'The document is at its current geometric boundary after earlier dynamic growth, but the feed end is not confirmed.',
-        suggestedAction: 'Do not treat this as the end of the feed. Inspect for loading, rate-limit, or retry state, or supply a visible end marker on a later bounded scroll.',
-      });
-    } else if (endState === 'geometric_boundary_unconfirmed') {
-      warnings.push({
-        code: 'scroll_end_unconfirmed',
-        message: 'The document reached its current geometric boundary without an explicit end marker.',
-        suggestedAction: 'Treat the feed end as unconfirmed; inspect the page or provide a visible end marker instead of assuming all dynamic content loaded.',
-      });
-    }
-    return {
-      page: await this.pageSummary(page),
-      frame: this.frameSummary(frame, page),
-      before,
-      after,
-      stepsCompleted,
-      moved,
-      contentGrew,
-      documentBoundaryReached,
-      endReached,
-      endState,
-      warnings,
-    };
   }
 
   async findText(input: BrowserCommandInput<'findText'>): Promise<BrowserCommandOutput<'findText'>> {
@@ -2381,6 +2497,158 @@ export class BrowserController {
     }
   }
 
+  private async observeScrollContainers(
+    root: Locator,
+  ): Promise<{ containers: Map<string, ObservedScrollContainer>; truncated: boolean }> {
+    const descendants = root.locator('*');
+    const candidateIndexes = await descendants.evaluateAll(
+      (elements, limit) => elements
+        .map((element, index) => {
+          if (!(element instanceof HTMLElement)) {
+            return null;
+          }
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          const visible =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.opacity !== '0';
+          const overflowAllowsScrolling =
+            style.overflowY === 'auto' ||
+            style.overflowY === 'scroll' ||
+            style.overflowY === 'overlay' ||
+            element.scrollTop > 0;
+          if (!visible || !overflowAllowsScrolling || element.scrollHeight - element.clientHeight <= 1) {
+            return null;
+          }
+          const inViewport =
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.top < window.innerHeight &&
+            rect.left < window.innerWidth;
+          return {
+            index,
+            inViewport,
+            visibleArea: Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0))
+              * Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)),
+          };
+        })
+        .filter((candidate): candidate is { index: number; inViewport: boolean; visibleArea: number } => candidate !== null)
+        .sort((left, right) =>
+          Number(right.inViewport) - Number(left.inViewport) || right.visibleArea - left.visibleArea)
+        .slice(0, limit + 1)
+        .map(({ index }) => index),
+      MAX_SCROLL_CONTAINERS_PER_SNAPSHOT,
+    );
+    const containers = new Map<string, ObservedScrollContainer>();
+    let rootCandidateCount = 0;
+    try {
+      const rootHandle = await root.elementHandle() as ElementHandle<HTMLElement> | null;
+      if (rootHandle !== null) {
+        const rootObservation = await this.inspectScrollContainer(rootHandle);
+        if (rootObservation === null) {
+          await rootHandle.dispose().catch(() => undefined);
+        } else {
+          const ref = `scroll-${randomUUID()}`;
+          containers.set(ref, { handle: rootHandle, observation: { ref, ...rootObservation } });
+          rootCandidateCount = 1;
+        }
+      }
+
+      const remainingCapacity = MAX_SCROLL_CONTAINERS_PER_SNAPSHOT - containers.size;
+      for (const index of candidateIndexes.slice(0, remainingCapacity)) {
+        const handle = await descendants.nth(index).elementHandle() as ElementHandle<HTMLElement> | null;
+        if (handle === null) {
+          continue;
+        }
+        const observation = await this.inspectScrollContainer(handle);
+        if (observation === null) {
+          await handle.dispose().catch(() => undefined);
+          continue;
+        }
+        const ref = `scroll-${randomUUID()}`;
+        containers.set(ref, { handle, observation: { ref, ...observation } });
+      }
+    } catch (error) {
+      for (const { handle } of containers.values()) {
+        await handle.dispose().catch(() => undefined);
+      }
+      throw error;
+    }
+    return {
+      containers,
+      truncated: candidateIndexes.length > MAX_SCROLL_CONTAINERS_PER_SNAPSHOT - rootCandidateCount,
+    };
+  }
+
+  private async inspectScrollContainer(
+    handle: ElementHandle<HTMLElement>,
+  ): Promise<Omit<ScrollContainerObservation, 'ref'> | null> {
+    try {
+      return await handle.evaluate((element) => {
+        if (
+          !(element instanceof HTMLElement) ||
+          element === document.scrollingElement ||
+          element === document.documentElement ||
+          element === document.body
+        ) {
+          return null;
+        }
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const visible =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0';
+        const overflowAllowsScrolling =
+          style.overflowY === 'auto' ||
+          style.overflowY === 'scroll' ||
+          style.overflowY === 'overlay' ||
+          element.scrollTop > 0;
+        const maxY = Math.max(0, element.scrollHeight - element.clientHeight);
+        if (!visible || !overflowAllowsScrolling || maxY <= 1) {
+          return null;
+        }
+        const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((id) => document.getElementById(id)?.textContent ?? '')
+          .join(' ');
+        const rawLabel = [
+          element.getAttribute('aria-label') ?? '',
+          labelledBy,
+          element.getAttribute('title') ?? '',
+        ].find((candidate) => candidate.trim().length > 0) ?? '';
+        const label = rawLabel.replace(/\s+/g, ' ').trim().slice(0, 200);
+        return {
+          label: label.length === 0 ? null : label,
+          role: element.getAttribute('role'),
+          inViewport:
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.top < window.innerHeight &&
+            rect.left < window.innerWidth,
+          position: {
+            x: element.scrollLeft,
+            y: element.scrollTop,
+            maxX: Math.max(0, element.scrollWidth - element.clientWidth),
+            maxY,
+            viewportWidth: element.clientWidth,
+            viewportHeight: element.clientHeight,
+            contentWidth: element.scrollWidth,
+            contentHeight: element.scrollHeight,
+          },
+        };
+      });
+    } catch {
+      return null;
+    }
+  }
+
   private async selectedFileMetadata(
     handle: ElementHandle<HTMLInputElement>,
   ): Promise<Array<{ name: string; sizeBytes: number }>> {
@@ -2521,7 +2789,7 @@ export class BrowserController {
 
   private consumeObservedSnapshot(
     frame: Frame,
-    retainedHandle: ElementHandle<HTMLInputElement> | null = null,
+    retainedHandle: ElementHandle<HTMLElement> | null = null,
   ): void {
     const observed = this.observedSnapshots.get(frame);
     this.observedSnapshots.delete(frame);
@@ -2529,6 +2797,11 @@ export class BrowserController {
       return;
     }
     for (const { handle } of observed.fileInputs.values()) {
+      if (handle !== retainedHandle) {
+        void handle.dispose().catch(() => undefined);
+      }
+    }
+    for (const { handle } of observed.scrollContainers.values()) {
       if (handle !== retainedHandle) {
         void handle.dispose().catch(() => undefined);
       }
@@ -3067,7 +3340,64 @@ export class BrowserController {
     });
   }
 
-  private async scrollPosition(frame: Frame): Promise<ScrollPosition> {
+  private resolveObservedScrollContainer(
+    frame: Frame,
+    target: BrowserCommandInput<'scroll'>['target'],
+  ): ObservedScrollContainer | null {
+    if (target === null || target === undefined) {
+      return null;
+    }
+    const observed = this.observedSnapshots.get(frame);
+    if (
+      observed === undefined ||
+      observed.id !== target.snapshotId ||
+      observed.documentVersion !== this.documentVersion(frame)
+    ) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The scroll-container reference does not belong to the latest snapshot of the current document.',
+        {
+          details: {
+            reason: 'stale_or_unknown_snapshot',
+            snapshotId: target.snapshotId,
+            frameId: this.frameIds.get(frame) ?? null,
+          },
+        },
+      );
+    }
+    const container = observed.scrollContainers.get(target.ref);
+    if (container === undefined) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The requested scroll-container reference was not present in that snapshot.',
+        {
+          details: {
+            reason: 'scroll_container_reference_not_observed',
+            ref: target.ref,
+            snapshotId: target.snapshotId,
+          },
+        },
+      );
+    }
+    return container;
+  }
+
+  private async scrollPosition(
+    frame: Frame,
+    target: ElementHandle<HTMLElement> | null,
+  ): Promise<ScrollPosition> {
+    if (target !== null) {
+      return target.evaluate((element) => ({
+        x: element.scrollLeft,
+        y: element.scrollTop,
+        maxX: Math.max(0, element.scrollWidth - element.clientWidth),
+        maxY: Math.max(0, element.scrollHeight - element.clientHeight),
+        viewportWidth: element.clientWidth,
+        viewportHeight: element.clientHeight,
+        contentWidth: element.scrollWidth,
+        contentHeight: element.scrollHeight,
+      }));
+    }
     return frame.evaluate(() => {
       const root = (document.scrollingElement ?? document.documentElement) as HTMLElement;
       const viewportWidth = window.innerWidth;
@@ -3099,7 +3429,24 @@ export class BrowserController {
     frame: Frame,
     direction: 'up' | 'down',
     amount: 'half_viewport' | 'viewport' | 'document_start' | 'document_end',
+    target: ElementHandle<HTMLElement> | null,
   ): Promise<void> {
+    if (target !== null) {
+      await target.evaluate((element, { direction: fixedDirection, amount: fixedAmount }) => {
+        if (fixedAmount === 'document_start') {
+          element.scrollTo({ top: 0, behavior: 'instant' });
+          return;
+        }
+        if (fixedAmount === 'document_end') {
+          element.scrollTo({ top: element.scrollHeight, behavior: 'instant' });
+          return;
+        }
+        const multiplier = fixedAmount === 'half_viewport' ? 0.5 : 1;
+        const sign = fixedDirection === 'down' ? 1 : -1;
+        element.scrollBy({ top: element.clientHeight * multiplier * sign, behavior: 'instant' });
+      }, { direction, amount });
+      return;
+    }
     await frame.evaluate(({ direction: fixedDirection, amount: fixedAmount }) => {
       const root = (document.scrollingElement ?? document.documentElement) as HTMLElement;
       if (fixedAmount === 'document_start') {
@@ -3114,6 +3461,157 @@ export class BrowserController {
       const sign = fixedDirection === 'down' ? 1 : -1;
       root.scrollBy({ top: window.innerHeight * multiplier * sign, behavior: 'instant' });
     }, { direction, amount });
+  }
+
+  private async scrollContentObservation(
+    frame: Frame,
+    target: ElementHandle<HTMLElement> | null,
+  ): Promise<ScrollContentObservation> {
+    if (target !== null) {
+      return target.evaluate((element) => {
+        const visible = (candidate: Element): boolean => {
+          const rect = candidate.getBoundingClientRect();
+          const style = getComputedStyle(candidate);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none'
+            && style.visibility !== 'hidden' && style.opacity !== '0';
+        };
+        const articleCount = element.querySelectorAll('article, [role="article"]').length
+          + (element.matches('article, [role="article"]') ? 1 : 0);
+        const known = new Set<Element>(element.querySelectorAll(
+          '[aria-busy="true"], [role="progressbar"], progress, [class*="skeleton" i], [class*="placeholder" i], [class*="shimmer" i], [class*="loading" i]',
+        ));
+        if (element.matches('[aria-busy="true"], [role="progressbar"], progress')) {
+          known.add(element);
+        }
+        let loadingIndicatorCount = [...known].filter(visible).length;
+        if (loadingIndicatorCount === 0) {
+          for (const candidate of Array.from(element.querySelectorAll('*')).slice(0, 5_000)) {
+            if (!visible(candidate) || (candidate.textContent ?? '').trim().length > 0) {
+              continue;
+            }
+            const style = getComputedStyle(candidate);
+            const rect = candidate.getBoundingClientRect();
+            if (
+              style.animationName !== 'none' &&
+              style.animationDuration !== '0s' &&
+              rect.width >= 8 &&
+              rect.height >= 8
+            ) {
+              loadingIndicatorCount += 1;
+            }
+          }
+        }
+        return { articleCount, loadingIndicatorCount };
+      });
+    }
+    return frame.evaluate(() => {
+      const visible = (candidate: Element): boolean => {
+        const rect = candidate.getBoundingClientRect();
+        const style = getComputedStyle(candidate);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none'
+          && style.visibility !== 'hidden' && style.opacity !== '0';
+      };
+      const articleCount = document.querySelectorAll('article, [role="article"]').length;
+      const known = new Set<Element>(document.querySelectorAll(
+        '[aria-busy="true"], [role="progressbar"], progress, [class*="skeleton" i], [class*="placeholder" i], [class*="shimmer" i], [class*="loading" i]',
+      ));
+      let loadingIndicatorCount = [...known].filter(visible).length;
+      if (loadingIndicatorCount === 0) {
+        for (const candidate of Array.from(document.querySelectorAll('*')).slice(0, 5_000)) {
+          if (!visible(candidate) || (candidate.textContent ?? '').trim().length > 0) {
+            continue;
+          }
+          const style = getComputedStyle(candidate);
+          const rect = candidate.getBoundingClientRect();
+          if (
+            style.animationName !== 'none' &&
+            style.animationDuration !== '0s' &&
+            rect.width >= 8 &&
+            rect.height >= 8
+          ) {
+            loadingIndicatorCount += 1;
+          }
+        }
+      }
+      return { articleCount, loadingIndicatorCount };
+    });
+  }
+
+  private async waitForScrollContent(
+    page: Page,
+    frame: Frame,
+    target: ElementHandle<HTMLElement> | null,
+    before: ScrollContentObservation,
+    expectation: BrowserCommandInput<'scroll'>['waitFor'],
+    remainingTimeoutMs: number,
+  ): Promise<ScrollWaitResult> {
+    if (expectation === null || expectation === undefined) {
+      return {
+        requested: false,
+        condition: null,
+        satisfied: false,
+        evidence: 'not_requested',
+        waitedMs: 0,
+        before,
+        after: await this.scrollContentObservation(frame, target),
+      };
+    }
+    const startedAt = Date.now();
+    const budgetMs = Math.max(0, Math.min(expectation.timeoutMs, remainingTimeoutMs));
+    let loadingObserved = before.loadingIndicatorCount > 0;
+    let after = await this.scrollContentObservation(frame, target);
+    while (true) {
+      loadingObserved ||= after.loadingIndicatorCount > 0;
+      const articleGrew = after.articleCount > before.articleCount;
+      const loadingDisappeared = loadingObserved && after.loadingIndicatorCount === 0;
+      const satisfied = expectation.condition === 'article_count_growth'
+        ? articleGrew
+        : expectation.condition === 'loading_indicators_disappear'
+          ? loadingDisappeared
+          : articleGrew || loadingDisappeared;
+      if (satisfied) {
+        return {
+          requested: true,
+          condition: expectation.condition,
+          satisfied: true,
+          evidence: articleGrew ? 'article_count_growth' : 'loading_indicators_disappeared',
+          waitedMs: Date.now() - startedAt,
+          before,
+          after,
+        };
+      }
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= budgetMs) {
+        return {
+          requested: true,
+          condition: expectation.condition,
+          satisfied: false,
+          evidence: 'timeout',
+          waitedMs: elapsed,
+          before,
+          after,
+        };
+      }
+      await page.waitForTimeout(Math.min(100, Math.max(1, budgetMs - elapsed)));
+      after = await this.scrollContentObservation(frame, target);
+    }
+  }
+
+  private async countNestedScrollContainerCandidates(frame: Frame): Promise<number> {
+    return frame.locator('body *').evaluateAll((elements) => elements.reduce((count, element) => {
+      if (!(element instanceof HTMLElement)) {
+        return count;
+      }
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none'
+        && style.visibility !== 'hidden' && style.opacity !== '0';
+      const overflowAllowsScrolling = style.overflowY === 'auto' || style.overflowY === 'scroll'
+        || style.overflowY === 'overlay' || element.scrollTop > 0;
+      return visible && overflowAllowsScrolling && element.scrollHeight - element.clientHeight > 1
+        ? count + 1
+        : count;
+    }, 0));
   }
 
   private async authenticationStatus(page: Page | undefined): Promise<AuthenticationStatus> {
@@ -3370,6 +3868,7 @@ export class BrowserController {
       action,
       outcome: 'blocked',
       reason,
+      actionDispatched: false,
       clickDispatched: false,
       targetState: null,
       pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
@@ -3388,6 +3887,7 @@ export class BrowserController {
       action,
       outcome: 'succeeded',
       reason: null,
+      actionDispatched: true,
       clickDispatched: true,
       targetState,
       pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
@@ -3406,8 +3906,28 @@ export class BrowserController {
       action,
       outcome: 'postcondition_failed',
       reason: 'postcondition_not_met',
+      actionDispatched: true,
       clickDispatched: true,
       targetState,
+      pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
+      startedAt,
+      occurredAt: new Date().toISOString(),
+    };
+  }
+
+  private scrollActionDiagnostic(
+    page: Page,
+    startedAt: string,
+    actionDispatched: boolean | 'unknown',
+    outcome: 'failed' | 'succeeded',
+  ): SanitizedActionDiagnostic {
+    return {
+      action: 'scroll',
+      outcome,
+      reason: outcome === 'failed' ? 'unknown' : null,
+      actionDispatched,
+      clickDispatched: null,
+      targetState: null,
       pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
       startedAt,
       occurredAt: new Date().toISOString(),

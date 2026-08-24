@@ -59,10 +59,11 @@ export interface SafeTargetState {
 }
 
 export interface SanitizedActionDiagnostic {
-  action: 'click_by_ref' | 'click_by_role';
+  action: 'click_by_ref' | 'click_by_role' | 'scroll';
   outcome: 'blocked' | 'failed' | 'postcondition_failed' | 'succeeded';
   reason: ActionFailureReason | 'postcondition_not_met' | null;
-  clickDispatched: boolean | 'unknown';
+  actionDispatched: boolean | 'unknown';
+  clickDispatched: boolean | 'unknown' | null;
   targetState: SafeTargetState | null;
   pageUrl: string | null;
   startedAt: string;
@@ -229,6 +230,7 @@ export function actionDiagnosticForFailure(
     action,
     outcome: definitelyBlocked ? 'blocked' : 'failed',
     reason,
+    actionDispatched: definitelyBlocked ? false : 'unknown',
     clickDispatched: definitelyBlocked ? false : 'unknown',
     targetState,
     pageUrl: safeUrl(page.url()),

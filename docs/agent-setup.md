@@ -68,6 +68,12 @@ After any `browser_start` failure, call `browser_diagnostics` before retrying. I
 
 Attaching is not posting, and file-input confirmation is not upload completion. Read `processing.state`: only `completion_observed` has explicit semantic progress or caller-supplied completion evidence. `in_progress`, `error_observed`, and `unverified` require inspection through the returned fresh snapshot before any submit action. A timeout or `file_selection_outcome_unknown` must never be replayed until a fresh observation proves the composer has no attachment. Absolute paths are neither returned nor journaled.
 
+## Nested scrolling model
+
+`browser_snapshot` also reports a bounded `scrollContainers` list for visible nested vertical scroll surfaces. Each opaque ref is bound to the exact latest snapshot, frame, document version, and observed element handle. When document scrolling does not move and `nested_scroll_containers_available` appears, take a fresh snapshot, choose the intended candidate by its privacy-safe label/role/geometry, and pass `{ snapshotId, ref }` through `browser_scroll.target`. The capability is consumed once. Never guess a selector or replay a stale ref.
+
+For dynamic feeds, `browser_scroll.waitFor` can wait for `article_count_growth`, `loading_indicators_disappear`, or `either`, bounded by its own timeout and the overall operation timeout. The returned `wait` reports only aggregate article/loading counts and explicit evidence. A timeout, remaining loader, or stable boundary is not a feed end. Scroll geometry tolerates a one-CSS-pixel difference so fractional values such as `2443.5 / 2444` are correctly recognized as the current boundary. `browser_diagnostics.page.lastAction` records `scroll`, and `lastActionNetworkEvents` contains only sanitized requests correlated with that scroll window.
+
 ## Authentication model
 
 The normal mode is one isolated, persistent Stage5 Browser profile per browser backend:

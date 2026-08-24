@@ -121,9 +121,42 @@ export interface ScrollPosition {
   contentHeight: number;
 }
 
+export interface ScrollContainerObservation {
+  ref: string;
+  label: string | null;
+  role: string | null;
+  inViewport: boolean;
+  position: ScrollPosition;
+}
+
+export interface ScrollContentObservation {
+  articleCount: number;
+  loadingIndicatorCount: number;
+}
+
+export type ScrollWaitCondition =
+  | 'article_count_growth'
+  | 'loading_indicators_disappear'
+  | 'either';
+
+export interface ScrollWaitResult {
+  requested: boolean;
+  condition: ScrollWaitCondition | null;
+  satisfied: boolean;
+  evidence:
+    | 'article_count_growth'
+    | 'loading_indicators_disappeared'
+    | 'not_requested'
+    | 'timeout';
+  waitedMs: number;
+  before: ScrollContentObservation;
+  after: ScrollContentObservation;
+}
+
 export type ScrollEndState =
   | 'confirmed_by_marker'
   | 'confirmed_document_start'
+  | 'confirmed_container_start'
   | 'dynamic_content_stalled'
   | 'geometric_boundary_unconfirmed'
   | 'not_at_boundary';
@@ -283,10 +316,15 @@ export interface BrowserCommandMap {
       refCount: number;
       fileInputCount: number;
       fileInputs: FileInputObservation[];
+      scrollContainerCount: number;
+      scrollContainers: ScrollContainerObservation[];
       scope: 'document' | 'modal';
       visibleModalCount: number;
       warnings: Array<{
-        code: 'ambiguous_visible_modals' | 'file_input_list_truncated';
+        code:
+          | 'ambiguous_visible_modals'
+          | 'file_input_list_truncated'
+          | 'scroll_container_list_truncated';
         message: string;
         suggestedAction: string;
       }>;
@@ -414,21 +452,32 @@ export interface BrowserCommandMap {
       settleMs: number;
       frameId: string | null;
       endMarker: VisibleElementExpectation | null;
+      target: { snapshotId: string; ref: string } | null;
+      waitFor: { condition: ScrollWaitCondition; timeoutMs: number } | null;
       timeoutMs: number;
     };
     output: {
       page: PageSummary;
       frame: FrameSummary;
+      target: { kind: 'document'; ref: null } | { kind: 'container'; ref: string };
       before: ScrollPosition;
       after: ScrollPosition;
+      wait: ScrollWaitResult;
       stepsCompleted: number;
       moved: boolean;
       contentGrew: boolean;
+      targetBoundaryReached: boolean;
       documentBoundaryReached: boolean;
+      nestedScrollContainerCandidateCount: number;
       endReached: boolean;
       endState: ScrollEndState;
       warnings: Array<{
-        code: 'dynamic_content_stalled' | 'scroll_end_unconfirmed' | 'scroll_position_unchanged';
+        code:
+          | 'content_wait_timed_out'
+          | 'dynamic_content_stalled'
+          | 'nested_scroll_containers_available'
+          | 'scroll_end_unconfirmed'
+          | 'scroll_position_unchanged';
         message: string;
         suggestedAction: string;
       }>;

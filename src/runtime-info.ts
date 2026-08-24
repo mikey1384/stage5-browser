@@ -5,9 +5,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Stage5BrowserError } from './errors.js';
 
-export const STAGE5_BROWSER_VERSION = '0.5.1';
-export const WORKER_PROTOCOL_VERSION = 4;
-export const TOOL_CATALOG_VERSION = 4;
+export const STAGE5_BROWSER_VERSION = '0.6.0';
+export const WORKER_PROTOCOL_VERSION = 5;
+export const TOOL_CATALOG_VERSION = 5;
 export const MCP_TOOL_COUNT = 23;
 
 export type RuntimeComponent = 'mcp' | 'worker';

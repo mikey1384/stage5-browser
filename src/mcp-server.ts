@@ -91,6 +91,14 @@ const setInputFilesInputSchema = z.object({
   (value) => value.completion === null || value.completion.timeoutMs <= value.timeoutMs,
   { message: 'The processing expectation timeout must not exceed the overall file-selection timeout.' },
 );
+const scrollWaitSchema = z.object({
+  condition: z.enum(['article_count_growth', 'loading_indicators_disappear', 'either']),
+  timeoutMs: z.number().int().min(100).max(60_000).default(5_000),
+});
+const scrollTargetSchema = z.object({
+  snapshotId: z.string().min(1).max(100),
+  ref: z.string().regex(/^scroll-[A-Za-z0-9_-]+$/).max(100),
+});
 
 function mcpRuntimeInfo(): ReturnType<RuntimeArtifactMonitor['inspect']> & {
   toolCatalogVersion: number;
@@ -155,7 +163,7 @@ function createServer(): McpServer {
     { name: 'stage5-browser', version: STAGE5_BROWSER_VERSION },
     {
       instructions:
-        'Use this local browser only when an API or CLI cannot complete the task. Begin with browser_status and browser_available. Compatible runtime fixes load automatically; stop browser work only if browser_status reports restartRequired, which means the MCP tool or worker protocol contract changed. Use browser_diagnostics after any launch or interaction failure and follow its sanitized evidence rather than blind retrying. Use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: browser storage survives agent restarts but never comes from the user\'s everyday browser or another backend. Use browser_auth_status and the request/resume login handoff for sign-in; explicitly select the intended backend and never ask the user to send credentials or OTPs to the agent. The request handoff releases Playwright and launches a private native browser without automation flags, returning the real application name, exact profile binding, and a label matching its Stage5 marker tab. While state is awaiting_user, do not call browser-control, recovery, or stop tools. Follow the returned handoff instructions exactly: Chromium-family browsers stay open so Stage5 can attach to that same authenticated process; Firefox must exit normally before restart-based resume. Never force-close the private browser, delete profile locks, or rewrite shutdown preferences. On resume, reject a bare-origin URL expectation, inspect the actual runtime profile and privacy-safe storage continuity, then inspect the bounded verification preview and verify signed-in state with a fresh full snapshot. Storage continuity and automation correlation are evidence, not proof of authentication or causality. A unique visible modal is automatically used as the snapshot root so portal controls are not lost to document depth. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. A snapshot may expose hidden fileInputs with opaque refs; browser_set_input_files accepts only the latest snapshot capability, transfers explicitly authorized local files without opening a native picker, consumes the ref once, and never claims processing completion without explicit evidence. Its observationMs quick-sampling window is 0–5,000 ms; use a semantic completion timeout of up to 60,000 ms for longer bounded processing checks. Use browser_click_ref only with the latest snapshotId and a ref from that exact snapshot. Use click postconditions for requested state changes, browser_wait_for_url for deferred redirects, and structured navigation warnings instead of blind retries. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
+        'Use this local browser only when an API or CLI cannot complete the task. Begin with browser_status and browser_available. Compatible runtime fixes load automatically; stop browser work only if browser_status reports restartRequired, which means the MCP tool or worker protocol contract changed. Use browser_diagnostics after any launch or interaction failure and follow its sanitized evidence rather than blind retrying. Use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: browser storage survives agent restarts but never comes from the user\'s everyday browser or another backend. Use browser_auth_status and the request/resume login handoff for sign-in; explicitly select the intended backend and never ask the user to send credentials or OTPs to the agent. The request handoff releases Playwright and launches a private native browser without automation flags, returning the real application name, exact profile binding, and a label matching its Stage5 marker tab. While state is awaiting_user, do not call browser-control, recovery, or stop tools. Follow the returned handoff instructions exactly: Chromium-family browsers stay open so Stage5 can attach to that same authenticated process; Firefox must exit normally before restart-based resume. Never force-close the private browser, delete profile locks, or rewrite shutdown preferences. On resume, reject a bare-origin URL expectation, inspect the actual runtime profile and privacy-safe storage continuity, then inspect the bounded verification preview and verify signed-in state with a fresh full snapshot. Storage continuity and automation correlation are evidence, not proof of authentication or causality. A unique visible modal is automatically used as the snapshot root so portal controls are not lost to document depth. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. A snapshot may expose hidden fileInputs and nested scrollContainers with opaque refs. browser_set_input_files accepts only the latest snapshot capability, transfers explicitly authorized local files without opening a native picker, consumes the ref once, and never claims processing completion without explicit evidence. Its observationMs quick-sampling window is 0–5,000 ms; use a semantic completion timeout of up to 60,000 ms for longer bounded processing checks. browser_scroll may target one latest scrollContainers ref and can wait for article growth, loading-indicator disappearance, or either; a stalled or geometric boundary is never proof that an infinite feed ended. Scroll becomes browser_diagnostics.lastAction so bounded network activity can be correlated. Use browser_click_ref only with the latest snapshotId and a ref from that exact snapshot. Use click postconditions for requested state changes, browser_wait_for_url for deferred redirects, and structured navigation warnings instead of blind retries. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
     },
   );
 
@@ -352,7 +360,7 @@ function createServer(): McpServer {
     {
       title: 'Semantic page snapshot',
       description:
-        'Return a bounded AI-oriented ARIA snapshot plus a snapshotId and observed references. A unique visible dialog/modal becomes the snapshot root so portal controls are not omitted by surrounding document depth; ambiguous modals fail back to the document with a warning. References are document-bound and may be used once with browser_click_ref.',
+        'Return a bounded AI-oriented ARIA snapshot plus a snapshotId, observed references, hidden file inputs, and nested vertical scroll-container candidates. A unique visible dialog/modal becomes the snapshot root so portal controls are not omitted by surrounding document depth; ambiguous modals fail back to the document with a warning. Click, file-input, and scroll-container references are exact document-bound capabilities for their corresponding tools.',
       inputSchema: z.object({
         depth: z.number().int().min(1).max(20).default(8),
         boxes: z.boolean().default(false),
@@ -486,9 +494,9 @@ function createServer(): McpServer {
   server.registerTool(
     'browser_scroll',
     {
-      title: 'Scroll active document',
+      title: 'Scroll observed surface',
       description:
-        'Perform bounded viewport or document scrolling in the main document or an observed frame. Reports geometric position separately from a confirmed semantic end, and classifies a boundary after earlier dynamic growth as stalled instead of falsely claiming the feed ended.',
+        'Perform bounded viewport or document scrolling on the frame document or on one nested scroll container observed by the latest semantic snapshot. Container refs are exact, document-bound, and consumed once; selectors are never guessed. An optional semantic wait observes article-count growth, loading-indicator disappearance, or either condition. Reports sub-pixel-tolerant target geometry separately from a confirmed semantic end, exposes nested-container candidates, and correlates bounded network activity through browser_diagnostics.',
       inputSchema: z.object({
         direction: z.enum(['up', 'down']).default('down'),
         amount: z.enum(['half_viewport', 'viewport', 'document_start', 'document_end']).default('viewport'),
@@ -496,8 +504,13 @@ function createServer(): McpServer {
         settleMs: z.number().int().min(0).max(5_000).default(750),
         frameId: frameIdSchema,
         endMarker: visibleElementExpectationSchema.nullable().default(null),
+        target: scrollTargetSchema.nullable().default(null),
+        waitFor: scrollWaitSchema.nullable().default(null),
         timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
-      }),
+      }).refine(
+        (value) => value.waitFor === null || value.waitFor.timeoutMs <= value.timeoutMs,
+        { message: 'The content-wait timeout must not exceed the overall scroll timeout.' },
+      ),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
