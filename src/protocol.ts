@@ -112,9 +112,13 @@ export interface HumanBootstrapStatus {
     state: 'clean' | 'unclean' | 'unknown';
     exitType: 'crashed' | 'normal' | 'session_ended' | 'unknown' | null;
     exitedCleanly: boolean | null;
-    exitedCleanlySource: 'preferences_flag' | 'exit_type' | 'profile_lock' | 'insufficient_evidence';
+    exitedCleanlySource: 'preferences_flag' | 'exit_type' | 'profile_lock' | 'process_exit' | 'insufficient_evidence';
     profileDirectory: string | null;
     profileLocks: string[];
+    preferencesModifiedAt: string | null;
+    exitTypeComparison: 'unchanged_from_before_handoff' | 'rewritten_with_same_value' | 'changed_during_handoff' | 'unavailable';
+    currentSessionEvidence: 'clean_process_exit' | 'abnormal_process_exit' | 'process_exit_unknown';
+    reattachmentDecision: 'allowed' | 'override_available' | 'explicit_unlocked_profile_override';
   } | null;
 }
 

@@ -50,7 +50,7 @@ class FakeHumanBrowserSession implements HumanBrowserSession {
     return !this.running;
   }
 
-  async finish(clean = true): Promise<void> {
+  async finish(clean = true, exitCode = clean ? 0 : 1): Promise<void> {
     await mkdir(path.join(this.launchInput.profileDir, 'Default'), { recursive: true });
     await writeFile(
       path.join(this.launchInput.profileDir, 'Local State'),
@@ -65,7 +65,7 @@ class FakeHumanBrowserSession implements HumanBrowserSession {
       }),
     );
     this.running = false;
-    this.exitCode = clean ? 0 : 1;
+    this.exitCode = exitCode;
   }
 }
 
@@ -79,8 +79,8 @@ class FakeHumanBrowserLauncher implements HumanBrowserLauncher {
     return this.session;
   }
 
-  async finish(clean = true): Promise<void> {
-    await this.session?.finish(clean);
+  async finish(clean = true, exitCode = clean ? 0 : 1): Promise<void> {
+    await this.session?.finish(clean, exitCode);
   }
 }
 
@@ -664,8 +664,10 @@ describe('BrowserController', () => {
           state: 'clean',
           exitType: 'normal',
           exitedCleanly: true,
-          exitedCleanlySource: 'preferences_flag',
+          exitedCleanlySource: 'process_exit',
           profileDirectory: 'Default',
+          currentSessionEvidence: 'clean_process_exit',
+          reattachmentDecision: 'allowed',
         },
       },
       lastHandoffOutcome: {
@@ -701,7 +703,41 @@ describe('BrowserController', () => {
     });
   });
 
-  it('refuses to reattach Playwright after an unclean human-browser shutdown', async () => {
+  it('reattaches after a zero process exit even when Chromium retains a crashed marker', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><head><title>Login</title></head><body><h1>Login</h1></body></html>');
+    });
+    const port = await listen(server);
+    const url = `http://127.0.0.1:${port}/login`;
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-stale-exit-marker-'));
+    const config = browserConfig(temporaryRoot);
+    humanLauncher = new FakeHumanBrowserLauncher();
+    controller = new BrowserController(config, config.browser, humanLauncher);
+    await controller.open({ url, newTab: false, timeoutMs: 5_000 });
+    config.headless = false;
+    await controller.requestLoginHandoff({ url, timeoutMs: 5_000 });
+    await humanLauncher.finish(false, 0);
+
+    const resumed = await controller.resumeAfterLogin({ expected: null, timeoutMs: 5_000 });
+    expect(resumed).toMatchObject({
+      state: 'ready_for_agent_verification',
+      humanBootstrap: {
+        running: false,
+        profileShutdown: {
+          state: 'clean',
+          exitType: 'crashed',
+          exitedCleanly: true,
+          exitedCleanlySource: 'process_exit',
+          profileLocks: [],
+          currentSessionEvidence: 'clean_process_exit',
+          reattachmentDecision: 'allowed',
+        },
+      },
+    });
+  });
+
+  it('offers one explicit unlocked-profile override after an abnormal human-browser exit', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end('<!doctype html><html><head><title>Login</title></head><body><h1>Login</h1></body></html>');
@@ -720,15 +756,37 @@ describe('BrowserController', () => {
     await expect(controller.resumeAfterLogin({ expected: null, timeoutMs: 2_000 })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
       code: 'AUTH_HANDOFF_REQUIRED',
       details: {
-        reason: 'unclean_human_browser_shutdown',
+        reason: 'abnormal_human_browser_process_exit',
         exitType: 'crashed',
         exitedCleanly: false,
+        overrideAvailable: true,
+        suggestedAction: expect.not.stringContaining('Request a new login handoff'),
       },
     });
     expect(await controller.authStatus()).toMatchObject({
       state: 'awaiting_user',
       browserConnected: false,
-      humanBootstrap: { running: false, profileShutdown: { state: 'unclean' } },
+      humanBootstrap: {
+        running: false,
+        profileShutdown: {
+          state: 'unclean',
+          currentSessionEvidence: 'abnormal_process_exit',
+          reattachmentDecision: 'override_available',
+        },
+      },
+    });
+
+    const resumed = await controller.resumeAfterLogin({ expected: null, timeoutMs: 5_000 });
+    expect(resumed).toMatchObject({
+      state: 'ready_for_agent_verification',
+      humanBootstrap: {
+        running: false,
+        profileShutdown: {
+          state: 'unknown',
+          profileLocks: [],
+          reattachmentDecision: 'explicit_unlocked_profile_override',
+        },
+      },
     });
   });
 

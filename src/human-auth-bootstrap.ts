@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -19,9 +19,22 @@ export interface ProfileShutdownInspection {
   state: ProfileShutdownState;
   exitType: 'crashed' | 'normal' | 'session_ended' | 'unknown' | null;
   exitedCleanly: boolean | null;
-  exitedCleanlySource: 'preferences_flag' | 'exit_type' | 'profile_lock' | 'insufficient_evidence';
+  exitedCleanlySource: 'preferences_flag' | 'exit_type' | 'profile_lock' | 'process_exit' | 'insufficient_evidence';
   profileDirectory: string | null;
   profileLocks: string[];
+  preferencesModifiedAt: string | null;
+}
+
+export type ProfileExitMarkerComparison =
+  | 'unchanged_from_before_handoff'
+  | 'rewritten_with_same_value'
+  | 'changed_during_handoff'
+  | 'unavailable';
+
+export interface ProfileShutdownDecision extends ProfileShutdownInspection {
+  exitTypeComparison: ProfileExitMarkerComparison;
+  currentSessionEvidence: 'clean_process_exit' | 'abnormal_process_exit' | 'process_exit_unknown';
+  reattachmentDecision: 'allowed' | 'override_available' | 'explicit_unlocked_profile_override';
 }
 
 export interface HumanBrowserProcessState {
@@ -273,6 +286,14 @@ async function readJson(candidate: string): Promise<Record<string, unknown> | nu
   }
 }
 
+async function modifiedAt(candidate: string): Promise<string | null> {
+  try {
+    return (await stat(candidate)).mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
+
 function safeProfileDirectoryName(value: unknown): string {
   return typeof value === 'string' && /^[A-Za-z0-9 _.-]{1,80}$/.test(value) && !value.includes('..')
     ? value
@@ -310,6 +331,7 @@ export async function inspectProfileShutdown(
       exitedCleanlySource: locks.length > 0 ? 'profile_lock' : 'insufficient_evidence',
       profileDirectory: null,
       profileLocks: locks,
+      preferencesModifiedAt: null,
     };
   }
 
@@ -322,7 +344,8 @@ export async function inspectProfileShutdown(
           : null,
       )
     : safeProfileDirectoryName(pinnedProfileDirectory);
-  const preferences = await readJson(path.join(profileDir, profileName, 'Preferences'));
+  const preferencesPath = path.join(profileDir, profileName, 'Preferences');
+  const preferences = await readJson(preferencesPath);
   const profile = preferences?.profile;
   const profilePreferences = typeof profile === 'object' && profile !== null
     ? profile as Record<string, unknown>
@@ -357,5 +380,26 @@ export async function inspectProfileShutdown(
     exitedCleanlySource,
     profileDirectory: profileName,
     profileLocks: locks,
+    preferencesModifiedAt: await modifiedAt(preferencesPath),
   };
+}
+
+export function compareProfileExitMarker(
+  before: ProfileShutdownInspection,
+  after: ProfileShutdownInspection,
+): ProfileExitMarkerComparison {
+  if (
+    before.exitType === null
+    || after.exitType === null
+    || before.preferencesModifiedAt === null
+    || after.preferencesModifiedAt === null
+  ) {
+    return 'unavailable';
+  }
+  if (before.exitType !== after.exitType) {
+    return 'changed_during_handoff';
+  }
+  return before.preferencesModifiedAt === after.preferencesModifiedAt
+    ? 'unchanged_from_before_handoff'
+    : 'rewritten_with_same_value';
 }

@@ -1,4 +1,4 @@
-# X login handoff dogfooding: Stage5 Browser 0.4.1–0.4.3
+# X login handoff dogfooding: Stage5 Browser 0.4.1–0.4.4
 
 ## Stop condition
 
@@ -92,6 +92,20 @@ Stage5 Browser 0.4.3 makes those distinctions explicit:
 
 The disposable native acceptance opens a temporary Brave profile on a localhost fixture, proves `navigator.webdriver === false`, writes a non-sensitive persistent test marker, exits cleanly, and reattaches through the exact same Brave executable and `Default` partition. The controlled fixture receives that marker, the launch identities match, and the marker remains in the offline database after controlled shutdown. The acceptance also caught and fixed a diagnostic false negative: Brave can expose both legacy and `Network/Cookies` stores during migration, so offline inspection now unions all allowlisted locations instead of stopping at the first existing database. X, Twinkle, and all personal browser profiles remain untouched by the acceptance test.
 
+## 0.4.4 follow-up: stale shutdown marker
+
+The next real X handoff exposed a false-positive shutdown gate. The user quit Brave with Cmd-Q, and Stage5 observed exit code `0`, no signal, no remaining profile locks, a stopped human process, and the same pinned `Default` partition. Reattachment was nevertheless rejected because Brave's stored `profile.exit_type` remained `Crashed`. The rejected resume was operation `806b14f3-929b-436f-a91b-7732b6c7100e`; operation `423b16a6-5046-487f-9ad5-bc2573356ecf` confirmed the handoff state remained pending. No controlled reattachment or Rick Rubin workflow action occurred.
+
+Stage5 Browser 0.4.4 changes the decision boundary:
+
+1. Current-session evidence wins: exit code zero, no exit signal, and zero locks is sufficient to reattach the exact same profile.
+2. Chromium's stored `exit_type` and `exited_cleanly` values remain visible diagnostics but are no longer authoritative gates.
+3. Stage5 snapshots the marker and Preferences modification time immediately before native launch, then classifies the post-handoff marker as unchanged, rewritten with the same value, changed, or unavailable. A stale pre-existing `crashed` marker is therefore explicit rather than blamed on the current session.
+4. A genuinely abnormal or unavailable process exit still pauses once. Because the process is already gone and the profile is unlocked, the suggested action says not to repeat login or Cmd-Q; one deliberate second `browser_resume_after_login` call is the explicit override for that same isolated profile.
+5. Regression coverage reproduces the exact zero-exit/stale-crash combination and proves reattachment succeeds. Separate coverage proves the bounded override is unavailable until the process is gone and locks are clear.
+
 ## Resume condition
 
-This remains a compatible behavior/output patch: the MCP tool count, input schemas, catalog version, and worker protocol remain unchanged, so a directly registered live host rolls its worker forward on the next operation without a reconnect, reinstall, or deployment. Before resuming X authentication, the agent should verify `restartRequired: false`, the expected tool count, and current worker version `0.4.3`. It should explicitly select the intended backend, request one human bootstrap, identify the exact application and Stage5 marker tab from the returned handoff label, wait for that application to quit normally, and resume once with a non-root post-login URL when one is known. It must inspect the returned semantic preview and then take a fresh full snapshot. The original Rick Rubin workflow remains paused until that acceptance attempt.
+This remains a compatible behavior/output patch: the MCP tool count, input schemas, catalog version, and worker protocol remain unchanged, so a directly registered live host rolls its worker forward on the next operation without a reconnect, reinstall, or deployment. Before a new authentication handoff, the agent should verify `restartRequired: false`, the expected tool count, and current worker version `0.4.4`. It should explicitly select the intended backend, request one human bootstrap, identify the exact application and Stage5 marker tab from the returned handoff label, wait for that application to quit normally, and resume once with a non-root post-login URL when one is known. It must inspect the returned semantic preview and then take a fresh full snapshot.
+
+The already-pending operation `806b14f3-929b-436f-a91b-7732b6c7100e` belongs to a resident 0.4.3 worker. Compatible worker replacement is intentionally deferred while a handoff is pending so the native-process handle is not discarded; therefore that old in-memory gate cannot acquire the 0.4.4 decision code. For this one transition only, do **not** repeat login: start a fresh agent/MCP connection after 0.4.4 is built, select the same Brave backend, call `browser_start` on its persistent Stage5 profile, and verify the visible signed-in state with a fresh snapshot. The profile itself is unlocked and remains the source of truth. Future 0.4.4 handoffs use the corrected gate directly. The Rick Rubin workflow remains paused until that verification.

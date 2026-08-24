@@ -32,6 +32,7 @@ import {
   type SanitizedActionDiagnostic,
 } from './page-diagnostics.js';
 import {
+  compareProfileExitMarker,
   humanBrowserLaunchPolicy,
   inspectProfileShutdown,
   isStage5HandoffMarkerUrl,
@@ -39,6 +40,7 @@ import {
   waitForProfileUnlock,
   type HumanBrowserLauncher,
   type HumanBrowserSession,
+  type ProfileShutdownDecision,
   type ProfileShutdownInspection,
 } from './human-auth-bootstrap.js';
 import {
@@ -109,8 +111,10 @@ interface AuthenticationHandoff {
   beforeUrl: string | null;
   beforeSemanticFingerprint: string | null;
   beforeStorage: ProfileStorageInspection;
+  beforeProfileShutdown: ProfileShutdownInspection;
   session: HumanBrowserSession;
-  profileShutdown: ProfileShutdownInspection | null;
+  profileShutdown: ProfileShutdownDecision | null;
+  shutdownOverrideOffered: boolean;
 }
 
 interface SnapshotRoot {
@@ -974,6 +978,11 @@ export class BrowserController {
       launchIdentity.engine,
       targetOrigin,
     );
+    const beforeProfileShutdown = await inspectProfileShutdown(
+      profileDir,
+      this.selectedBrowser,
+      launchIdentity.profile.profileDirectory,
+    );
     const handoffLabel = this.authenticationHandoffLabel(launchIdentity, targetOrigin);
 
     let session: HumanBrowserSession;
@@ -1036,8 +1045,10 @@ export class BrowserController {
       beforeUrl,
       beforeSemanticFingerprint,
       beforeStorage,
+      beforeProfileShutdown,
       session,
       profileShutdown: null,
+      shutdownOverrideOffered: false,
     };
     this.state = 'stopped';
     return {
@@ -1094,32 +1105,65 @@ export class BrowserController {
       );
     }
 
-    const shutdown = await inspectProfileShutdown(
+    const observedShutdown = await inspectProfileShutdown(
       handoff.profileDir,
       this.selectedBrowser,
       handoff.launchIdentity.profile.profileDirectory,
     );
-    const processExitWasUnclean = shutdown.state === 'unknown' && (
-      (processState.exitCode !== null && processState.exitCode !== 0) ||
-      processState.exitSignal === 'SIGKILL'
-    );
-    handoff.profileShutdown = processExitWasUnclean ? { ...shutdown, state: 'unclean' } : shutdown;
-    if (shutdown.state === 'unclean' || processExitWasUnclean) {
+    const exitTypeComparison = compareProfileExitMarker(handoff.beforeProfileShutdown, observedShutdown);
+    const processExitedNormally = processState.exitCode === 0 && processState.exitSignal === null;
+    const processExitedAbnormally = processState.exitSignal !== null
+      || (processState.exitCode !== null && processState.exitCode !== 0);
+    const explicitUnlockedProfileOverride = !processExitedNormally && handoff.shutdownOverrideOffered;
+    const shutdown: ProfileShutdownDecision = {
+      ...observedShutdown,
+      state: processExitedNormally
+        ? 'clean'
+        : explicitUnlockedProfileOverride
+          ? 'unknown'
+          : processExitedAbnormally
+            ? 'unclean'
+            : 'unknown',
+      exitedCleanly: processExitedNormally ? true : processExitedAbnormally ? false : null,
+      exitedCleanlySource: processExitedNormally || processExitedAbnormally
+        ? 'process_exit'
+        : 'insufficient_evidence',
+      exitTypeComparison,
+      currentSessionEvidence: processExitedNormally
+        ? 'clean_process_exit'
+        : processExitedAbnormally
+          ? 'abnormal_process_exit'
+          : 'process_exit_unknown',
+      reattachmentDecision: processExitedNormally
+        ? 'allowed'
+        : explicitUnlockedProfileOverride
+          ? 'explicit_unlocked_profile_override'
+          : 'override_available',
+    };
+    handoff.profileShutdown = shutdown;
+    if (!processExitedNormally && !explicitUnlockedProfileOverride) {
+      handoff.shutdownOverrideOffered = true;
       throw new Stage5BrowserError(
         'AUTH_HANDOFF_REQUIRED',
-        'The private authentication browser did not leave the profile in a cleanly closed state.',
+        processExitedAbnormally
+          ? 'The private authentication browser process exited abnormally, but the profile is unlocked.'
+          : 'The private authentication browser stopped and unlocked its profile, but did not report a process exit result.',
         {
           recoverable: true,
           details: {
-            reason: 'unclean_human_browser_shutdown',
+            reason: processExitedAbnormally
+              ? 'abnormal_human_browser_process_exit'
+              : 'human_browser_process_exit_unknown',
             exitType: shutdown.exitType,
+            exitTypeComparison: shutdown.exitTypeComparison,
             exitedCleanly: shutdown.exitedCleanly,
             exitedCleanlySource: shutdown.exitedCleanlySource,
             profileDirectory: shutdown.profileDirectory,
             profileLocks: shutdown.profileLocks,
             processExitCode: processState.exitCode,
             processExitSignal: processState.exitSignal,
-            suggestedAction: 'Request a new login handoff, then close the dedicated browser window normally before resuming. Stage5 Browser will not rewrite Chromium shutdown preferences.',
+            overrideAvailable: true,
+            suggestedAction: 'Do not repeat authentication or reopen the browser. Because the human process is gone and the profile has zero locks, call browser_resume_after_login once more with the same expectation to explicitly reattach this same isolated profile. Stage5 Browser will not rewrite its Chromium preferences.',
           },
         },
       );

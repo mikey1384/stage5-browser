@@ -101,7 +101,7 @@ Key implementation files:
 - `docs/agent-setup.md` — Claude connection checks, session restart, and login lifecycle
 - `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
-- `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.3 remedies
+- `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.4 remedies
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -119,7 +119,7 @@ Key implementation files:
 - A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened.
 - A click that cannot dispatch records sanitized visibility, enabled-state, viewport, and pointer-interception evidence.
 - Human login bootstrap releases Playwright completely, pins the selected Chromium partition, and launches the exact same executable/profile identity without automation or remote-debugging flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until the user quits that exact application normally.
-- Resume rejects a still-running, locked, explicitly unclean, or launch-identity-mismatched profile. When the human phase added target-origin session metadata but a caller-supplied non-root post-login route cannot be reached, it returns `AUTH_NOT_PERSISTED`. It never force-kills the human browser, deletes locks, rewrites Chromium shutdown preferences, or reads cookie values.
+- Resume rejects a still-running, locked, or launch-identity-mismatched profile. A zero process exit, no signal, and zero locks permits reattachment even when Chromium retains a stale `crashed` exit marker; the marker is advisory and is compared with its pre-handoff value and modification time. A genuinely abnormal or unavailable process exit offers one explicit second-call override only after the process is gone and locks are clear. When the human phase added target-origin session metadata but a caller-supplied non-root post-login route cannot be reached, resume returns `AUTH_NOT_PERSISTED`. It never force-kills the human browser, deletes locks, rewrites Chromium shutdown preferences, or reads cookie values.
 - The uncontrolled phase records no exact manual clicks. Resume reports sanitized route, semantic, launch-identity, and storage-continuity evidence plus a bounded semantic preview, then requires a fresh full snapshot. Origin-only authentication URL checks are rejected as too weak.
 - A hung or disconnected worker is killed and replaced before another operation proceeds.
 - MCP and worker builds complete a versioned protocol handshake; incompatible contract changes fail with `MCP_RESTART_REQUIRED`.
@@ -127,7 +127,7 @@ Key implementation files:
 - Worker recovery reports whether a browser was actually running afterward; it never implies that the MCP catalog was refreshed.
 - Diagnostic journaling is best-effort and cannot change an operation's result. Page diagnostics include bounded success/redirect/error response classes and the events within the last click window, but exclude raw console/exception text, request metadata beyond method/type/status/sanitized URL, and all URL queries/fragments.
 
-Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, click actionability and postconditions, successful request capture, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, uncontrolled human authentication, exact executable/profile binding, native-to-controlled storage continuity, unambiguous clean/unclean profile shutdown, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
+Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, click actionability and postconditions, successful request capture, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, uncontrolled human authentication, exact executable/profile binding, native-to-controlled storage continuity, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
 
 ## Browser selection
 

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { BrowserLaunchTarget } from '../src/browser-provider.js';
 import { Stage5BrowserError } from '../src/errors.js';
 import {
+  compareProfileExitMarker,
   humanBrowserArguments,
   humanBrowserLaunchPolicy,
   inspectProfileShutdown,
@@ -98,6 +99,7 @@ describe('human authentication bootstrap', () => {
       exitedCleanlySource: 'preferences_flag',
       profileDirectory: 'Profile 1',
       profileLocks: [],
+      preferencesModifiedAt: expect.any(String),
     });
 
     await writeFile(
@@ -163,5 +165,33 @@ describe('human authentication bootstrap', () => {
       exitedCleanlySource: 'exit_type',
       profileDirectory: 'Default',
     });
+  });
+
+  it('distinguishes a stale Chromium exit marker from one rewritten during the handoff', () => {
+    const baseline = {
+      state: 'unclean' as const,
+      exitType: 'crashed' as const,
+      exitedCleanly: false,
+      exitedCleanlySource: 'preferences_flag' as const,
+      profileDirectory: 'Default',
+      profileLocks: [],
+      preferencesModifiedAt: '2026-08-24T01:00:00.000Z',
+    };
+
+    expect(compareProfileExitMarker(baseline, baseline)).toBe('unchanged_from_before_handoff');
+    expect(compareProfileExitMarker(baseline, {
+      ...baseline,
+      preferencesModifiedAt: '2026-08-24T02:00:00.000Z',
+    })).toBe('rewritten_with_same_value');
+    expect(compareProfileExitMarker(baseline, {
+      ...baseline,
+      state: 'clean',
+      exitType: 'normal',
+      exitedCleanly: true,
+    })).toBe('changed_during_handoff');
+    expect(compareProfileExitMarker(baseline, {
+      ...baseline,
+      preferencesModifiedAt: null,
+    })).toBe('unavailable');
   });
 });
