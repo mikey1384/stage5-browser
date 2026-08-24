@@ -186,7 +186,7 @@ export class BrowserSupervisor {
             recoverable: true,
             details: {
               reason: 'human_authentication_in_progress',
-              suggestedAction: 'Finish authentication and quit the exact browser application named by the handoff result so its process exits, then call browser_resume_after_login. On macOS, use Cmd-Q in that application; closing only a tab or window may leave it running. Do not recover or force-close the browser.',
+              suggestedAction: 'Finish authentication and follow the exact backend-specific instruction returned by browser_request_login_handoff, then call browser_resume_after_login. Chromium-family browsers stay open for same-process attachment; Firefox exits normally. Do not recover or force-close the browser.',
             },
           },
         ).serialize();

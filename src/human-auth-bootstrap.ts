@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { lstat, readFile, stat } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import path from 'node:path';
 
 import {
@@ -12,6 +13,10 @@ import {
   launchIdentityForTarget,
   type BrowserLaunchIdentity,
 } from './profile-binding.js';
+import {
+  nativeControlEndpoint,
+  writeNativeControlRecord,
+} from './native-control-channel.js';
 
 export type ProfileShutdownState = 'clean' | 'unclean' | 'unknown';
 
@@ -48,7 +53,13 @@ export interface HumanBrowserProcessState {
 export interface HumanBrowserSession {
   state(): HumanBrowserProcessState;
   identity(): BrowserLaunchIdentity;
+  controlChannel?(): HumanBrowserControlChannel | null;
   waitForExit(timeoutMs: number): Promise<boolean>;
+}
+
+export interface HumanBrowserControlChannel {
+  kind: 'chromium_cdp';
+  endpointUrl: string;
 }
 
 export interface HumanBrowserLaunchInput {
@@ -68,7 +79,13 @@ export interface HumanBrowserLaunchPolicy {
   engine: BrowserLaunchTarget['engine'];
   controlledByPlaywright: false;
   automationFlagsPresent: false;
-  argumentKinds: Array<'identity_marker' | 'new_window' | 'profile_directory' | 'profile_partition'>;
+  argumentKinds: Array<
+    | 'identity_marker'
+    | 'loopback_debugging'
+    | 'new_window'
+    | 'profile_directory'
+    | 'profile_partition'
+  >;
 }
 
 const HANDOFF_MARKER_PREFIX = 'data:text/html;charset=utf-8,';
@@ -117,18 +134,27 @@ export function humanBrowserLaunchPolicy(target: BrowserLaunchTarget): HumanBrow
     controlledByPlaywright: false,
     automationFlagsPresent: false,
     argumentKinds: target.engine === 'chromium'
-      ? ['profile_directory', 'profile_partition', 'identity_marker', 'new_window']
+      ? ['profile_directory', 'profile_partition', 'loopback_debugging', 'identity_marker', 'new_window']
       : ['profile_directory', 'identity_marker', 'new_window'],
   };
 }
 
-export function humanBrowserArguments(input: HumanBrowserLaunchInput): string[] {
+export function humanBrowserArguments(
+  input: HumanBrowserLaunchInput,
+  chromiumDebuggingPort: number | null = null,
+): string[] {
   const identity = launchIdentityForTarget(input.target, input.profileDir);
   const markerUrl = stage5HandoffMarkerUrl(input.handoffLabel);
   if (input.target.engine === 'chromium') {
     return [
       `--user-data-dir=${identity.profile.userDataDir}`,
       `--profile-directory=${identity.profile.profileDirectory}`,
+      ...(chromiumDebuggingPort === null
+        ? []
+        : [
+            '--remote-debugging-address=127.0.0.1',
+            `--remote-debugging-port=${chromiumDebuggingPort}`,
+          ]),
       '--new-window',
       markerUrl,
       input.url,
@@ -169,6 +195,7 @@ class SpawnedHumanBrowserSession implements HumanBrowserSession {
   constructor(
     private readonly child: ChildProcess,
     private readonly launchIdentity: BrowserLaunchIdentity,
+    private readonly channel: HumanBrowserControlChannel | null,
   ) {
     child.once('exit', (code, signal) => {
       this.running = false;
@@ -189,6 +216,10 @@ class SpawnedHumanBrowserSession implements HumanBrowserSession {
 
   identity(): BrowserLaunchIdentity {
     return this.launchIdentity;
+  }
+
+  controlChannel(): HumanBrowserControlChannel | null {
+    return this.channel;
   }
 
   async waitForExit(timeoutMs: number): Promise<boolean> {
@@ -214,7 +245,26 @@ class SpawnedHumanBrowserSession implements HumanBrowserSession {
   }
 }
 
+async function reserveLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    server.close();
+    throw new Error('Could not reserve a loopback browser-control port.');
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error === undefined ? resolve() : reject(error));
+  });
+  return address.port;
+}
+
 export class NativeHumanBrowserLauncher implements HumanBrowserLauncher {
+  constructor(private readonly debuggingPortAllocator: () => Promise<number> = reserveLoopbackPort) {}
+
   async launch(input: HumanBrowserLaunchInput): Promise<HumanBrowserSession> {
     const policy = humanBrowserLaunchPolicy(input.target);
     if (!policy.supported) {
@@ -222,7 +272,10 @@ export class NativeHumanBrowserLauncher implements HumanBrowserLauncher {
     }
 
     const identity = launchIdentityForTarget(input.target, input.profileDir);
-    const child = spawn(executablePathForTarget(input.target), humanBrowserArguments(input), {
+    const debuggingPort = input.target.engine === 'chromium'
+      ? await this.debuggingPortAllocator()
+      : null;
+    const child = spawn(executablePathForTarget(input.target), humanBrowserArguments(input, debuggingPort), {
       detached: process.platform !== 'win32',
       stdio: 'ignore',
       windowsHide: false,
@@ -239,8 +292,34 @@ export class NativeHumanBrowserLauncher implements HumanBrowserLauncher {
       child.once('spawn', onSpawn);
       child.once('error', onError);
     });
+    if (child.pid === undefined) {
+      child.kill('SIGTERM');
+      throw new Error('The native browser process did not expose a process ID.');
+    }
+    const controlRecord = debuggingPort === null
+      ? null
+      : {
+          version: 1 as const,
+          kind: 'chromium_cdp' as const,
+          browser: input.target.browser,
+          state: 'awaiting_user' as const,
+          processId: child.pid,
+          port: debuggingPort,
+          createdAt: new Date().toISOString(),
+        };
+    const channel: HumanBrowserControlChannel | null = controlRecord === null
+      ? null
+      : { kind: 'chromium_cdp', endpointUrl: nativeControlEndpoint(controlRecord) };
+    if (controlRecord !== null) {
+      try {
+        await writeNativeControlRecord(input.profileDir, controlRecord);
+      } catch (error) {
+        child.kill('SIGTERM');
+        throw error;
+      }
+    }
     child.unref();
-    return new SpawnedHumanBrowserSession(child, identity);
+    return new SpawnedHumanBrowserSession(child, identity, channel);
   }
 }
 

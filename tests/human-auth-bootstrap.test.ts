@@ -35,7 +35,7 @@ function target(overrides: Partial<BrowserLaunchTarget> = {}): BrowserLaunchTarg
 }
 
 describe('human authentication bootstrap', () => {
-  it('uses only profile, window, and URL arguments without Playwright or automation flags', () => {
+  it('uses a fixed loopback channel without Playwright automation flags for continuous Chromium attachment', () => {
     const input = {
       target: target(),
       profileDir: '/private/tmp/stage5 human profile',
@@ -57,7 +57,19 @@ describe('human authentication bootstrap', () => {
       supported: true,
       controlledByPlaywright: false,
       automationFlagsPresent: false,
+      argumentKinds: expect.arrayContaining(['loopback_debugging']),
     });
+    const continuousArguments = humanBrowserArguments(input, 29_123);
+    expect(continuousArguments).toEqual([
+      '--user-data-dir=/private/tmp/stage5 human profile',
+      '--profile-directory=Default',
+      '--remote-debugging-address=127.0.0.1',
+      '--remote-debugging-port=29123',
+      '--new-window',
+      stage5HandoffMarkerUrl(input.handoffLabel),
+      'https://x.com/i/flow/login',
+    ]);
+    expect(continuousArguments.join(' ')).not.toMatch(/enable-automation|no-sandbox/i);
 
     const firefoxInput = {
       ...input,
@@ -129,10 +141,12 @@ describe('human authentication bootstrap', () => {
     if (process.platform === 'win32') {
       return;
     }
-    const launcher = new NativeHumanBrowserLauncher();
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-native-process-'));
+    temporaryRoots.push(root);
+    const launcher = new NativeHumanBrowserLauncher(async () => 29_123);
     const session = await launcher.launch({
       target: target({ browser: 'brave', executablePath: '/usr/bin/true', source: 'configured' }),
-      profileDir: '/private/tmp/stage5-native-process',
+      profileDir: root,
       handoffLabel: 'Stage5 brave · example.com · TEST1234',
       url: 'https://example.com/',
     });
@@ -142,9 +156,13 @@ describe('human authentication bootstrap', () => {
       browser: 'brave',
       executablePath: '/usr/bin/true',
       profile: {
-        userDataDir: '/private/tmp/stage5-native-process',
+        userDataDir: root,
         profileDirectory: 'Default',
       },
+    });
+    expect(session.controlChannel()).toEqual({
+      kind: 'chromium_cdp',
+      endpointUrl: 'http://127.0.0.1:29123',
     });
   });
 

@@ -10,7 +10,7 @@ The agent correctly did not fall back to another browser integration and did not
 
 | Observed gap | 0.4 remedy |
 | --- | --- |
-| The user's everyday Brave login was unavailable in the isolated profile | Keep the isolated profile boundary and use `browser_auth_status`, `browser_request_login_handoff`, and `browser_resume_after_login`. The request tool releases Playwright and opens the same isolated profile as an uncontrolled native browser; the user signs in privately once, quits that dedicated browser normally, and the profile persists. |
+| The user's everyday Brave login was unavailable in the isolated profile | Keep the isolated profile boundary and use `browser_auth_status`, `browser_request_login_handoff`, and `browser_resume_after_login`. The request tool releases Playwright and opens the same isolated profile as a private native browser; the user signs in privately once and leaves it open so Stage5 attaches to that same authenticated process. |
 | An infinite X timeline could not advance | Add bounded `browser_scroll` with before/after position, content-growth, end-state, and unchanged-position evidence. |
 | Repeated deep snapshots were needed to look for one phrase | Add bounded `browser_find_text` over currently rendered text with snippets and truncation metadata. |
 | Useful unnamed links had snapshot refs but no actionable accessible name | Add `browser_click_ref`, accepting only a ref from the latest `snapshotId` for the same frame and document. References fail closed when stale or reused. |

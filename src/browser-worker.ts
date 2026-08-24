@@ -165,7 +165,7 @@ async function shutdown(): Promise<void> {
   }
   shuttingDown = true;
   try {
-    await controller?.stop();
+    await controller?.detachForWorkerShutdown();
   } catch {
     // The supervisor owns the hard process-tree deadline.
   } finally {

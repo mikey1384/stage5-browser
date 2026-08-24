@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { BrowserContext, Frame, Locator, Page, Request, Response } from 'playwright';
+import type { Browser, BrowserContext, Frame, Locator, Page, Request, Response } from 'playwright';
 
 import {
   BROWSER_ENGINES,
@@ -43,6 +43,14 @@ import {
   type ProfileShutdownDecision,
   type ProfileShutdownInspection,
 } from './human-auth-bootstrap.js';
+import {
+  nativeControlEndpoint,
+  processIsRunning,
+  readNativeControlRecord,
+  removeNativeControlRecord,
+  writeNativeControlRecord,
+  type NativeControlRecord,
+} from './native-control-channel.js';
 import {
   compareAuthenticationStorage,
   controlledProfileArguments,
@@ -155,6 +163,8 @@ export class BrowserController {
   private controlledLaunchIdentity: BrowserLaunchIdentity | null = null;
   private runtimeProfileObservation: RuntimeProfileObservation | null = null;
   private controlledStartBoundary: ControlledStartBoundaryObservation | null = null;
+  private nativeAttachedBrowser: Browser | undefined;
+  private nativeControlRecord: NativeControlRecord | null = null;
 
   constructor(
     private readonly config: Stage5BrowserConfig,
@@ -210,6 +220,33 @@ export class BrowserController {
         mkdir(path.join(this.config.artifactsDir, 'downloads'), { recursive: true, mode: 0o700 }),
       ]);
 
+      if (launchTarget.engine === 'chromium') {
+        const nativeRecord = await readNativeControlRecord(profileDir, this.selectedBrowser);
+        if (nativeRecord !== null) {
+          if (processIsRunning(nativeRecord.processId)) {
+            if (nativeRecord.state === 'awaiting_user') {
+              throw new Stage5BrowserError(
+                'AUTH_HANDOFF_REQUIRED',
+                'A private Chromium login handoff is still awaiting explicit resume.',
+                {
+                  recoverable: true,
+                  details: {
+                    reason: 'native_handoff_awaiting_user',
+                    suggestedAction: 'Return to the agent that requested the handoff and call browser_resume_after_login after private login. If that agent session is unavailable, close the dedicated browser normally, then start a new handoff.',
+                  },
+                },
+              );
+            }
+            return await this.attachToNativeChromium(
+              nativeRecord,
+              launchIdentity,
+              authenticationProbeTargetOrigin,
+            );
+          }
+          await removeNativeControlRecord(profileDir);
+        }
+      }
+
       const context = await playwrightBrowserType(launchTarget.engine).launchPersistentContext(profileDir, {
         headless: this.config.headless,
         acceptDownloads: true,
@@ -223,59 +260,12 @@ export class BrowserController {
           ? {}
           : { executablePath: launchTarget.executablePath }),
       });
-
-      context.setDefaultTimeout(this.config.operationTimeoutMs);
-      context.setDefaultNavigationTimeout(this.config.navigationTimeoutMs);
-      this.context = context;
-      this.controlledLaunchIdentity = launchIdentity;
-      this.bindContext(context);
-
-      const pages = context.pages();
-      this.activePage = pages.at(-1) ?? (await context.newPage());
-      const activePageBeforeRuntimeInspection = this.activePage;
-      const initialPages = context.pages().filter((page) => !page.isClosed());
-      const [runtimeProfile, controlledStartStorage, navigatorWebdriver] = await Promise.all([
-        this.runtimeProfileInspector(context, launchIdentity.profile, launchTarget.engine),
-        authenticationProbeTargetOrigin === null
-          ? Promise.resolve(null)
-          : this.controlledProfileStorageInspector(
-              launchIdentity.profile,
-              launchTarget.engine,
-              authenticationProbeTargetOrigin,
-              (urls) => context.cookies(urls).then((cookies) => cookies.map((cookie) => ({
-                domain: cookie.domain,
-                name: cookie.name,
-                expires: cookie.expires,
-              }))),
-            ),
-        authenticationProbeTargetOrigin === null
-          ? Promise.resolve(null)
-          : boundedValue(this.activePage.evaluate(() => navigator.webdriver), 500, null),
-      ]);
-      this.activePage = activePageBeforeRuntimeInspection;
-      this.runtimeProfileObservation = runtimeProfile;
-      const targetOriginLoadedAtControlledStart = authenticationProbeTargetOrigin !== null
-        && (
-          initialPages.some(
-            (candidate) => this.urlOrigin(candidate.url()) === authenticationProbeTargetOrigin,
-          )
-          || context.pages().some(
-            (candidate) => !candidate.isClosed()
-              && this.urlOrigin(candidate.url()) === authenticationProbeTargetOrigin,
-          )
-        );
-      this.controlledStartBoundary = authenticationProbeTargetOrigin === null || controlledStartStorage === null
-        ? null
-        : {
-            targetOrigin: authenticationProbeTargetOrigin,
-            storage: controlledStartStorage,
-            targetOriginLoaded: targetOriginLoadedAtControlledStart,
-            navigatorWebdriver,
-          };
-      this.lastKnownUrl = this.activePage.url();
-      this.lastLaunchFailure = null;
-      this.state = 'running';
-      return this.status();
+      return await this.activateControlledContext(
+        context,
+        launchIdentity,
+        launchTarget.engine,
+        authenticationProbeTargetOrigin,
+      );
     } catch (error) {
       this.state = 'failed';
       const diagnostic = launchFailureDiagnostic(this.selectedBrowser, error);
@@ -287,8 +277,8 @@ export class BrowserController {
             ...error.details,
             browser: diagnostic.browser,
             engine: diagnostic.engine,
-            reason: diagnostic.reason,
-            suggestedAction: diagnostic.suggestedAction,
+            reason: error.details?.reason ?? diagnostic.reason,
+            suggestedAction: error.details?.suggestedAction ?? diagnostic.suggestedAction,
             occurredAt: diagnostic.occurredAt,
           },
           cause: error,
@@ -331,6 +321,8 @@ export class BrowserController {
     const navigatorWebdriver = controlMode === 'playwright' && page !== undefined
       ? await boundedValue(page.evaluate(() => navigator.webdriver), 500, null)
       : null;
+    const nativeChromiumProcess = this.nativeAttachedBrowser !== undefined
+      || this.authenticationHandoff?.session.controlChannel?.()?.kind === 'chromium_cdp';
     return {
       browser: this.selectedBrowser,
       engine: availability.engine,
@@ -348,11 +340,13 @@ export class BrowserController {
         this.selectedBrowser,
         this.config.headless,
         availability.source,
+        process.platform,
+        nativeChromiumProcess,
       ),
       automationExposure: {
         controlMode,
         controlledByPlaywright: controlMode === 'playwright',
-        enableAutomationArgument: controlMode === 'human_bootstrap'
+        enableAutomationArgument: controlMode === 'human_bootstrap' || nativeChromiumProcess
           ? 'absent'
           : controlMode === 'playwright' && availability.engine === 'chromium'
             ? 'present'
@@ -388,10 +382,12 @@ export class BrowserController {
       this.authenticationHandoff.session.state().running
     ) {
       throw this.humanBootstrapInProgressError(
-        'The human authentication browser must be closed normally by the user; Stage5 Browser will not force-stop it.',
+        'The private authentication handoff must be completed by the user before Stage5 Browser can stop or switch it.',
       );
     }
     const context = this.context;
+    const nativeBrowser = this.nativeAttachedBrowser;
+    const nativeRecord = this.nativeControlRecord;
     this.context = undefined;
     this.activePage = undefined;
     this.framesById.clear();
@@ -403,13 +399,33 @@ export class BrowserController {
     this.controlledLaunchIdentity = null;
     this.runtimeProfileObservation = null;
     this.controlledStartBoundary = null;
+    this.nativeAttachedBrowser = undefined;
+    this.nativeControlRecord = null;
     this.state = 'stopped';
 
-    if (context !== undefined && !context.isClosed()) {
+    if (nativeBrowser !== undefined && nativeRecord !== null) {
+      await this.closeOwnedNativeBrowser(context, nativeBrowser, nativeRecord);
+      await removeNativeControlRecord(profileDirForBrowser(this.config, this.selectedBrowser));
+    } else if (context !== undefined && !context.isClosed()) {
       await context.close({ reason: 'Stage5 Browser stopped the owned browser context.' });
     }
 
     return this.status();
+  }
+
+  async detachForWorkerShutdown(): Promise<void> {
+    const nativeBrowser = this.nativeAttachedBrowser;
+    if (nativeBrowser === undefined) {
+      await this.stop();
+      return;
+    }
+
+    this.context = undefined;
+    this.activePage = undefined;
+    this.nativeAttachedBrowser = undefined;
+    this.nativeControlRecord = null;
+    this.state = 'stopped';
+    await nativeBrowser.close().catch(() => undefined);
   }
 
   async status(): Promise<BrowserStatus> {
@@ -959,7 +975,9 @@ export class BrowserController {
           details: {
             reason: 'handoff_already_active',
             suggestedAction: this.authenticationHandoff.state === 'awaiting_user'
-              ? 'Finish authentication and quit the dedicated browser normally so its process exits, then call browser_resume_after_login.'
+              ? this.authenticationHandoff.session.controlChannel?.()?.kind === 'chromium_cdp'
+                ? 'Finish authentication, leave the dedicated browser open, then call browser_resume_after_login so Stage5 attaches to that same process.'
+                : 'Finish authentication and quit the dedicated browser normally so its process exits, then call browser_resume_after_login.'
               : 'Take the required fresh semantic snapshot before requesting another handoff.',
           },
         },
@@ -1114,10 +1132,13 @@ export class BrowserController {
       shutdownOverrideOffered: false,
     };
     this.state = 'stopped';
+    const continuousAttachment = session.controlChannel?.()?.kind === 'chromium_cdp';
     return {
       ...(await this.authenticationStatus(undefined)),
       userActionRequired: true,
-      instructions: `Authenticate only in the newly opened ${humanLaunchIdentity.applicationName} window identified as “${handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${targetOrigin ?? 'the requested page'}. Then quit ${humanLaunchIdentity.applicationName} normally so its process exits. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Do not send credentials, passkeys, CAPTCHAs, or OTPs to the agent. After it has quit, tell the agent to call browser_resume_after_login.`,
+      instructions: continuousAttachment
+        ? `Authenticate only in the newly opened ${humanLaunchIdentity.applicationName} window identified as “${handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${targetOrigin ?? 'the requested page'}. Leave that exact browser application open after login and tell the agent to call browser_resume_after_login; Stage5 Browser will attach to the same running process without restarting it. Do not send credentials, passkeys, CAPTCHAs, or OTPs to the agent.`
+        : `Authenticate only in the newly opened ${humanLaunchIdentity.applicationName} window identified as “${handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${targetOrigin ?? 'the requested page'}. Then quit ${humanLaunchIdentity.applicationName} normally so its process exits. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Do not send credentials, passkeys, CAPTCHAs, or OTPs to the agent. After it has quit, tell the agent to call browser_resume_after_login.`,
     };
   }
 
@@ -1140,7 +1161,25 @@ export class BrowserController {
 
     const handoff = this.authenticationHandoff;
     const processState = handoff.session.state();
-    if (processState.running) {
+    const continuousChromiumHandoff = handoff.launchIdentity.engine === 'chromium'
+      && handoff.session.controlChannel?.()?.kind === 'chromium_cdp';
+    if (continuousChromiumHandoff && !processState.running) {
+      await removeNativeControlRecord(handoff.profileDir);
+      this.authenticationHandoff = null;
+      this.state = 'stopped';
+      throw new Stage5BrowserError(
+        'AUTH_NOT_PERSISTED',
+        'The dedicated browser was closed before Stage5 Browser could attach to the authenticated process.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'human_browser_exited_before_attach',
+            suggestedAction: 'Request a new login handoff and leave that dedicated browser open after authentication; Stage5 Browser now attaches without restarting it.',
+          },
+        },
+      );
+    }
+    if (!continuousChromiumHandoff && processState.running) {
       throw new Stage5BrowserError(
         'AUTH_HANDOFF_REQUIRED',
         'The private human authentication browser is still running.',
@@ -1154,89 +1193,92 @@ export class BrowserController {
       );
     }
 
-    if (!(await waitForProfileUnlock(handoff.profileDir, Math.min(input.timeoutMs, 5_000)))) {
-      throw new Stage5BrowserError(
-        'AUTH_HANDOFF_REQUIRED',
-        'The private browser process exited, but its profile is still locked.',
-        {
-          recoverable: true,
-          details: {
-            reason: 'profile_locked_after_handoff',
-            suggestedAction: 'Wait for the dedicated browser to finish closing, then call browser_resume_after_login once. Do not delete profile lock files.',
+    let afterHumanStorage: ProfileStorageInspection | null = null;
+    if (!continuousChromiumHandoff) {
+      if (!(await waitForProfileUnlock(handoff.profileDir, Math.min(input.timeoutMs, 5_000)))) {
+        throw new Stage5BrowserError(
+          'AUTH_HANDOFF_REQUIRED',
+          'The private browser process exited, but its profile is still locked.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'profile_locked_after_handoff',
+              suggestedAction: 'Wait for the dedicated browser to finish closing, then call browser_resume_after_login once. Do not delete profile lock files.',
+            },
           },
-        },
-      );
-    }
+        );
+      }
 
-    const observedShutdown = await inspectProfileShutdown(
-      handoff.profileDir,
-      this.selectedBrowser,
-      handoff.launchIdentity.profile.profileDirectory,
-    );
-    const exitTypeComparison = compareProfileExitMarker(handoff.beforeProfileShutdown, observedShutdown);
-    const processExitedNormally = processState.exitCode === 0 && processState.exitSignal === null;
-    const processExitedAbnormally = processState.exitSignal !== null
-      || (processState.exitCode !== null && processState.exitCode !== 0);
-    const explicitUnlockedProfileOverride = !processExitedNormally && handoff.shutdownOverrideOffered;
-    const shutdown: ProfileShutdownDecision = {
-      ...observedShutdown,
-      state: processExitedNormally
-        ? 'clean'
-        : explicitUnlockedProfileOverride
-          ? 'unknown'
+      const observedShutdown = await inspectProfileShutdown(
+        handoff.profileDir,
+        this.selectedBrowser,
+        handoff.launchIdentity.profile.profileDirectory,
+      );
+      const exitTypeComparison = compareProfileExitMarker(handoff.beforeProfileShutdown, observedShutdown);
+      const processExitedNormally = processState.exitCode === 0 && processState.exitSignal === null;
+      const processExitedAbnormally = processState.exitSignal !== null
+        || (processState.exitCode !== null && processState.exitCode !== 0);
+      const explicitUnlockedProfileOverride = !processExitedNormally && handoff.shutdownOverrideOffered;
+      const shutdown: ProfileShutdownDecision = {
+        ...observedShutdown,
+        state: processExitedNormally
+          ? 'clean'
+          : explicitUnlockedProfileOverride
+            ? 'unknown'
+            : processExitedAbnormally
+              ? 'unclean'
+              : 'unknown',
+        exitedCleanly: processExitedNormally ? true : processExitedAbnormally ? false : null,
+        exitedCleanlySource: processExitedNormally || processExitedAbnormally
+          ? 'process_exit'
+          : 'insufficient_evidence',
+        exitTypeComparison,
+        currentSessionEvidence: processExitedNormally
+          ? 'clean_process_exit'
           : processExitedAbnormally
-            ? 'unclean'
-            : 'unknown',
-      exitedCleanly: processExitedNormally ? true : processExitedAbnormally ? false : null,
-      exitedCleanlySource: processExitedNormally || processExitedAbnormally
-        ? 'process_exit'
-        : 'insufficient_evidence',
-      exitTypeComparison,
-      currentSessionEvidence: processExitedNormally
-        ? 'clean_process_exit'
-        : processExitedAbnormally
-          ? 'abnormal_process_exit'
-          : 'process_exit_unknown',
-      reattachmentDecision: processExitedNormally
-        ? 'allowed'
-        : explicitUnlockedProfileOverride
-          ? 'explicit_unlocked_profile_override'
-          : 'override_available',
-    };
-    handoff.profileShutdown = shutdown;
-    if (!processExitedNormally && !explicitUnlockedProfileOverride) {
-      handoff.shutdownOverrideOffered = true;
-      throw new Stage5BrowserError(
-        'AUTH_HANDOFF_REQUIRED',
-        processExitedAbnormally
-          ? 'The private authentication browser process exited abnormally, but the profile is unlocked.'
-          : 'The private authentication browser stopped and unlocked its profile, but did not report a process exit result.',
-        {
-          recoverable: true,
-          details: {
-            reason: processExitedAbnormally
-              ? 'abnormal_human_browser_process_exit'
-              : 'human_browser_process_exit_unknown',
-            exitType: shutdown.exitType,
-            exitTypeComparison: shutdown.exitTypeComparison,
-            exitedCleanly: shutdown.exitedCleanly,
-            exitedCleanlySource: shutdown.exitedCleanlySource,
-            profileDirectory: shutdown.profileDirectory,
-            profileLocks: shutdown.profileLocks,
-            processExitCode: processState.exitCode,
-            processExitSignal: processState.exitSignal,
-            overrideAvailable: true,
-            suggestedAction: 'Do not repeat authentication or reopen the browser. Because the human process is gone and the profile has zero locks, call browser_resume_after_login once more with the same expectation to explicitly reattach this same isolated profile. Stage5 Browser will not rewrite its Chromium preferences.',
+            ? 'abnormal_process_exit'
+            : 'process_exit_unknown',
+        reattachmentDecision: processExitedNormally
+          ? 'allowed'
+          : explicitUnlockedProfileOverride
+            ? 'explicit_unlocked_profile_override'
+            : 'override_available',
+      };
+      handoff.profileShutdown = shutdown;
+      if (!processExitedNormally && !explicitUnlockedProfileOverride) {
+        handoff.shutdownOverrideOffered = true;
+        throw new Stage5BrowserError(
+          'AUTH_HANDOFF_REQUIRED',
+          processExitedAbnormally
+            ? 'The private authentication browser process exited abnormally, but the profile is unlocked.'
+            : 'The private authentication browser stopped and unlocked its profile, but did not report a process exit result.',
+          {
+            recoverable: true,
+            details: {
+              reason: processExitedAbnormally
+                ? 'abnormal_human_browser_process_exit'
+                : 'human_browser_process_exit_unknown',
+              exitType: shutdown.exitType,
+              exitTypeComparison: shutdown.exitTypeComparison,
+              exitedCleanly: shutdown.exitedCleanly,
+              exitedCleanlySource: shutdown.exitedCleanlySource,
+              profileDirectory: shutdown.profileDirectory,
+              profileLocks: shutdown.profileLocks,
+              processExitCode: processState.exitCode,
+              processExitSignal: processState.exitSignal,
+              overrideAvailable: true,
+              suggestedAction: 'Do not repeat authentication or reopen the browser. Because the human process is gone and the profile has zero locks, call browser_resume_after_login once more with the same expectation to explicitly reattach this same isolated profile. Stage5 Browser will not rewrite its Chromium preferences.',
+            },
           },
-        },
+        );
+      }
+
+      afterHumanStorage = await this.profileStorageInspector(
+        handoff.launchIdentity.profile,
+        handoff.launchIdentity.engine,
+        handoff.targetOrigin,
       );
     }
-
-    const afterHumanStorage = await this.profileStorageInspector(
-      handoff.launchIdentity.profile,
-      handoff.launchIdentity.engine,
-      handoff.targetOrigin,
-    );
     const resumeTarget = await resolveBrowserLaunchTarget(this.selectionFor(this.selectedBrowser));
     const resumeIdentity = launchIdentityForTarget(resumeTarget, handoff.profileDir);
     if (!sameLaunchIdentity(handoff.launchIdentity, resumeIdentity)) {
@@ -1253,6 +1295,30 @@ export class BrowserController {
           },
         },
       );
+    }
+
+    let continuousRecord: NativeControlRecord | null = null;
+    if (continuousChromiumHandoff) {
+      continuousRecord = await readNativeControlRecord(handoff.profileDir, this.selectedBrowser);
+      if (
+        continuousRecord === null
+        || continuousRecord.processId !== processState.processId
+        || !processIsRunning(continuousRecord.processId)
+      ) {
+        throw new Stage5BrowserError(
+          'AUTH_NOT_PERSISTED',
+          'The private browser control record no longer matches the authenticated process.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'native_control_identity_mismatch',
+              suggestedAction: 'Do not attach to another process. Close the dedicated Stage5 browser if it is still visible, then request a new handoff.',
+            },
+          },
+        );
+      }
+      continuousRecord = { ...continuousRecord, state: 'controlled' };
+      await writeNativeControlRecord(handoff.profileDir, continuousRecord);
     }
 
     handoff.state = 'ready_for_agent_verification';
@@ -1312,6 +1378,12 @@ export class BrowserController {
         page = this.preferredPage() ?? page;
       }
     } catch (error) {
+      if (continuousRecord !== null && processIsRunning(continuousRecord.processId)) {
+        await writeNativeControlRecord(handoff.profileDir, {
+          ...continuousRecord,
+          state: 'awaiting_user',
+        }).catch(() => undefined);
+      }
       handoff.state = 'awaiting_user';
       handoff.page = null;
       throw error;
@@ -1355,9 +1427,10 @@ export class BrowserController {
         expires: cookie.expires,
       }))),
     );
+    const effectiveAfterHumanStorage = afterHumanStorage ?? afterControlledStartStorage;
     const storageComparison = compareAuthenticationStorage(
       handoff.beforeStorage,
-      afterHumanStorage,
+      effectiveAfterHumanStorage,
       afterControlledStartStorage,
       afterTargetLoadStorage,
       {
@@ -1433,6 +1506,169 @@ export class BrowserController {
       instructions: 'Storage continuity is not treated as proof of authentication. Inspect verificationPreview now; if it still shows signed-out controls, stop and report that site state rather than proceeding or repeating login. Then take a fresh full semantic snapshot before any account action.',
       verificationPreview,
     };
+  }
+
+  private async attachToNativeChromium(
+    record: NativeControlRecord,
+    launchIdentity: BrowserLaunchIdentity,
+    authenticationProbeTargetOrigin: string | null,
+  ): Promise<BrowserStatus> {
+    const browser = await playwrightBrowserType('chromium').connectOverCDP(
+      nativeControlEndpoint(record),
+      {
+        artifactsDir: this.config.artifactsDir,
+        isLocal: true,
+        noDefaults: true,
+        timeout: this.config.workerStartupTimeoutMs,
+      },
+    );
+    const context = browser.contexts()[0];
+    if (context === undefined) {
+      await browser.close();
+      throw new Stage5BrowserError(
+        'BROWSER_NOT_READY',
+        'The native Stage5 browser did not expose its persistent default context.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'browser_process_exited',
+            suggestedAction: 'Keep the dedicated Stage5 browser open and retry once after its login page finishes loading.',
+          },
+        },
+      );
+    }
+
+    this.nativeAttachedBrowser = browser;
+    this.nativeControlRecord = record;
+    browser.once('disconnected', () => {
+      if (this.nativeAttachedBrowser === browser) {
+        this.clearControlledBrowserState();
+      }
+    });
+    try {
+      const status = await this.activateControlledContext(
+        context,
+        launchIdentity,
+        'chromium',
+        authenticationProbeTargetOrigin,
+      );
+      if (status.runtimeProfile?.matchesConfigured === false) {
+        throw new Stage5BrowserError(
+          'AUTH_NOT_PERSISTED',
+          'The continuously running browser reported a different profile from the Stage5 control record.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'auth_runtime_profile_mismatch',
+              runtimeProfile: status.runtimeProfile,
+              suggestedAction: 'Stop before account actions and inspect the reported configured and runtime profile paths.',
+            },
+          },
+        );
+      }
+      return status;
+    } catch (error) {
+      await browser.close().catch(() => undefined);
+      if (this.nativeAttachedBrowser === browser) {
+        this.clearControlledBrowserState();
+      }
+      throw error;
+    }
+  }
+
+  private async activateControlledContext(
+    context: BrowserContext,
+    launchIdentity: BrowserLaunchIdentity,
+    engine: (typeof BROWSER_ENGINES)[BrowserProduct],
+    authenticationProbeTargetOrigin: string | null,
+  ): Promise<BrowserStatus> {
+    context.setDefaultTimeout(this.config.operationTimeoutMs);
+    context.setDefaultNavigationTimeout(this.config.navigationTimeoutMs);
+    this.context = context;
+    this.controlledLaunchIdentity = launchIdentity;
+    this.bindContext(context);
+
+    const pages = context.pages();
+    this.activePage = pages.at(-1) ?? (await context.newPage());
+    const activePageBeforeRuntimeInspection = this.activePage;
+    const initialPages = context.pages().filter((page) => !page.isClosed());
+    const [runtimeProfile, controlledStartStorage, navigatorWebdriver] = await Promise.all([
+      this.runtimeProfileInspector(context, launchIdentity.profile, engine),
+      authenticationProbeTargetOrigin === null
+        ? Promise.resolve(null)
+        : this.controlledProfileStorageInspector(
+            launchIdentity.profile,
+            engine,
+            authenticationProbeTargetOrigin,
+            (urls) => context.cookies(urls).then((cookies) => cookies.map((cookie) => ({
+              domain: cookie.domain,
+              name: cookie.name,
+              expires: cookie.expires,
+            }))),
+          ),
+      authenticationProbeTargetOrigin === null
+        ? Promise.resolve(null)
+        : boundedValue(this.activePage.evaluate(() => navigator.webdriver), 500, null),
+    ]);
+    this.activePage = activePageBeforeRuntimeInspection;
+    this.runtimeProfileObservation = runtimeProfile;
+    const targetOriginLoadedAtControlledStart = authenticationProbeTargetOrigin !== null
+      && (
+        initialPages.some(
+          (candidate) => this.urlOrigin(candidate.url()) === authenticationProbeTargetOrigin,
+        )
+        || context.pages().some(
+          (candidate) => !candidate.isClosed()
+            && this.urlOrigin(candidate.url()) === authenticationProbeTargetOrigin,
+        )
+      );
+    this.controlledStartBoundary = authenticationProbeTargetOrigin === null || controlledStartStorage === null
+      ? null
+      : {
+          targetOrigin: authenticationProbeTargetOrigin,
+          storage: controlledStartStorage,
+          targetOriginLoaded: targetOriginLoadedAtControlledStart,
+          navigatorWebdriver,
+        };
+    this.lastKnownUrl = this.activePage.url();
+    this.lastLaunchFailure = null;
+    this.state = 'running';
+    return this.status();
+  }
+
+  private async closeOwnedNativeBrowser(
+    context: BrowserContext | undefined,
+    browser: Browser,
+    record: NativeControlRecord,
+  ): Promise<void> {
+    const page = context?.pages().find((candidate) => !candidate.isClosed());
+    if (context !== undefined && page !== undefined) {
+      try {
+        const session = await context.newCDPSession(page);
+        await session.send('Browser.close');
+      } catch {
+        // The exact owned PID below remains the bounded fallback.
+      }
+    }
+    await browser.close().catch(() => undefined);
+
+    const deadline = Date.now() + 3_000;
+    while (processIsRunning(record.processId) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (processIsRunning(record.processId)) {
+      throw new Stage5BrowserError(
+        'OPERATION_FAILED',
+        'The dedicated native browser did not confirm a clean exit after the close request.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'native_browser_close_unconfirmed',
+            suggestedAction: 'Close the visibly identified dedicated Stage5 browser normally, then call browser_start once. Stage5 Browser will not signal an unverified PID.',
+          },
+        },
+      );
+    }
   }
 
   private bindContext(context: BrowserContext): void {
@@ -2051,7 +2287,10 @@ export class BrowserController {
             running: processState.running,
             processId: processState.processId,
             launchedAt: processState.launchedAt,
-            controlledByPlaywright: false,
+            controlledByPlaywright:
+              connected
+              && handoff.state === 'ready_for_agent_verification'
+              && handoff.session.controlChannel?.()?.kind === 'chromium_cdp',
             automationFlagsPresent: false,
             exactUserInteractionsObserved: false,
             launchIdentity: handoff.launchIdentity,
@@ -2066,11 +2305,14 @@ export class BrowserController {
     message = 'Private human authentication is in progress in the dedicated Stage5 browser window.',
   ): Stage5BrowserError {
     const applicationName = this.authenticationHandoff?.launchIdentity.applicationName ?? 'the dedicated browser';
+    const continuousAttachment = this.authenticationHandoff?.session.controlChannel?.()?.kind === 'chromium_cdp';
     return new Stage5BrowserError('AUTH_HANDOFF_REQUIRED', message, {
       recoverable: true,
       details: {
         reason: 'human_authentication_in_progress',
-        suggestedAction: `Finish authentication and quit ${applicationName} normally so its process exits, then call browser_resume_after_login. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Stage5 Browser will not control or force-close it.`,
+        suggestedAction: continuousAttachment
+          ? `Finish authentication in ${applicationName}, leave that exact application open, then call browser_resume_after_login. Stage5 Browser will attach only after that explicit call.`
+          : `Finish authentication and quit ${applicationName} normally so its process exits, then call browser_resume_after_login. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Stage5 Browser will not control or force-close it.`,
       },
     });
   }
@@ -2085,6 +2327,8 @@ export class BrowserController {
     this.boundPages = new WeakSet<Page>();
     this.runtimeProfileObservation = null;
     this.controlledStartBoundary = null;
+    this.nativeAttachedBrowser = undefined;
+    this.nativeControlRecord = null;
     this.state = 'stopped';
   }
 

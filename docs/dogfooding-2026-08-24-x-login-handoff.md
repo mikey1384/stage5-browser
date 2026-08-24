@@ -1,4 +1,4 @@
-# X login handoff dogfooding: Stage5 Browser 0.4.1–0.4.5
+# X login handoff dogfooding: Stage5 Browser 0.4.1–0.4.6
 
 ## Stop condition
 
@@ -118,6 +118,41 @@ Stage5 Browser 0.4.5 adds that missing boundary evidence:
 
 Interpret the next result conservatively. `playwright_start` directs investigation toward profile/keychain or controlled-launch defaults. `playwright_start_or_restored_target_load` requires preventing or accounting for session restore before separating those causes. Repeated `target_load` plus `loss_after_automation_exposure` is the evidence threshold for prototyping extension-based control inside native Brave. `none` plus logged-out UI means cookie-key presence survived but X rejected, expired, or otherwise did not accept the state; values remain deliberately unavailable.
 
+## 0.4.5 result: Playwright startup is the loss boundary
+
+The next handoff isolated the failure conclusively:
+
+- handoff: `857f4559-f262-4ede-954b-e871c09b7659`
+- classified failure: `da7e029b-a458-4a78-a633-af371a0d0e71`
+- visible logged-out state: `54e8dea5-063d-4923-b10a-f262d332066f`
+- retained privacy-safe evidence: `10bfab45-a382-4725-86b1-37e7d61d3259`
+
+The runtime profile exactly matched the configured `Default` partition. After human Brave, target-origin session and persistent cookies were present. Immediately after Playwright started—and before X loaded—all X cookies were absent from the live context. After X loaded, guest/persistent state returned but the authenticated session did not. `lossBoundary` was `playwright_start`, `automationCorrelation` was `not_observed`, and the target origin had not loaded at controlled start. This disproved the webdriver-invalidation hypothesis for that run: the new process failed to restore the human process's session before X could react.
+
+A disposable localhost/temporary-profile matrix then tested launch policy without reading any real-site cookie value:
+
+| Controlled launch | Session cookie | Persistent cookie |
+| --- | --- | --- |
+| Playwright defaults | lost | lost |
+| restore-last-session only | lost | lost |
+| native credential store only | lost | preserved |
+| native credential store + restore-last-session | lost | preserved |
+
+Enabling restore behavior before cookie creation, during native shutdown, and during controlled startup still did not restore the session cookie. That closed the restart-based Chromium path.
+
+## 0.4.6 remedy: attach to the authenticated process
+
+Chromium-family authentication no longer crosses a browser restart boundary:
+
+1. Stage5 releases the original Playwright-launched context and starts the exact native Chromium executable against the same dedicated profile.
+2. The launch uses a fixed ephemeral port bound to `127.0.0.1`, the pinned profile, marker tab, and target URL. It does not use `--enable-automation`, `--no-sandbox`, a webdriver override, or the user's everyday browser profile.
+3. While the user authenticates, Stage5 is not attached and browser tools remain blocked. The user leaves that dedicated browser open.
+4. `browser_resume_after_login` connects Playwright over CDP to the same process and verifies the live runtime profile before account actions.
+5. A user-only profile record contains only the Stage5-owned PID, backend, ephemeral port, lifecycle state, version, and creation time. It is not returned to agents or journaled. A fresh worker refuses to attach while the record is `awaiting_user`; after explicit resume marks it `controlled`, compatible worker replacement disconnects and reconnects without stopping Brave.
+6. Explicit `browser_stop` closes the Stage5-owned native browser and removes the record. Firefox retains the prior normal-exit restart path.
+
+The end-to-end native acceptance uses a temporary Brave profile and localhost fixture. It creates harmless session and persistent markers only while `navigator.webdriver === false`, attaches through the controller, proves both survive, disconnects the worker, creates a replacement controller, proves both still survive, then explicitly stops Brave and verifies a clean unlocked profile. No X, Twinkle, personal profile, or credential is touched.
+
 ## Resume condition
 
-0.4.5 is a compatible output/behavior patch: tool count 22, input schemas, tool-catalog version 3, and worker protocol 3 are unchanged. A directly registered live host rolls its worker forward on the next operation without a reconnect, reinstall, or deployment, unless a private handoff is currently in progress. Before one new X handoff, verify `restartRequired: false` and worker version `0.4.5`, explicitly select Brave, and use a non-root post-login URL when stable. After resume, report `runtimeProfile`, `lossBoundary`, `automationCorrelation`, `targetOriginLoadedAtControlledStart`, all three storage observations, and the fresh visible X state. Do not repeat login or begin extension-control work until those results establish the boundary. The Rick Rubin workflow remains paused until this verification.
+0.4.6 is a compatible behavior patch: tool count 22, input schemas, tool-catalog version 3, and worker protocol 3 remain unchanged. A directly registered host rolls its worker forward on the next operation without reconnecting, reinstalling, redeploying, or asking the user to patch anything. Before one new X handoff, verify worker version `0.4.6`, explicitly select Brave, and follow the new returned instruction: authenticate privately and **leave that dedicated Brave process open**. Resume, inspect the bounded preview, then take one fresh full snapshot to prove the intended X account before continuing the Rick Rubin workflow. No real X retry was made while implementing this fix.

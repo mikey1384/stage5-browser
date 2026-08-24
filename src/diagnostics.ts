@@ -93,6 +93,7 @@ export function browserLaunchPolicyDiagnostics(
   headless: boolean,
   executableSource: BrowserExecutableSource | null,
   platform: NodeJS.Platform = process.platform,
+  attachedToNativeProcess = false,
 ): BrowserLaunchPolicyDiagnostics {
   const engine = BROWSER_ENGINES[browser];
   const chromiumSandboxEnabled = engine === 'chromium' && platform === 'darwin';
@@ -106,12 +107,14 @@ export function browserLaunchPolicyDiagnostics(
     persistentIsolatedProfile: true,
     executableSource,
     sandbox,
-    knownSecurityRelevantArguments: engine === 'chromium'
+    knownSecurityRelevantArguments: engine === 'chromium' && attachedToNativeProcess
+      ? ['--remote-debugging-address=<loopback>', '--remote-debugging-port=<ephemeral>']
+      : engine === 'chromium'
       ? chromiumSandboxEnabled
         ? ['--enable-automation']
         : ['--enable-automation', '--no-sandbox']
       : [],
-    knownControlledModeStorageArguments: engine === 'chromium'
+    knownControlledModeStorageArguments: engine === 'chromium' && !attachedToNativeProcess
       ? ['--password-store=basic', '--use-mock-keychain']
       : [],
     argumentsComplete: false,

@@ -39,6 +39,14 @@ describe('browser diagnostics', () => {
       knownSecurityRelevantArguments: [],
       knownControlledModeStorageArguments: [],
     });
+    expect(browserLaunchPolicyDiagnostics('brave', false, 'discovered', 'darwin', true)).toMatchObject({
+      sandbox: 'enabled',
+      knownSecurityRelevantArguments: [
+        '--remote-debugging-address=<loopback>',
+        '--remote-debugging-port=<ephemeral>',
+      ],
+      knownControlledModeStorageArguments: [],
+    });
   });
 
   it('classifies common launch failures without exposing raw error text', () => {

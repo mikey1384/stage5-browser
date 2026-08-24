@@ -1,45 +1,35 @@
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { resolveBrowserLaunchTarget } from '../src/browser-provider.js';
 import { BrowserController } from '../src/browser-controller.js';
 import type { Stage5BrowserConfig } from '../src/config.js';
 import {
   inspectProfileShutdown,
-  NativeHumanBrowserLauncher,
   waitForProfileUnlock,
-  type HumanBrowserSession,
 } from '../src/human-auth-bootstrap.js';
-import { inspectProfileStorage } from '../src/profile-binding.js';
+import { processIsRunning } from '../src/native-control-channel.js';
 
 const runNativeSmoke = process.env.STAGE5_BROWSER_NATIVE_SMOKE === '1';
 
 describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
   let root: string | undefined;
-  let session: HumanBrowserSession | undefined;
   let controller: BrowserController | undefined;
 
   afterAll(async () => {
-    await controller?.stop();
-    const state = session?.state();
-    if (state?.running && state.processId !== null) {
-      process.kill(state.processId, 'SIGTERM');
-      if (!(await session!.waitForExit(5_000))) {
-        process.kill(state.processId, 'SIGKILL');
-      }
-    }
+    await controller?.stop().catch(() => undefined);
     if (root !== undefined) {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it('launches real Brave without webdriver exposure and closes its temporary profile cleanly', async () => {
+  it('attaches to the same native Brave process without losing its temporary session', async () => {
     let observedWebdriver: string | null = null;
-    let reattachedCookiePresent = false;
+    let reattachedSessionCookiePresent = false;
+    let reattachedPersistentCookiePresent = false;
     let reportObserved: (() => void) | undefined;
     const reportPromise = new Promise<void>((resolve) => {
       reportObserved = resolve;
@@ -50,22 +40,29 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
         observedWebdriver = requestUrl.searchParams.get('webdriver');
         response.writeHead(204);
         response.end();
-        reportObserved?.();
+        if (observedWebdriver === 'false') {
+          reportObserved?.();
+        }
         return;
       }
       if (requestUrl.pathname === '/reattach') {
-        reattachedCookiePresent = (request.headers.cookie ?? '')
-          .split(';')
-          .some((entry) => entry.trim() === 'stage5_native_session=present');
+        const cookies = (request.headers.cookie ?? '').split(';').map((entry) => entry.trim());
+        reattachedSessionCookiePresent = cookies.includes('stage5_native_session=present');
+        reattachedPersistentCookiePresent = cookies.includes('stage5_native_persistent=present');
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        response.end(`<!doctype html><html><head><title>${reattachedCookiePresent ? 'Session restored' : 'Session missing'}</title></head><body>Reattachment</body></html>`);
+        response.end('<!doctype html><html><head><title>Reattachment</title></head><body>Reattachment</body></html>');
         return;
       }
-      response.setHeader('set-cookie', 'stage5_native_session=present; Max-Age=3600; Path=/; SameSite=Lax');
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(`<!doctype html><html><head><title>Stage5 native smoke</title></head><body>
         <h1>Native human authentication fixture</h1>
-        <script>fetch('/report?webdriver=' + encodeURIComponent(String(navigator.webdriver)))</script>
+        <script>
+          if (navigator.webdriver === false) {
+            document.cookie = 'stage5_native_session=present; Path=/; SameSite=Lax';
+            document.cookie = 'stage5_native_persistent=present; Max-Age=3600; Path=/; SameSite=Lax';
+          }
+          fetch('/report?webdriver=' + encodeURIComponent(String(navigator.webdriver)))
+        </script>
       </body></html>`);
     });
     await new Promise<void>((resolve, reject) => {
@@ -79,13 +76,33 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
 
     try {
       root = await mkdtemp(path.join(os.tmpdir(), 'stage5-native-auth-smoke-'));
-      const target = await resolveBrowserLaunchTarget({ browser: 'brave', executablePath: null });
-      session = await new NativeHumanBrowserLauncher().launch({
-        target,
+      const config: Stage5BrowserConfig = {
+        browser: 'brave',
+        browserExecutablePath: null,
+        profilesDir: path.dirname(root),
         profileDir: root,
-        handoffLabel: 'Stage5 brave · native smoke · TEST1234',
-        url: `http://127.0.0.1:${address.port}/`,
+        artifactsDir: path.join(root, 'artifacts'),
+        headless: false,
+        operationTimeoutMs: 5_000,
+        navigationTimeoutMs: 5_000,
+        readinessTimeoutMs: 2_000,
+        workerStartupTimeoutMs: 10_000,
+        workerShutdownGraceMs: 500,
+      };
+      controller = new BrowserController(config, 'brave');
+      const origin = `http://127.0.0.1:${address.port}`;
+      await controller.start();
+      await controller.open({
+        url: origin,
+        newTab: false,
+        timeoutMs: 10_000,
       });
+      const handoff = await controller.requestLoginHandoff({ url: null, timeoutMs: 10_000 });
+      expect(handoff.controlMode).toBe('human_bootstrap');
+      expect(handoff.instructions).toContain('Leave that exact browser application open');
+      const processId = handoff.humanBootstrap?.processId;
+      expect(processId).toEqual(expect.any(Number));
+
       await Promise.race([
         reportPromise,
         new Promise<never>((_resolve, reject) => {
@@ -94,85 +111,64 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
       ]);
       expect(observedWebdriver).toBe('false');
 
-      const processId = session.state().processId;
-      if (processId === null) {
-        throw new Error('Native Brave did not expose an owned process ID.');
-      }
-      process.kill(processId, 'SIGTERM');
-      expect(await session.waitForExit(10_000)).toBe(true);
-      expect(await waitForProfileUnlock(root, 5_000)).toBe(true);
-      expect(await inspectProfileShutdown(root, 'brave')).toMatchObject({
-        state: 'clean',
-        exitedCleanly: true,
-        profileLocks: [],
+      const unrelatedWorker = new BrowserController(config, 'brave');
+      await expect(unrelatedWorker.start()).rejects.toMatchObject({
+        code: 'AUTH_HANDOFF_REQUIRED',
+        details: { reason: 'native_handoff_awaiting_user' },
       });
 
-      const launchIdentity = session.identity();
-      const afterHumanStorage = await inspectProfileStorage(
-        launchIdentity.profile,
-        launchIdentity.engine,
-        `http://127.0.0.1:${address.port}`,
-      );
-      expect(afterHumanStorage.cookieDatabase).toMatchObject({
-        targetOriginCookiePresent: true,
-        persistentCookiePresent: true,
+      const resumed = await controller.resumeAfterLogin({ expected: null, timeoutMs: 10_000 });
+      expect(resumed.browserConnected).toBe(true);
+      expect(resumed.controlMode).toBe('playwright');
+      expect(resumed.humanBootstrap?.controlledByPlaywright).toBe(true);
+      expect(resumed.lastHandoffOutcome?.storageContinuity).toMatchObject({
+        state: 'preserved',
+        lossBoundary: 'none',
+        automationCorrelation: 'not_observed',
+        navigatorWebdriverAtControlledStart: false,
       });
-
-      const config: Stage5BrowserConfig = {
-        browser: 'brave',
-        browserExecutablePath: null,
-        profilesDir: path.dirname(root),
-        profileDir: root,
-        artifactsDir: path.join(root, 'artifacts'),
-        headless: true,
-        operationTimeoutMs: 5_000,
-        navigationTimeoutMs: 5_000,
-        readinessTimeoutMs: 2_000,
-        workerStartupTimeoutMs: 5_000,
-        workerShutdownGraceMs: 500,
-      };
-      controller = new BrowserController(config, 'brave');
       await controller.open({
-        url: `http://127.0.0.1:${address.port}/reattach`,
+        url: `${origin}/reattach`,
         newTab: false,
         timeoutMs: 10_000,
       });
-      expect(reattachedCookiePresent).toBe(true);
-      const controlledStatus = await controller.status();
-      expect(controlledStatus.launchIdentity).toEqual(launchIdentity);
-      const expectedRuntimeProfilePath = await realpath(path.join(root, 'Default'));
-      expect(controlledStatus.runtimeProfile).toMatchObject({
-        source: expect.stringMatching(/^chromium_(command_line|version_page)$/),
-        profilePath: expectedRuntimeProfilePath,
-        configuredProfilePath: path.join(root, 'Default'),
-        matchesConfigured: true,
+      expect(reattachedPersistentCookiePresent).toBe(true);
+      expect(reattachedSessionCookiePresent).toBe(true);
+
+      await controller.detachForWorkerShutdown();
+      controller = new BrowserController(config, 'brave');
+      const recovered = await controller.start();
+      expect(recovered.browserConnected).toBe(true);
+      expect(recovered.runtimeProfile?.matchesConfigured).toBe(true);
+      reattachedSessionCookiePresent = false;
+      reattachedPersistentCookiePresent = false;
+      await controller.open({
+        url: `${origin}/reattach`,
+        newTab: false,
+        timeoutMs: 10_000,
       });
-      const afterReattachmentStorage = await inspectProfileStorage(
-        launchIdentity.profile,
-        launchIdentity.engine,
-        `http://127.0.0.1:${address.port}`,
-        { liveBrowser: true },
-      );
-      expect(afterReattachmentStorage.cookieDatabase).toMatchObject({
-        inspection: 'live_process_metadata_only',
-        targetOriginCookiePresent: null,
-        persistentCookiePresent: null,
-      });
+      expect(reattachedPersistentCookiePresent).toBe(true);
+      expect(reattachedSessionCookiePresent).toBe(true);
+
       await controller.stop();
       controller = undefined;
-      const afterControlledShutdownStorage = await inspectProfileStorage(
-        launchIdentity.profile,
-        launchIdentity.engine,
-        `http://127.0.0.1:${address.port}`,
-      );
-      expect(afterControlledShutdownStorage.cookieDatabase).toMatchObject({
-        inspection: 'aggregate_metadata',
-        targetOriginCookiePresent: true,
-        persistentCookiePresent: true,
+      if (typeof processId !== 'number') {
+        throw new Error('Native Brave did not expose an owned process ID.');
+      }
+      const deadline = Date.now() + 10_000;
+      while (processIsRunning(processId) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(processIsRunning(processId)).toBe(false);
+      expect(await waitForProfileUnlock(root, 5_000)).toBe(true);
+      await expect(inspectProfileShutdown(root, 'brave')).resolves.toMatchObject({
+        state: 'clean',
+        exitedCleanly: true,
+        profileLocks: [],
       });
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-  }, 35_000);
+  }, 45_000);
 });

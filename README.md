@@ -15,7 +15,7 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - capture a screenshot
 - click or fill one unique semantic target, with optional click postcondition verification
 - scroll infinite pages and search currently rendered text without arbitrary script evaluation
-- release a persistent isolated profile into a visibly marked, genuinely uncontrolled native browser for private human login, verify its actual runtime profile, and localize privacy-safe target-origin storage loss across human exit, controlled start, and target load
+- release a persistent isolated profile into a visibly marked native browser for private human login, then attach to the same running Chromium process so session cookies never cross a restart boundary
 - stop or explicitly recover the browser
 - detect a stale MCP build, diagnose launch preflight/profile failures, automation exposure, sandbox policy, successful/error request classes around the last click, and distinguish worker recovery from browser recovery
 
@@ -65,8 +65,8 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_find_text` | Search bounded rendered page/frame text and return matching snippets |
 | `browser_wait_for_url` | Wait for an exact, prefix, or substring URL postcondition |
 | `browser_auth_status` | Report the authentication-handoff lifecycle, actual runtime profile, three-phase storage boundary, native application, marker label, and exact profile binding |
-| `browser_request_login_handoff` | Close Playwright cleanly and launch the same isolated profile with a Stage5 marker tab as an uncontrolled native browser for private login |
-| `browser_resume_after_login` | Reattach only after the human browser exits; compare storage after human exit, controlled start, and target load; return a bounded preview and require a fresh signed-in check |
+| `browser_request_login_handoff` | Close current control and launch the same isolated profile with a Stage5 marker tab for private login; returned instructions distinguish continuous Chromium attachment from Firefox restart |
+| `browser_resume_after_login` | Attach to the same running Chromium process, or restart a normally exited Firefox profile; verify storage continuity and require a fresh signed-in check |
 | `browser_recover` | Replace the worker process group and optionally reopen the last URL |
 | `browser_stop` | Close the owned browser context |
 
@@ -83,10 +83,10 @@ Browser worker process group
         │
         ├── normal work: direct Playwright protocol
         │
-        └── authentication: close control → native browser → normal user close → reattach
+        └── authentication: close control → native Chromium login → same-process attach
                                       │
-                                      ▼
-                         dedicated persistent profile
+                                      ├── private loopback control channel
+                                      └── dedicated persistent profile
 ```
 
 The worker boundary is intentional. A stalled browser transport cannot wedge the MCP event loop, and recovery can kill browser descendants rather than merely dropping a stale JavaScript object.
@@ -101,7 +101,7 @@ Key implementation files:
 - `docs/agent-setup.md` — Claude connection checks, session restart, and login lifecycle
 - `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
-- `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.5 remedies
+- `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -118,17 +118,18 @@ Key implementation files:
 - A unique visible modal becomes the snapshot root; multiple unresolved modals produce a warning instead of an arbitrary choice.
 - A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened.
 - A click that cannot dispatch records sanitized visibility, enabled-state, viewport, and pointer-interception evidence.
-- Human login bootstrap releases Playwright completely, pins the selected Chromium partition, and launches the exact same executable/profile identity without automation or remote-debugging flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until the user quits that exact application normally.
-- Resume rejects a still-running, locked, or launch-identity-mismatched profile. A zero process exit, no signal, and zero locks permits reattachment even when Chromium retains a stale `crashed` exit marker; the marker is advisory and is compared with its pre-handoff value and modification time. A genuinely abnormal or unavailable process exit offers one explicit second-call override only after the process is gone and locks are clear. When the human phase added target-origin session metadata but a caller-supplied non-root post-login route cannot be reached, resume returns `AUTH_NOT_PERSISTED`. It never force-kills the human browser, deletes locks, rewrites Chromium shutdown preferences, or reads cookie values.
+- Human login bootstrap releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume.
+- Chromium-family handoffs use a fixed ephemeral loopback-only CDP endpoint. The user leaves the dedicated browser open; resume attaches to that exact process, so in-memory session cookies are never serialized, imported, or restored by a new browser process. A user-only profile record with an explicit `awaiting_user`/`controlled` state lets compatible worker replacements reconnect without allowing a fresh worker to attach during private login. The endpoint is not returned to agents or written to the operation journal.
+- Firefox retains the exit-and-restart handoff. Its resume rejects a still-running, locked, or launch-identity-mismatched profile, applies the existing clean-exit/override checks, and never deletes locks or rewrites shutdown preferences.
 - Chromium resume reports the canonical profile path observed by the running browser and compares it with the configured profile after resolving filesystem aliases. A mismatch fails before target navigation.
-- The uncontrolled phase records no exact manual clicks. Resume reports sanitized route and semantic evidence plus privacy-safe target-origin cookie-key presence after native exit, immediately after controlled start, and after target load. It classifies the observed loss boundary and whether automation exposure was present, but never presents correlation as causation. A bounded preview and fresh full snapshot remain authoritative for visible authentication state; origin-only URL checks are rejected as too weak.
+- The private phase records no exact manual clicks. Chromium resume samples privacy-safe target-origin cookie-key presence immediately after same-process attachment and after target load; Firefox retains the offline-after-exit checkpoint. A bounded preview and fresh full snapshot remain authoritative for visible authentication state; origin-only URL checks are rejected as too weak.
 - A hung or disconnected worker is killed and replaced before another operation proceeds.
 - MCP and worker builds complete a versioned protocol handshake; incompatible contract changes fail with `MCP_RESTART_REQUIRED`.
 - A running MCP automatically rolls its worker onto compatible completed builds; only tool-catalog or worker-protocol changes require a host reconnect.
 - Worker recovery reports whether a browser was actually running afterward; it never implies that the MCP catalog was refreshed.
 - Diagnostic journaling is best-effort and cannot change an operation's result. Page diagnostics include bounded success/redirect/error response classes and the events within the last click window, but exclude raw console/exception text, request metadata beyond method/type/status/sanitized URL, and all URL queries/fragments.
 
-Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, click actionability and postconditions, successful request capture, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, uncontrolled human authentication, configured-to-runtime profile verification, three-phase native-to-controlled storage continuity, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
+Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, click actionability and postconditions, successful request capture, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, private human authentication, same-process Chromium session continuity across worker replacement, configured-to-runtime profile verification, Firefox restart-boundary storage diagnostics, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
 
 ## Browser selection
 
@@ -171,7 +172,7 @@ WebKit provides Safari-engine coverage, not control of the installed Safari appl
 - Stage5 Browser never opens a person's default browser profile.
 - Bundled Chromium, Firefox, and WebKit are pinned under `.playwright-browsers/`; every selected backend keeps profile state in a dedicated Stage5 Browser application-data directory.
 - Chromium-engine browsers opt into Chromium sandboxing on macOS; diagnostics expose the resulting safe policy without exposing a raw process command line.
-- Human authentication launches only the selected browser, pinned dedicated-profile arguments, a new-window directive, a static Stage5 identity-marker data URL, and the target URL. It does not use Playwright, remote debugging, `--enable-automation`, `--no-sandbox`, or webdriver-masking scripts.
+- Human authentication launches only the selected browser, pinned dedicated-profile arguments, a new-window directive, a static Stage5 identity-marker data URL, and the target URL. Chromium also receives a fixed ephemeral control port bound to `127.0.0.1`; Stage5 does not attach until explicit resume. The launch does not use Playwright automation arguments, `--enable-automation`, `--no-sandbox`, or webdriver-masking scripts.
 - Only HTTP, HTTPS, and `about:blank` navigation are allowed.
 - URLs with embedded credentials are rejected.
 - The operation journal excludes arguments, page content, form values, cookies, headers, query strings, fragments, screenshots, credentials, and OTPs. Offline authentication continuity returns only allowlisted database metadata and booleans. During controlled checkpoints, Playwright results are immediately reduced to domain/name/expiry metadata; values are never read, retained, compared, hashed, logged, or returned. Cookie-key hashes used for set comparison are never returned. An open Chromium SQLite store remains non-authoritative; live presence comes from the in-memory browser context. Page-event fingerprints use a process-local keyed digest and cannot be compared across launches.

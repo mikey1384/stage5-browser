@@ -104,7 +104,7 @@ export interface HumanBootstrapStatus {
   running: boolean;
   processId: number | null;
   launchedAt: string;
-  controlledByPlaywright: false;
+  controlledByPlaywright: boolean;
   automationFlagsPresent: false;
   exactUserInteractionsObserved: false;
   launchIdentity: BrowserLaunchIdentity;

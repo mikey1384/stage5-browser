@@ -24,7 +24,7 @@ Stage5 Browser treats failures according to the layer that owns recovery. A gene
 | Click outcome | click dispatches but URL/selection/visibility postcondition is unmet | bounded postcondition probe | caller | return `POSTCONDITION_FAILED` with `clickDispatched: true`; inspect before any retry |
 | Click actionability | target is hidden, disabled, out of viewport, detached, or covered | sanitized pre/post-failure target state and Playwright outcome | caller | return `OPERATION_FAILED` with dispatch certainty when known; inspect the page diagnostic before correcting or retrying |
 | Consequential ambiguity | click or submission times out after it may have fired | timeout after dispatch | caller and service adapter | do not retry; verify authoritative external state first |
-| Authentication/site policy | CAPTCHA, expired login, bot rejection | explicit uncontrolled bootstrap, fresh post-resume page state, and service response | user or service adapter | hand the native dedicated window to the user, require a normal close, resume, then verify with a fresh snapshot; or switch to API/CLI |
+| Authentication/site policy | CAPTCHA, expired login, bot rejection | explicit private bootstrap, fresh post-resume page state, and service response | user or service adapter | hand the native dedicated window to the user, follow its backend-specific leave-open/normal-close instruction, resume, then verify with a fresh snapshot; or switch to API/CLI |
 
 `browser_recover` recovers the worker boundary only. Its terminal result explicitly reports either `worker_recovered_browser_running` or `worker_recovered_browser_stopped`; neither outcome claims that an MCP tool catalog was reloaded.
 
