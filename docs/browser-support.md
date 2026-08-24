@@ -24,7 +24,7 @@ For any workflow that depends on a particular browser or authenticated profile:
 5. Call `browser_frames` before interacting with an embedded application. Select only a frame ID returned by that observation, then pass it as `frameId` to `browser_snapshot`, `browser_click_by_role`, or `browser_fill_by_role`. Use `frameId: null` for the main document.
 6. Continue with snapshots and semantic actions. If navigation replaces or detaches a frame, discard its old ID and call `browser_frames` again; frame IDs are intentionally session-scoped capabilities.
 
-Authentication is profile-specific. A successful Google or X login in `profiles/brave` does not authenticate `profiles/chrome`, and none of these profiles reuse the user's daily browser profile.
+Authentication is profile-specific and persistent. A successful Google or X login in `profiles/brave` survives agent and MCP restarts but does not authenticate `profiles/chrome`; none of these profiles reuse the user's daily browser profile. The first login may require the user to complete a password, passkey, CAPTCHA, or OTP in the visible Stage5 Browser window. See `agent-setup.md` for the full lifecycle.
 
 Cross-origin frames use the same semantic action surface as same-origin frames because Playwright owns the browser context. Stage5 Browser does not expose arbitrary JavaScript or CSS selectors as a workaround for inaccessible iframe DOM.
 

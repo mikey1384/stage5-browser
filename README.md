@@ -38,7 +38,7 @@ npm run build
 npm start
 ```
 
-The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. After installing or registering it locally as `stage5_browser`, start a new Codex/ChatGPT session so the tools are discovered.
+The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. After installing or registering it locally as `stage5_browser`, start a new agent process so its MCP tool catalog is rebuilt. For Claude Code, `claude mcp get stage5_browser` should report `Scope: User config` and `Status: ✔ Connected`; use `claude --continue` to resume the last conversation after restarting. See `docs/agent-setup.md` for registration, discovery, and authentication behavior.
 
 ## MCP tools
 
@@ -83,6 +83,7 @@ Key implementation files:
 - `src/browser-worker.ts` — IPC command dispatch
 - `src/browser-controller.ts` — direct Playwright browser operations
 - `src/browser-provider.ts` — trusted browser selection and installed-browser discovery
+- `docs/agent-setup.md` — Claude connection checks, session restart, and login lifecycle
 - `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
@@ -110,7 +111,7 @@ STAGE5_BROWSER_BROWSER=brave npm start
 
 Supported values are `chromium`, `chrome`, `brave`, `edge`, `firefox`, and `webkit`. Stage5 Browser discovers standard Chrome, Brave, and Edge installations on macOS, Windows, and Linux. Chromium, Firefox, and WebKit use the project-pinned Playwright runtimes installed by `npm run browser:install`.
 
-Agents do not need an MCP restart to choose browsers. After `browser_available`, a fresh agent uses `browser_start({ browser })`. If another backend is already running, it uses the explicitly destructive `browser_switch` instead; the target is preflighted before current tabs are closed. The supervisor preserves the selected backend across worker recovery. Each backend has an independent Stage5 profile and does not inherit cookies from a person's everyday browser profile.
+Agents do not need an MCP restart to choose browsers after the Stage5 Browser tools are already connected. After `browser_available`, an agent uses `browser_start({ browser })`. If another backend is already running, it uses the explicitly destructive `browser_switch` instead; the target is preflighted before current tabs are closed. The supervisor preserves the selected backend across worker recovery. Each backend has an independent Stage5 profile and does not inherit cookies from a person's everyday browser profile.
 
 For a nonstandard installation, a trusted operator can set an absolute executable path:
 

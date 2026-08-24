@@ -56,7 +56,7 @@ function createServer(): McpServer {
     { name: 'stage5-browser', version: '0.1.0' },
     {
       instructions:
-        'Use this local browser only when an API or CLI cannot complete the task. Before a browser-specific workflow, call browser_available, then use browser_start for a fresh profile or browser_switch only when replacing a running profile. Inspect with semantic snapshots before acting. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
+        'Use this local browser only when an API or CLI cannot complete the task. Before a browser-specific workflow, call browser_available, then use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: authentication survives agent restarts but never comes from the user\'s everyday browser or another backend. Inspect the current page instead of assuming login state; ask the user only for password, passkey, CAPTCHA, or OTP steps that require them, then snapshot again. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
     },
   );
 
@@ -98,7 +98,7 @@ function createServer(): McpServer {
     {
       title: 'Start dedicated browser',
       description:
-        'Start the requested isolated browser profile, or the configured default when omitted. Does not close a different profile that is already running.',
+        'Start the requested isolated persistent browser profile, or the configured default when omitted. Its login state survives agent restarts but is not imported from the user\'s everyday browser. Does not close a different profile that is already running.',
       inputSchema: z.object({ browser: z.enum(SUPPORTED_BROWSER_PRODUCTS).optional() }),
       annotations: {
         readOnlyHint: false,
