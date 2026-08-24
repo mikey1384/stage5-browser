@@ -42,6 +42,33 @@ export interface VisibleElementExpectation {
   frameId: string | null;
 }
 
+export interface FileInputObservation {
+  ref: string;
+  accept: string | null;
+  multiple: boolean;
+  disabled: boolean;
+  visible: boolean;
+  label: string | null;
+}
+
+export interface FileProcessingExpectation {
+  expectedComplete: VisibleElementExpectation | null;
+  expectedError: VisibleElementExpectation | null;
+  timeoutMs: number;
+}
+
+export interface FileSelectionWarning {
+  code:
+    | 'attachment_preview_unavailable'
+    | 'file_input_list_truncated'
+    | 'processing_completion_unverified'
+    | 'processing_error_observed'
+    | 'processing_marker_preexisting'
+    | 'progress_disappeared_unverified';
+  message: string;
+  suggestedAction: string;
+}
+
 export interface ClickPostcondition {
   expectedUrl: UrlExpectation | null;
   expectedSelected: boolean | null;
@@ -93,6 +120,13 @@ export interface ScrollPosition {
   contentWidth: number;
   contentHeight: number;
 }
+
+export type ScrollEndState =
+  | 'confirmed_by_marker'
+  | 'confirmed_document_start'
+  | 'dynamic_content_stalled'
+  | 'geometric_boundary_unconfirmed'
+  | 'not_at_boundary';
 
 export type AuthenticationHandoffState =
   | 'browser_stopped'
@@ -247,10 +281,12 @@ export interface BrowserCommandMap {
       frame: FrameSummary;
       snapshotId: string;
       refCount: number;
+      fileInputCount: number;
+      fileInputs: FileInputObservation[];
       scope: 'document' | 'modal';
       visibleModalCount: number;
       warnings: Array<{
-        code: 'ambiguous_visible_modals';
+        code: 'ambiguous_visible_modals' | 'file_input_list_truncated';
         message: string;
         suggestedAction: string;
       }>;
@@ -302,6 +338,63 @@ export interface BrowserCommandMap {
       postcondition: PostconditionResult | null;
     };
   };
+  setInputFiles: {
+    input: {
+      snapshotId: string;
+      ref: string;
+      paths: string[];
+      frameId: string | null;
+      completion: FileProcessingExpectation | null;
+      observationMs: number;
+      previewDepth: number;
+      timeoutMs: number;
+    };
+    output: {
+      page: PageSummary;
+      frame: FrameSummary;
+      selection: {
+        dispatched: true;
+        confirmedByInput: true;
+        fileCount: number;
+        totalBytes: number;
+        files: Array<{ name: string; sizeBytes: number }>;
+      };
+      attachmentPreview: {
+        observation: 'bounded_semantic_preview';
+        available: boolean;
+        depth: number;
+        snapshotId: string | null;
+        snapshot: string | null;
+      };
+      processing: {
+        state: 'completion_observed' | 'error_observed' | 'in_progress' | 'unverified';
+        evidence:
+          | 'expected_completion_visible'
+          | 'expected_error_visible'
+          | 'network_error_observed'
+          | 'progress_active'
+          | 'progress_complete'
+          | 'progress_disappeared'
+          | 'none';
+        progress: {
+          observed: boolean;
+          activeAtReturn: boolean;
+          completionValueObserved: boolean;
+          disappearedAfterObservation: boolean;
+          maxPercentObserved: number | null;
+        };
+        pageActivity: {
+          attribution: 'temporal_only';
+          observationMs: number;
+          successfulResponses: number;
+          redirects: number;
+          httpErrors: number;
+          failedRequests: number;
+        };
+      };
+      warnings: FileSelectionWarning[];
+    };
+  };
   fillByRole: {
     input: {
       role: SupportedAriaRole;
@@ -320,6 +413,7 @@ export interface BrowserCommandMap {
       count: number;
       settleMs: number;
       frameId: string | null;
+      endMarker: VisibleElementExpectation | null;
       timeoutMs: number;
     };
     output: {
@@ -330,8 +424,14 @@ export interface BrowserCommandMap {
       stepsCompleted: number;
       moved: boolean;
       contentGrew: boolean;
+      documentBoundaryReached: boolean;
       endReached: boolean;
-      warnings: Array<{ code: 'scroll_position_unchanged'; message: string; suggestedAction: string }>;
+      endState: ScrollEndState;
+      warnings: Array<{
+        code: 'dynamic_content_stalled' | 'scroll_end_unconfirmed' | 'scroll_position_unchanged';
+        message: string;
+        suggestedAction: string;
+      }>;
     };
   };
   findText: {

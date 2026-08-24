@@ -12,6 +12,7 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - open HTTP(S) pages with commit-first navigation, bounded redirect stabilization, redirect evidence, and structured HTTP warnings
 - reconcile the uniquely visible tab, list tabs, and explicitly select the authentication target
 - inspect an AI-oriented ARIA snapshot, automatically scope a unique visible modal, and safely target an observed document-bound reference
+- discover hidden file inputs, select explicitly authorized local files through one-use snapshot refs, and return attachment/processing evidence without opening a native picker
 - capture a screenshot
 - click or fill one unique semantic target, with optional click postcondition verification
 - scroll infinite pages and search currently rendered text without arbitrary script evaluation
@@ -56,12 +57,13 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_tabs` | List live tabs and reconcile a uniquely visible user-selected tab |
 | `browser_select_tab` | Select a tab by an observed index while Stage5 Browser controls the profile |
 | `browser_frames` | Inventory the active page's main document and nested frames |
-| `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound snapshot references |
+| `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound element and hidden-file-input references |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
 | `browser_click_by_role` | Click one unique role/name target, optionally verifying URL, selected state, or visible state |
 | `browser_click_ref` | Click one reference from the latest exact semantic snapshot, failing closed when stale |
+| `browser_set_input_files` | Select authorized regular local files through a fresh file-input ref and report attachment preview, progress, completion, and error evidence |
 | `browser_fill_by_role` | Fill one unique role/name target in the main document or an observed frame |
-| `browser_scroll` | Perform bounded page/frame scrolling and report position, growth, and end state |
+| `browser_scroll` | Perform bounded page/frame scrolling and distinguish a confirmed end from an unconfirmed geometric boundary or stalled dynamic feed |
 | `browser_find_text` | Search bounded rendered page/frame text and return matching snippets |
 | `browser_wait_for_url` | Wait for an exact, prefix, or substring URL postcondition |
 | `browser_auth_status` | Report the authentication-handoff lifecycle, actual runtime profile, three-phase storage boundary, native application, marker label, and exact profile binding |
@@ -102,6 +104,7 @@ Key implementation files:
 - `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
+- `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, selected-state, and dynamic-feed regressions plus the 0.5.0 remedy
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -115,8 +118,11 @@ Key implementation files:
 - A timed-out consequential action is never retried automatically.
 - A zero-match or multi-match semantic locator fails explicitly.
 - Snapshot references are accepted only from the latest snapshot of the same document and frame.
+- Hidden file-input references follow the same document-bound, one-use capability model. Local selection accepts only explicit absolute paths to readable regular files, rejects symlinks/directories, never opens a native picker, and never journals or returns absolute paths.
 - A unique visible modal becomes the snapshot root; multiple unresolved modals produce a warning instead of an arbitrary choice.
-- A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened.
+- A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened. The postcondition loop performs a final deadline-bound reconciliation so a state change during its last wait is not falsely reported as failure.
+- File selection confirms the browser input's privacy-minimized `FileList` metadata before returning. Its bounded processing result is `completion_observed`, `in_progress`, `error_observed`, or `unverified`; temporal network activity is never presented as proof of upload completion.
+- Downward scrolling reports the geometric document boundary separately from a confirmed feed end. Earlier dynamic growth followed by a stable boundary is `dynamic_content_stalled`, not `endReached: true`, unless the caller supplies a visible end marker.
 - A click that cannot dispatch records sanitized visibility, enabled-state, viewport, and pointer-interception evidence.
 - Human login bootstrap releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume.
 - Chromium-family handoffs use a fixed ephemeral loopback-only CDP endpoint. The user leaves the dedicated browser open; resume attaches to that exact process, so in-memory session cookies are never serialized, imported, or restored by a new browser process. A user-only profile record with an explicit `awaiting_user`/`controlled` state lets compatible worker replacements reconnect without allowing a fresh worker to attach during private login. The endpoint is not returned to agents or written to the operation journal.
@@ -129,7 +135,7 @@ Key implementation files:
 - Worker recovery reports whether a browser was actually running afterward; it never implies that the MCP catalog was refreshed.
 - Diagnostic journaling is best-effort and cannot change an operation's result. Page diagnostics include bounded success/redirect/error response classes and the events within the last click window, but exclude raw console/exception text, request metadata beyond method/type/status/sanitized URL, and all URL queries/fragments.
 
-Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, click actionability and postconditions, successful request capture, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, private human authentication, same-process Chromium session continuity across worker replacement, configured-to-runtime profile verification, Firefox restart-boundary storage diagnostics, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
+Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks and hidden-file-input capabilities, local-file preflight and attachment confirmation, click actionability and deadline-edge postconditions, upload progress/error evidence, successful request capture, dynamic-feed stall classification, timeline scrolling and text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, private human authentication, same-process Chromium session continuity across worker replacement, configured-to-runtime profile verification, Firefox restart-boundary storage diagnostics, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
 
 ## Browser selection
 
@@ -176,8 +182,9 @@ WebKit provides Safari-engine coverage, not control of the installed Safari appl
 - Only HTTP, HTTPS, and `about:blank` navigation are allowed.
 - URLs with embedded credentials are rejected.
 - The operation journal excludes arguments, page content, form values, cookies, headers, query strings, fragments, screenshots, credentials, and OTPs. Offline authentication continuity returns only allowlisted database metadata and booleans. During controlled checkpoints, Playwright results are immediately reduced to domain/name/expiry metadata; values are never read, retained, compared, hashed, logged, or returned. Cookie-key hashes used for set comparison are never returned. An open Chromium SQLite store remains non-authoritative; live presence comes from the in-memory browser context. Page-event fingerprints use a process-local keyed digest and cannot be compared across launches.
+- File selection is an explicit external write. It requires a file-input ref from the latest snapshot and absolute paths supplied for that one operation; paths are never echoed or journaled. Symlinks, directories, unreadable files, stale refs, and disabled inputs fail before selection.
 - Screenshots are explicit and written with user-only permissions.
-- Arbitrary JavaScript evaluation, credential extraction, CAPTCHA bypass, and unrestricted local-file navigation are not exposed.
+- Arbitrary JavaScript evaluation, credential extraction, CAPTCHA bypass, native file-picker navigation, and unrestricted local-file browsing are not exposed.
 
 ## Dogfooding model
 

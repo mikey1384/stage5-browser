@@ -69,6 +69,7 @@ try {
     'browser_snapshot',
     'browser_screenshot',
     'browser_click_ref',
+    'browser_set_input_files',
     'browser_scroll',
     'browser_find_text',
     'browser_wait_for_url',

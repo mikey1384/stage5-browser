@@ -23,9 +23,12 @@ A browser action may fail, but the controller must never leave the agent or user
 - Navigation uses commit-first semantics with a separately bounded readiness probe.
 - Do not return an arbitrary first match for an ambiguous locator.
 - Treat a semantic snapshot's `snapshotId` and refs as document-bound capabilities. Never accept a ref that was not present in the latest snapshot of the same frame, and invalidate refs after navigation or mutation.
+- Treat hidden file inputs as a distinct one-use snapshot capability. Accept only explicit absolute paths to readable regular files; reject symlinks, directories, stale refs, disabled inputs, and unsupported multiple selection before dispatch. Never log or return absolute paths, and never open the native picker.
 - When a click is intended to change state, use a bounded postcondition. If it fails, report that the click was dispatched and never replay it without a fresh observation.
+- File selection is consequential. Confirm privacy-minimized browser `FileList` metadata after dispatch, return a fresh semantic preview, and report processing as completion observed, in progress, error observed, or unverified. Temporal network activity is evidence, not proof of upload completion; never replay an ambiguous selection.
 - Return structured warnings for non-2xx navigation responses and explicit redirect evidence; a committed response is not automatically a successful workflow result.
 - Keep scrolling and text search bounded and generic. Do not add arbitrary agent-supplied JavaScript or service-specific timeline code.
+- Separate geometric scroll boundaries from semantic feed ends. A downward boundary without an explicit visible end marker is unconfirmed; earlier dynamic growth followed by no movement is a stalled feed, not a completed timeline.
 - Prefer one ARIA capture rooted at a uniquely established visible modal over stitching multiple snapshots or globally increasing document depth. Preserve one valid ref map; warn and fail back to the document when modal choice is ambiguous.
 - Page and click diagnostics must be bounded and sanitized. Expose categories, counts, status, and actionability facts—not raw console/exception text, request bodies or headers, query strings, fragments, entered values, or a full browser command line.
 

@@ -99,6 +99,8 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
       return controller.clickByRole(request.payload);
     case 'clickRef':
       return controller.clickRef(request.payload);
+    case 'setInputFiles':
+      return controller.setInputFiles(request.payload);
     case 'fillByRole':
       return controller.fillByRole(request.payload);
     case 'scroll':

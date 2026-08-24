@@ -277,10 +277,28 @@ describe('BrowserController', () => {
         response.end('<!doctype html><html><head><title>Observed destination</title></head><body>Reference worked</body></html>');
         return;
       }
+      if (requestUrl === '/dynamic') {
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        response.end(`<!doctype html><html><head><title>Dynamic timeline</title>
+          <style>body { margin: 0; } #dynamic-spacer { height: 1000px; }</style></head><body>
+          <article>Recent video</article><div id="dynamic-spacer"></div>
+          <script>
+            let grew = false;
+            addEventListener('scroll', () => {
+              if (!grew) {
+                grew = true;
+                document.querySelector('#dynamic-spacer').style.height = '2500px';
+              }
+            });
+          </script>
+        </body></html>`);
+        return;
+      }
 
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(`<!doctype html><html><head><title>Timeline fixture</title>
         <style>body { margin: 0; } #spacer { height: 2200px; }</style></head><body>
+        <button role="tab" aria-selected="false" onclick="setTimeout(() => this.setAttribute('aria-selected', 'true'), 50)">Delayed Media</button>
         <button role="tab" aria-selected="false" onclick="document.querySelector('#login').hidden = false">Media</button>
         <div id="login" role="dialog" hidden>Log in to continue</div>
         <a href="/destination"><span aria-hidden="true">decorative</span></a>
@@ -330,6 +348,20 @@ describe('BrowserController', () => {
       stabilizationMs: 0,
       timeoutMs: 5_000,
     });
+    const delayedSelection = await controller.clickByRole({
+      role: 'tab',
+      name: 'Delayed Media',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: true,
+        expectedVisible: null,
+        timeoutMs: 100,
+      },
+      timeoutMs: 5_000,
+    });
+    expect(delayedSelection.postcondition).toMatchObject({ passed: true });
     await expect(controller.clickByRole({
       role: 'tab',
       name: 'Media',
@@ -356,6 +388,7 @@ describe('BrowserController', () => {
       count: 1,
       settleMs: 100,
       frameId: null,
+      endMarker: null,
       timeoutMs: 5_000,
     });
     expect(scrolled.moved).toBe(true);
@@ -407,6 +440,30 @@ describe('BrowserController', () => {
       timeoutMs: 1_000,
     });
 
+    await controller.open({
+      url: `${baseUrl}/dynamic`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const dynamicBoundary = await controller.scroll({
+      direction: 'down',
+      amount: 'viewport',
+      count: 8,
+      settleMs: 50,
+      frameId: null,
+      endMarker: null,
+      timeoutMs: 5_000,
+    });
+    expect(dynamicBoundary).toMatchObject({
+      documentBoundaryReached: true,
+      endReached: false,
+      endState: 'dynamic_content_stalled',
+    });
+    expect(dynamicBoundary.warnings).toContainEqual(expect.objectContaining({
+      code: 'dynamic_content_stalled',
+    }));
+
     expect(await controller.authStatus()).toMatchObject({
       state: 'profile_ready',
       authenticated: 'unknown',
@@ -420,6 +477,135 @@ describe('BrowserController', () => {
       expected: null,
       timeoutMs: 1_000,
     })).rejects.toMatchObject<Partial<Stage5BrowserError>>({ code: 'AUTH_HANDOFF_REQUIRED' });
+  });
+
+  it('discovers hidden file inputs and sets only fresh snapshot-bound regular files', async () => {
+    server = createServer((request, response) => {
+      if (request.url === '/upload' && request.method === 'POST') {
+        request.resume();
+        setTimeout(() => {
+          response.writeHead(204);
+          response.end();
+        }, 25);
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Upload fixture</title></head><body>
+        <div role="dialog" aria-modal="true" aria-label="Post composer">
+          <h1>Create post</h1>
+          <input id="media" type="file" accept="video/mp4" hidden
+            onchange="
+              document.querySelector('#preview').textContent = this.files[0].name;
+              const progress = document.querySelector('#progress');
+              progress.hidden = false;
+              progress.value = 25;
+              fetch('/upload', { method: 'POST', body: 'fixture' }).then(() => {
+                progress.value = 100;
+                document.querySelector('#complete').hidden = false;
+              });
+            ">
+          <p id="preview"></p>
+          <progress id="progress" max="100" value="0" hidden></progress>
+          <button id="complete" hidden>Processing complete</button>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-upload-'));
+    const videoPath = path.join(temporaryRoot, 'rick-rubin-test.mp4');
+    await writeFile(videoPath, Buffer.alloc(1_024, 7));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/composer`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const observed = await controller.snapshot({
+      depth: 8,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(observed).toMatchObject({
+      fileInputCount: 1,
+      fileInputs: [{
+        accept: 'video/mp4',
+        multiple: false,
+        disabled: false,
+        visible: false,
+      }],
+    });
+    const fileRef = observed.fileInputs[0]?.ref;
+    expect(fileRef).toBeDefined();
+    if (fileRef === undefined) {
+      throw new Error('Fixture did not expose the hidden file input.');
+    }
+
+    await expect(controller.setInputFiles({
+      snapshotId: observed.snapshotId,
+      ref: fileRef,
+      paths: ['relative-video.mp4'],
+      frameId: null,
+      completion: null,
+      observationMs: 0,
+      previewDepth: 8,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'INVALID_FILE',
+      details: { reason: 'file_path_not_absolute', fileIndex: 0 },
+    });
+
+    const selected = await controller.setInputFiles({
+      snapshotId: observed.snapshotId,
+      ref: fileRef,
+      paths: [videoPath],
+      frameId: null,
+      completion: {
+        expectedComplete: {
+          role: 'button',
+          name: 'Processing complete',
+          exact: true,
+          frameId: null,
+        },
+        expectedError: null,
+        timeoutMs: 2_000,
+      },
+      observationMs: 100,
+      previewDepth: 8,
+      timeoutMs: 5_000,
+    });
+    expect(selected).toMatchObject({
+      selection: {
+        dispatched: true,
+        confirmedByInput: true,
+        fileCount: 1,
+        totalBytes: 1_024,
+        files: [{ name: 'rick-rubin-test.mp4', sizeBytes: 1_024 }],
+      },
+      attachmentPreview: { available: true },
+      processing: {
+        state: 'completion_observed',
+        evidence: 'expected_completion_visible',
+      },
+    });
+    expect(selected.attachmentPreview.snapshot).toContain('Processing complete');
+    expect(JSON.stringify(selected)).not.toContain(temporaryRoot);
+
+    await expect(controller.setInputFiles({
+      snapshotId: observed.snapshotId,
+      ref: fileRef,
+      paths: [videoPath],
+      frameId: null,
+      completion: null,
+      observationMs: 0,
+      previewDepth: 8,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'TARGET_NOT_FOUND',
+      details: { reason: 'stale_or_unknown_snapshot' },
+    });
   });
 
   it('hands authentication to an uncontrolled browser, scopes deep modals, and reports bounded diagnostics', async () => {

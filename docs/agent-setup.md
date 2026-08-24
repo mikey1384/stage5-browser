@@ -60,6 +60,12 @@ Do not terminate an old-looking MCP or worker PID without proving ownership; mul
 
 After any `browser_start` failure, call `browser_diagnostics` before retrying. It reports the selected backend's executable preflight, profile writability and known lock files, sandbox policy, automation-control mode, `--enable-automation` policy, observed `navigator.webdriver` value when Playwright has a page, the last sanitized launch-failure category, and a safe suggested action. After an interaction failure, the same tool reports bounded console/network categories, success/redirect/error response counts, requests within the last click window, and the most recent click's actionability and dispatch facts. Raw browser errors, console or exception text, credentials, page contents, headers, bodies, query strings, fragments, form values, and full launch arguments are not included.
 
+## File attachment model
+
+`browser_snapshot` separately reports any HTML file inputs as `fileInputs`, including hidden inputs omitted from the ARIA tree. Each entry carries an opaque ref bound to that exact latest snapshot, frame, document version, and observed element. To attach a user-authorized local file, call `browser_set_input_files` with that `snapshotId`, ref, frame ID, and absolute path. The tool consumes the capability once, rejects symlinks/directories/unreadable files before dispatch, bypasses the native picker, confirms the browser's privacy-minimized file metadata, and returns a fresh preview.
+
+Attaching is not posting, and file-input confirmation is not upload completion. Read `processing.state`: only `completion_observed` has explicit semantic progress or caller-supplied completion evidence. `in_progress`, `error_observed`, and `unverified` require inspection through the returned fresh snapshot before any submit action. A timeout or `file_selection_outcome_unknown` must never be replayed until a fresh observation proves the composer has no attachment. Absolute paths are neither returned nor journaled.
+
 ## Authentication model
 
 The normal mode is one isolated, persistent Stage5 Browser profile per browser backend:

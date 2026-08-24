@@ -65,9 +65,13 @@ Navigation waits for network commit, then performs separately bounded readiness 
 
 ### Semantic targeting
 
-The primary action tools use ARIA roles and accessible names. They require a unique match and reject ambiguity. A semantic snapshot uses the unique active visible modal as its root when one can be established, so surrounding application depth does not hide portal controls. Multiple unresolved modals produce a warning and a document snapshot instead of an arbitrary choice. Each single capture issues one random snapshot ID and Playwright element-reference map; reference clicks require that exact latest snapshot, frame, document version, and observed ref. Any action or navigation invalidates the capability.
+The primary action tools use ARIA roles and accessible names. They require a unique match and reject ambiguity. A semantic snapshot uses the unique active visible modal as its root when one can be established, so surrounding application depth does not hide portal controls. Multiple unresolved modals produce a warning and a document snapshot instead of an arbitrary choice. Each single capture issues one random snapshot ID and Playwright element-reference map; reference clicks require that exact latest snapshot, frame, document version, and observed ref. The same capture separately inventories a bounded set of hidden HTML file inputs and binds each opaque ref to the exact observed element handle. Any action or navigation invalidates both capability sets.
 
-Clicks can carry bounded URL, selected-state, and visible-element postconditions. Failure says explicitly that the click was dispatched, so a caller does not replay a potentially consequential action. Scrolling and rendered-text search use fixed internal operations rather than exposing arbitrary script execution or fragile one-off selectors.
+Clicks can carry bounded URL, selected-state, and visible-element postconditions. The final deadline-bound poll is always reconciled, so a selection state that changes during the final wait is not missed. Failure says explicitly that the click was dispatched, so a caller does not replay a potentially consequential action.
+
+File selection accepts only absolute paths to readable regular files, rejects symlinks and unsupported multiple selection, and calls Playwright's file-input primitive directly rather than exposing the native picker. It confirms name/size metadata from the browser `FileList`, consumes the input capability once, and returns a fresh semantic preview. Progress controls, caller-supplied semantic completion/error markers, and privacy-minimized page-activity deltas are observed within a bounded window. The result distinguishes completion observed, active progress, an error signal, and unverified processing; successful network responses alone never prove completion.
+
+Scrolling and rendered-text search use fixed internal operations rather than exposing arbitrary script execution or fragile one-off selectors. Scroll output separates document geometry from a semantic timeline end. A downward geometric boundary remains unconfirmed without a caller-supplied visible end marker, and a stable boundary after earlier content growth is classified as a stalled dynamic feed.
 
 Frames are explicit capabilities rather than hidden traversal. `browser_frames` inventories the active page and issues opaque, session-scoped IDs. Snapshots and semantic actions accept one of those IDs, including for cross-origin frames. Detachment or navigation invalidates the ID, forcing the caller to observe current frame state before acting again. Journaled frame URLs are reduced to origin and path.
 
@@ -77,7 +81,7 @@ The initial product is a local stdio MCP server. It exposes a narrow tool surfac
 
 ## Data handling
 
-The supervisor journal records operation identifiers, names, timings, outcomes, recovery state, and sanitized URL origin/path where useful. It must not record tool arguments, DOM/page content, query strings, fragments, headers, cookies, form values, screenshots, or credentials.
+The supervisor journal records operation identifiers, names, timings, outcomes, recovery state, and sanitized URL origin/path where useful. It must not record tool arguments, local file paths, DOM/page content, query strings, fragments, headers, cookies, form values, screenshots, or credentials. File-selection results expose only basenames, sizes, input constraints, and bounded processing evidence; absolute paths remain inside the worker call.
 
 Screenshots are captured only through an explicit tool call, stored with restrictive local permissions, and returned only to the invoking MCP client.
 

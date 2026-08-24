@@ -1,8 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, chmod, lstat, mkdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { Browser, BrowserContext, Frame, Locator, Page, Request, Response } from 'playwright';
+import type {
+  Browser,
+  BrowserContext,
+  ElementHandle,
+  Frame,
+  Locator,
+  Page,
+  Request,
+  Response,
+} from 'playwright';
 
 import {
   BROWSER_ENGINES,
@@ -73,6 +83,9 @@ import type {
   AvailableBrowsers,
   AuthenticationStatus,
   ClickPostcondition,
+  FileInputObservation,
+  FileProcessingExpectation,
+  FileSelectionWarning,
   FrameSummary,
   NavigationWarning,
   PageSummary,
@@ -80,7 +93,9 @@ import type {
   PostconditionResult,
   RedirectHop,
   ScrollPosition,
+  ScrollEndState,
   UrlExpectation,
+  VisibleElementExpectation,
 } from './protocol.js';
 import { sanitizeUrlForJournal, validateNavigationUrl } from './url-policy.js';
 
@@ -106,6 +121,29 @@ interface ObservedSnapshot {
   id: string;
   documentVersion: number;
   refs: Set<string>;
+  fileInputs: Map<string, ObservedFileInput>;
+}
+
+interface ObservedFileInput {
+  handle: ElementHandle<HTMLInputElement>;
+  observation: FileInputObservation;
+}
+
+interface LocalFileSelection {
+  canonicalPath: string;
+  name: string;
+  sizeBytes: number;
+}
+
+interface ProgressSample {
+  visibleCount: number;
+  activeCount: number;
+  completedCount: number;
+  maxPercent: number | null;
+}
+
+interface ScrollHistory {
+  dynamicGrowthObserved: boolean;
 }
 
 interface AuthenticationHandoff {
@@ -144,6 +182,7 @@ interface SnapshotRoot {
 
 const MAX_SEARCHABLE_TEXT_CHARACTERS = 2_000_000;
 const TEXT_SNIPPET_CONTEXT = 100;
+const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 
 export class BrowserController {
   private context: BrowserContext | undefined;
@@ -155,6 +194,7 @@ export class BrowserController {
   private readonly framesById = new Map<string, Frame>();
   private frameDocumentVersions = new WeakMap<Frame, number>();
   private readonly observedSnapshots = new Map<Frame, ObservedSnapshot>();
+  private readonly scrollHistories = new WeakMap<Frame, ScrollHistory>();
   private readonly pageDiagnostics = new PageDiagnosticBuffer();
   private boundPages = new WeakSet<Page>();
   private lastLaunchFailure: LaunchFailureDiagnostic | null = null;
@@ -391,7 +431,7 @@ export class BrowserController {
     this.context = undefined;
     this.activePage = undefined;
     this.framesById.clear();
-    this.observedSnapshots.clear();
+    this.discardAllObservedSnapshots();
     this.frameIds = new WeakMap<Frame, string>();
     this.frameDocumentVersions = new WeakMap<Frame, number>();
     this.boundPages = new WeakSet<Page>();
@@ -569,6 +609,7 @@ export class BrowserController {
   async snapshot(input: BrowserCommandInput<'snapshot'>): Promise<BrowserCommandOutput<'snapshot'>> {
     const page = await this.ensureActivePage(await this.ensureContext());
     const frame = this.resolveFrame(page, input.frameId);
+    const documentVersion = this.documentVersion(frame);
     const root = await this.snapshotRoot(frame);
     const snapshot = await root.locator.ariaSnapshot({
       mode: 'ai',
@@ -577,11 +618,30 @@ export class BrowserController {
       timeout: input.timeoutMs,
     });
     const refs = new Set(snapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? []);
+    const observedFileInputs = await this.observeFileInputs(root.locator);
+    if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
+      for (const { handle } of observedFileInputs.inputs.values()) {
+        await handle.dispose().catch(() => undefined);
+      }
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The document changed while the semantic snapshot was being captured.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'document_changed_during_snapshot',
+            suggestedAction: 'Wait for the current page to stabilize, then take one fresh snapshot.',
+          },
+        },
+      );
+    }
     const snapshotId = randomUUID();
+    this.discardObservedSnapshot(frame);
     this.observedSnapshots.set(frame, {
       id: snapshotId,
-      documentVersion: this.documentVersion(frame),
+      documentVersion,
       refs,
+      fileInputs: observedFileInputs.inputs,
     });
 
     this.lastKnownUrl = page.url();
@@ -596,9 +656,20 @@ export class BrowserController {
       frame: this.frameSummary(frame, page),
       snapshotId,
       refCount: refs.size,
+      fileInputCount: observedFileInputs.inputs.size,
+      fileInputs: [...observedFileInputs.inputs.values()].map(({ observation }) => observation),
       scope: root.scope,
       visibleModalCount: root.visibleModalCount,
-      warnings: root.warnings,
+      warnings: [
+        ...root.warnings,
+        ...(observedFileInputs.truncated
+          ? [{
+              code: 'file_input_list_truncated' as const,
+              message: `The frame contains more than ${MAX_FILE_INPUTS_PER_SNAPSHOT} file inputs; only the first bounded set was observed.`,
+              suggestedAction: 'Narrow to the intended frame or page state before selecting a file input; Stage5 Browser will not guess among unobserved controls.',
+            }]
+          : []),
+      ],
       snapshot,
     };
   }
@@ -724,7 +795,7 @@ export class BrowserController {
       }
       throw error;
     } finally {
-      this.observedSnapshots.delete(frame);
+      this.discardObservedSnapshot(frame);
     }
   }
 
@@ -819,8 +890,199 @@ export class BrowserController {
       }
       throw error;
     } finally {
-      this.observedSnapshots.delete(frame);
+      this.discardObservedSnapshot(frame);
     }
+  }
+
+  async setInputFiles(
+    input: BrowserCommandInput<'setInputFiles'>,
+  ): Promise<BrowserCommandOutput<'setInputFiles'>> {
+    const page = await this.ensureActivePage(await this.ensureContext());
+    const frame = this.resolveFrame(page, input.frameId);
+    const observed = this.observedSnapshots.get(frame);
+    if (
+      observed === undefined ||
+      observed.id !== input.snapshotId ||
+      observed.documentVersion !== this.documentVersion(frame)
+    ) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The file-input reference does not belong to the latest snapshot of the current document.',
+        {
+          details: {
+            reason: 'stale_or_unknown_snapshot',
+            snapshotId: input.snapshotId,
+            frameId: input.frameId,
+          },
+        },
+      );
+    }
+    const target = observed.fileInputs.get(input.ref);
+    if (target === undefined) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The requested file-input reference was not present in that snapshot.',
+        {
+          details: {
+            reason: 'file_input_reference_not_observed',
+            ref: input.ref,
+            snapshotId: input.snapshotId,
+          },
+        },
+      );
+    }
+
+    const files = await this.preflightLocalFiles(input.paths);
+    const liveInput = await this.inspectFileInput(target.handle);
+    if (liveInput === null) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The observed file input is no longer attached to the current document.',
+        {
+          details: {
+            reason: 'file_input_detached',
+            ref: input.ref,
+            snapshotId: input.snapshotId,
+          },
+        },
+      );
+    }
+    if (liveInput.disabled) {
+      throw new Stage5BrowserError('OPERATION_FAILED', 'The observed file input is disabled.', {
+        recoverable: true,
+        details: {
+          reason: 'file_input_disabled',
+          ref: input.ref,
+          suggestedAction: 'Inspect the current page state and obtain a fresh snapshot after the upload control becomes enabled.',
+        },
+      });
+    }
+    if (!liveInput.multiple && files.length > 1) {
+      throw new Stage5BrowserError('INVALID_FILE', 'The observed file input accepts only one file.', {
+        details: {
+          reason: 'file_input_does_not_accept_multiple',
+          suppliedFileCount: files.length,
+        },
+      });
+    }
+
+    const diagnosticsBefore = this.pageDiagnostics.snapshot(page);
+    const processingBaseline = {
+      completeVisible: input.completion?.expectedComplete === null || input.completion === null
+        ? false
+        : await this.visibleExpectationObserved(page, input.completion.expectedComplete),
+      errorVisible: input.completion?.expectedError === null || input.completion === null
+        ? false
+        : await this.visibleExpectationObserved(page, input.completion.expectedError),
+      progress: await this.progressSample(frame),
+    };
+    const startedAtMs = Date.now();
+    this.consumeObservedSnapshot(frame, target.handle);
+    try {
+      await target.handle.setInputFiles(
+        files.map((file) => file.canonicalPath),
+        { timeout: input.timeoutMs },
+      );
+    } catch (error) {
+      await target.handle.dispose().catch(() => undefined);
+      throw new Stage5BrowserError(
+        'OPERATION_FAILED',
+        'The browser could not set the observed file input.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'file_selection_failed',
+            fileSelectionDispatched: 'unknown',
+            actionOutcome: 'file_selection_outcome_unknown',
+            suggestedAction: 'Inspect the current composer before selecting the file again; the failed operation is not replayed automatically.',
+          },
+          cause: error,
+        },
+      );
+    }
+
+    const selectedFiles = await this.selectedFileMetadata(target.handle);
+    await target.handle.dispose().catch(() => undefined);
+    const selectionConfirmed =
+      selectedFiles.length === files.length &&
+      selectedFiles.every((selected, index) => {
+        const expected = files[index];
+        return expected !== undefined && selected.name === expected.name && selected.sizeBytes === expected.sizeBytes;
+      });
+    if (!selectionConfirmed) {
+      throw new Stage5BrowserError(
+        'POSTCONDITION_FAILED',
+        'The file selection was dispatched, but the browser input did not retain the expected file metadata.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'file_selection_not_confirmed',
+            fileSelectionDispatched: true,
+            actionOutcome: 'file_selection_dispatched_postcondition_failed',
+            expectedFileCount: files.length,
+            observedFileCount: selectedFiles.length,
+            suggestedAction: 'Inspect the current composer before any retry. Do not select the file again unless a fresh snapshot proves no attachment exists.',
+          },
+        },
+      );
+    }
+
+    const processing = await this.observeFileProcessing(
+      page,
+      frame,
+      input.completion,
+      input.observationMs,
+      Math.max(0, input.timeoutMs - (Date.now() - startedAtMs)),
+      diagnosticsBefore,
+      processingBaseline,
+    );
+
+    let attachmentPreview: BrowserCommandOutput<'setInputFiles'>['attachmentPreview'] = {
+      observation: 'bounded_semantic_preview',
+      available: false,
+      depth: input.previewDepth,
+      snapshotId: null,
+      snapshot: null,
+    };
+    const warnings: FileSelectionWarning[] = [...processing.warnings];
+    try {
+      const remaining = Math.max(100, input.timeoutMs - (Date.now() - startedAtMs));
+      const preview = await this.snapshot({
+        depth: input.previewDepth,
+        boxes: false,
+        frameId: input.frameId,
+        timeoutMs: remaining,
+      });
+      attachmentPreview = {
+        observation: 'bounded_semantic_preview',
+        available: true,
+        depth: input.previewDepth,
+        snapshotId: preview.snapshotId,
+        snapshot: preview.snapshot,
+      };
+    } catch {
+      warnings.push({
+        code: 'attachment_preview_unavailable',
+        message: 'The file input retained the selected file, but a bounded semantic preview could not be captured.',
+        suggestedAction: 'Do not select the file again. Take one fresh snapshot to inspect attachment and processing state.',
+      });
+    }
+
+    this.lastKnownUrl = page.url();
+    return {
+      page: await this.pageSummary(page),
+      frame: this.frameSummary(frame, page),
+      selection: {
+        dispatched: true,
+        confirmedByInput: true,
+        fileCount: files.length,
+        totalBytes: files.reduce((total, file) => total + file.sizeBytes, 0),
+        files: files.map(({ name, sizeBytes }) => ({ name, sizeBytes })),
+      },
+      attachmentPreview,
+      processing: processing.result,
+      warnings,
+    };
   }
 
   async fillByRole(input: BrowserCommandInput<'fillByRole'>): Promise<BrowserCommandOutput<'fillByRole'>> {
@@ -830,7 +1092,7 @@ export class BrowserController {
     await this.requireUniqueTarget(locator.count(), input.role, input.name);
     await locator.fill(input.value, { timeout: input.timeoutMs });
     this.lastKnownUrl = page.url();
-    this.observedSnapshots.delete(frame);
+    this.discardObservedSnapshot(frame);
     return { page: await this.pageSummary(page), frame: this.frameSummary(frame, page) };
   }
 
@@ -840,6 +1102,10 @@ export class BrowserController {
     const before = await this.scrollPosition(frame);
     const startedAt = Date.now();
     let stepsCompleted = 0;
+    let previous = before;
+    let contentGrew = false;
+    let finalStepMoved = false;
+    let finalStepGrew = false;
 
     for (let step = 0; step < input.count; step += 1) {
       if (Date.now() - startedAt + input.settleMs >= input.timeoutMs) {
@@ -850,23 +1116,81 @@ export class BrowserController {
       if (input.settleMs > 0) {
         await page.waitForTimeout(input.settleMs);
       }
+      const current = await this.scrollPosition(frame);
+      finalStepMoved = previous.x !== current.x || previous.y !== current.y;
+      finalStepGrew =
+        current.contentHeight > previous.contentHeight ||
+        current.contentWidth > previous.contentWidth;
+      contentGrew ||= finalStepGrew;
+      previous = current;
       if (input.amount === 'document_start' || input.amount === 'document_end') {
         break;
       }
     }
 
-    const after = await this.scrollPosition(frame);
+    const after = stepsCompleted === 0 ? await this.scrollPosition(frame) : previous;
     const moved = before.x !== after.x || before.y !== after.y;
-    const contentGrew = after.contentHeight > before.contentHeight || after.contentWidth > before.contentWidth;
-    const endReached = input.amount === 'document_start'
+    contentGrew ||=
+      after.contentHeight > before.contentHeight ||
+      after.contentWidth > before.contentWidth;
+    const documentBoundaryReached = input.amount === 'document_start'
       ? after.y <= 0
       : input.amount === 'document_end'
         ? after.y >= after.maxY
         : input.direction === 'down'
           ? after.y >= after.maxY
           : after.y <= 0;
+    const priorHistory = this.scrollHistories.get(frame);
+    const dynamicGrowthObserved = contentGrew || priorHistory?.dynamicGrowthObserved === true;
+    this.scrollHistories.set(frame, { dynamicGrowthObserved });
+    const endMarkerObserved = input.endMarker === null
+      ? false
+      : await this.visibleExpectationObserved(page, input.endMarker);
+    const movingTowardDocumentStart =
+      input.amount === 'document_start' ||
+      (input.amount !== 'document_end' && input.direction === 'up');
+    const dynamicContentStalled =
+      documentBoundaryReached &&
+      !movingTowardDocumentStart &&
+      !finalStepMoved &&
+      !finalStepGrew &&
+      dynamicGrowthObserved;
+    let endState: ScrollEndState;
+    if (endMarkerObserved) {
+      endState = 'confirmed_by_marker';
+    } else if (documentBoundaryReached && movingTowardDocumentStart) {
+      endState = 'confirmed_document_start';
+    } else if (dynamicContentStalled) {
+      endState = 'dynamic_content_stalled';
+    } else if (documentBoundaryReached) {
+      endState = 'geometric_boundary_unconfirmed';
+    } else {
+      endState = 'not_at_boundary';
+    }
+    const endReached = endState === 'confirmed_by_marker' || endState === 'confirmed_document_start';
     this.lastKnownUrl = page.url();
-    this.observedSnapshots.delete(frame);
+    this.discardObservedSnapshot(frame);
+    const warnings: BrowserCommandOutput<'scroll'>['warnings'] = [];
+    if (!moved && !contentGrew) {
+      warnings.push({
+        code: 'scroll_position_unchanged',
+        message: 'The requested scroll did not change the document position or size.',
+        suggestedAction: 'Inspect the current snapshot for a nested scroll container, a stalled dynamic feed, or an explicit end marker.',
+      });
+    }
+    if (dynamicContentStalled) {
+      warnings.push({
+        code: 'dynamic_content_stalled',
+        message: 'The document is at its current geometric boundary after earlier dynamic growth, but the feed end is not confirmed.',
+        suggestedAction: 'Do not treat this as the end of the feed. Inspect for loading, rate-limit, or retry state, or supply a visible end marker on a later bounded scroll.',
+      });
+    } else if (endState === 'geometric_boundary_unconfirmed') {
+      warnings.push({
+        code: 'scroll_end_unconfirmed',
+        message: 'The document reached its current geometric boundary without an explicit end marker.',
+        suggestedAction: 'Treat the feed end as unconfirmed; inspect the page or provide a visible end marker instead of assuming all dynamic content loaded.',
+      });
+    }
     return {
       page: await this.pageSummary(page),
       frame: this.frameSummary(frame, page),
@@ -875,14 +1199,10 @@ export class BrowserController {
       stepsCompleted,
       moved,
       contentGrew,
+      documentBoundaryReached,
       endReached,
-      warnings: moved || contentGrew
-        ? []
-        : [{
-            code: 'scroll_position_unchanged',
-            message: 'The requested scroll did not change the document position or size.',
-            suggestedAction: 'Inspect the current snapshot for a nested scroll container or confirm that the timeline end was reached.',
-          }],
+      endState,
+      warnings,
     };
   }
 
@@ -1687,7 +2007,7 @@ export class BrowserController {
         this.context = undefined;
         this.activePage = undefined;
         this.framesById.clear();
-        this.observedSnapshots.clear();
+        this.discardAllObservedSnapshots();
         this.frameIds = new WeakMap<Frame, string>();
         this.frameDocumentVersions = new WeakMap<Frame, number>();
         this.boundPages = new WeakSet<Page>();
@@ -1709,7 +2029,7 @@ export class BrowserController {
     this.pageDiagnostics.bind(page);
     page.on('framenavigated', (frame) => {
       this.frameDocumentVersions.set(frame, this.documentVersion(frame) + 1);
-      this.observedSnapshots.delete(frame);
+      this.discardObservedSnapshot(frame);
     });
     page.on('framedetached', (frame) => this.removeFrame(frame));
     page.on('crash', () => {
@@ -1865,14 +2185,14 @@ export class BrowserController {
     if (id !== undefined) {
       this.framesById.delete(id);
     }
-    this.observedSnapshots.delete(frame);
+    this.discardObservedSnapshot(frame);
   }
 
   private removePageFrames(page: Page): void {
     for (const [id, frame] of this.framesById) {
       if (frame.page() === page) {
         this.framesById.delete(id);
-        this.observedSnapshots.delete(frame);
+        this.discardObservedSnapshot(frame);
       }
     }
   }
@@ -1927,6 +2247,166 @@ export class BrowserController {
         suggestedAction: 'Inspect the document snapshot and use a unique semantic target; Stage5 Browser did not choose a dialog arbitrarily.',
       }],
     };
+  }
+
+  private async observeFileInputs(
+    root: Locator,
+  ): Promise<{ inputs: Map<string, ObservedFileInput>; truncated: boolean }> {
+    const locator = root.locator('input[type="file"]');
+    const total = await locator.count();
+    const inputs = new Map<string, ObservedFileInput>();
+    try {
+      for (let index = 0; index < Math.min(total, MAX_FILE_INPUTS_PER_SNAPSHOT); index += 1) {
+        const handle = await locator.nth(index).elementHandle() as ElementHandle<HTMLInputElement> | null;
+        if (handle === null) {
+          continue;
+        }
+        const live = await this.inspectFileInput(handle);
+        if (live === null) {
+          await handle.dispose().catch(() => undefined);
+          continue;
+        }
+        const ref = `file-${randomUUID()}`;
+        inputs.set(ref, {
+          handle,
+          observation: { ref, ...live },
+        });
+      }
+    } catch (error) {
+      for (const { handle } of inputs.values()) {
+        await handle.dispose().catch(() => undefined);
+      }
+      throw error;
+    }
+    return { inputs, truncated: total > MAX_FILE_INPUTS_PER_SNAPSHOT };
+  }
+
+  private async inspectFileInput(
+    handle: ElementHandle<HTMLInputElement>,
+  ): Promise<Omit<FileInputObservation, 'ref'> | null> {
+    try {
+      return await handle.evaluate((element) => {
+        if (!(element instanceof HTMLInputElement) || element.type.toLocaleLowerCase() !== 'file') {
+          return null;
+        }
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const visible =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0';
+        const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((id) => document.getElementById(id)?.textContent ?? '')
+          .join(' ');
+        const associatedLabels = Array.from(element.labels ?? [])
+          .map((label) => label.innerText || label.textContent || '')
+          .join(' ');
+        const rawLabel = [
+          element.getAttribute('aria-label') ?? '',
+          labelledBy,
+          associatedLabels,
+          element.getAttribute('title') ?? '',
+        ].find((candidate) => candidate.trim().length > 0) ?? '';
+        const label = rawLabel.replace(/\s+/g, ' ').trim().slice(0, 200);
+        const accept = element.accept.trim().slice(0, 500);
+        return {
+          accept: accept.length === 0 ? null : accept,
+          multiple: element.multiple,
+          disabled: element.disabled || element.getAttribute('aria-disabled') === 'true',
+          visible,
+          label: label.length === 0 ? null : label,
+        };
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private async selectedFileMetadata(
+    handle: ElementHandle<HTMLInputElement>,
+  ): Promise<Array<{ name: string; sizeBytes: number }>> {
+    try {
+      return await handle.evaluate((element) => Array.from(element.files ?? []).map((file) => ({
+        name: file.name,
+        sizeBytes: file.size,
+      })));
+    } catch {
+      return [];
+    }
+  }
+
+  private async preflightLocalFiles(paths: string[]): Promise<LocalFileSelection[]> {
+    const files: LocalFileSelection[] = [];
+    for (let index = 0; index < paths.length; index += 1) {
+      const suppliedPath = paths[index];
+      if (suppliedPath === undefined || !path.isAbsolute(suppliedPath)) {
+        throw new Stage5BrowserError('INVALID_FILE', 'Every selected file must use an absolute local path.', {
+          details: { reason: 'file_path_not_absolute', fileIndex: index },
+        });
+      }
+      let metadata;
+      try {
+        metadata = await lstat(suppliedPath);
+      } catch {
+        throw new Stage5BrowserError('INVALID_FILE', 'A selected local file does not exist or cannot be inspected.', {
+          details: { reason: 'file_not_accessible', fileIndex: index },
+        });
+      }
+      if (metadata.isSymbolicLink()) {
+        throw new Stage5BrowserError('INVALID_FILE', 'Symbolic links cannot be selected for upload.', {
+          details: { reason: 'file_is_symbolic_link', fileIndex: index },
+        });
+      }
+      if (!metadata.isFile()) {
+        throw new Stage5BrowserError('INVALID_FILE', 'Only regular local files can be selected for upload.', {
+          details: { reason: 'file_is_not_regular', fileIndex: index },
+        });
+      }
+      try {
+        await access(suppliedPath, fsConstants.R_OK);
+      } catch {
+        throw new Stage5BrowserError('INVALID_FILE', 'A selected local file is not readable.', {
+          details: { reason: 'file_not_readable', fileIndex: index },
+        });
+      }
+      const canonicalPath = await realpath(suppliedPath);
+      files.push({
+        canonicalPath,
+        name: path.basename(canonicalPath),
+        sizeBytes: metadata.size,
+      });
+    }
+    return files;
+  }
+
+  private consumeObservedSnapshot(
+    frame: Frame,
+    retainedHandle: ElementHandle<HTMLInputElement> | null = null,
+  ): void {
+    const observed = this.observedSnapshots.get(frame);
+    this.observedSnapshots.delete(frame);
+    if (observed === undefined) {
+      return;
+    }
+    for (const { handle } of observed.fileInputs.values()) {
+      if (handle !== retainedHandle) {
+        void handle.dispose().catch(() => undefined);
+      }
+    }
+  }
+
+  private discardObservedSnapshot(frame: Frame): void {
+    this.consumeObservedSnapshot(frame);
+  }
+
+  private discardAllObservedSnapshots(): void {
+    for (const frame of this.observedSnapshots.keys()) {
+      this.discardObservedSnapshot(frame);
+    }
   }
 
   private documentVersion(frame: Frame): number {
@@ -2030,16 +2510,17 @@ export class BrowserController {
     const timeoutMs = Math.min(postcondition.timeoutMs, remainingTimeoutMs);
     const startedAt = Date.now();
     let checks: PostconditionCheck[] = [];
-    do {
+    while (true) {
       checks = await this.postconditionChecks(page, clickedFrame, clickedLocator, postcondition);
       if (checks.length > 0 && checks.every((check) => check.passed)) {
         return { passed: true, checks };
       }
-      if (Date.now() - startedAt >= timeoutMs) {
+      const remaining = timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
         break;
       }
-      await page.waitForTimeout(Math.min(100, Math.max(1, timeoutMs - (Date.now() - startedAt))));
-    } while (Date.now() - startedAt < timeoutMs);
+      await page.waitForTimeout(Math.min(100, remaining));
+    }
 
     throw new Stage5BrowserError(
       'POSTCONDITION_FAILED',
@@ -2130,33 +2611,285 @@ export class BrowserController {
   private async selectedState(locator: Locator): Promise<boolean | null> {
     try {
       return await locator.evaluate((element) => {
-        const ariaSelected = element.getAttribute('aria-selected');
-        if (ariaSelected !== null) {
-          return ariaSelected === 'true';
+        const candidates: Element[] = [element];
+        let ancestor = element.parentElement;
+        for (let depth = 0; depth < 3 && ancestor !== null; depth += 1) {
+          candidates.push(ancestor);
+          ancestor = ancestor.parentElement;
         }
-        const ariaChecked = element.getAttribute('aria-checked');
-        if (ariaChecked !== null) {
-          return ariaChecked === 'true';
-        }
-        const ariaPressed = element.getAttribute('aria-pressed');
-        if (ariaPressed !== null) {
-          return ariaPressed === 'true';
-        }
-        const ariaCurrent = element.getAttribute('aria-current');
-        if (ariaCurrent !== null) {
-          return ariaCurrent !== 'false';
-        }
-        if (element instanceof HTMLOptionElement) {
-          return element.selected;
-        }
-        if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
-          return element.checked;
+        for (const candidate of candidates) {
+          const ariaSelected = candidate.getAttribute('aria-selected');
+          if (ariaSelected !== null) {
+            return ariaSelected === 'true';
+          }
+          const ariaChecked = candidate.getAttribute('aria-checked');
+          if (ariaChecked !== null) {
+            return ariaChecked === 'true';
+          }
+          const ariaPressed = candidate.getAttribute('aria-pressed');
+          if (ariaPressed !== null) {
+            return ariaPressed === 'true';
+          }
+          const ariaCurrent = candidate.getAttribute('aria-current');
+          if (ariaCurrent !== null) {
+            return ariaCurrent !== 'false';
+          }
+          if (candidate instanceof HTMLOptionElement) {
+            return candidate.selected;
+          }
+          if (candidate instanceof HTMLInputElement && (candidate.type === 'checkbox' || candidate.type === 'radio')) {
+            return candidate.checked;
+          }
         }
         return null;
       });
     } catch {
       return null;
     }
+  }
+
+  private async visibleExpectationObserved(
+    page: Page,
+    expectation: VisibleElementExpectation,
+  ): Promise<boolean> {
+    try {
+      const frame = expectation.frameId === null
+        ? page.mainFrame()
+        : this.resolveFrame(page, expectation.frameId);
+      const locator = frame.getByRole(expectation.role, {
+        name: expectation.name,
+        exact: expectation.exact,
+      });
+      return (await locator.count()) === 1 && await locator.isVisible();
+    } catch {
+      return false;
+    }
+  }
+
+  private async progressSample(frame: Frame): Promise<ProgressSample> {
+    try {
+      return await frame.locator('progress, [role="progressbar"]').evaluateAll((elements) => {
+        let visibleCount = 0;
+        let activeCount = 0;
+        let completedCount = 0;
+        let maxPercent: number | null = null;
+        for (const element of elements) {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          const visible =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.opacity !== '0';
+          if (!visible) {
+            continue;
+          }
+          visibleCount += 1;
+          const nativeNow = element instanceof HTMLProgressElement ? element.value : Number.NaN;
+          const nativeMax = element instanceof HTMLProgressElement ? element.max : Number.NaN;
+          const ariaNow = Number.parseFloat(element.getAttribute('aria-valuenow') ?? '');
+          const ariaMax = Number.parseFloat(element.getAttribute('aria-valuemax') ?? '');
+          const now = Number.isFinite(nativeNow) ? nativeNow : ariaNow;
+          const max = Number.isFinite(nativeMax) && nativeMax > 0 ? nativeMax : ariaMax;
+          if (Number.isFinite(now) && Number.isFinite(max) && max > 0) {
+            const percent = Math.max(0, Math.min(100, (now / max) * 100));
+            maxPercent = maxPercent === null ? percent : Math.max(maxPercent, percent);
+            if (now >= max) {
+              completedCount += 1;
+            } else {
+              activeCount += 1;
+            }
+          } else {
+            activeCount += 1;
+          }
+        }
+        return { visibleCount, activeCount, completedCount, maxPercent };
+      });
+    } catch {
+      return { visibleCount: 0, activeCount: 0, completedCount: 0, maxPercent: null };
+    }
+  }
+
+  private async observeFileProcessing(
+    page: Page,
+    frame: Frame,
+    expectation: FileProcessingExpectation | null,
+    observationMs: number,
+    remainingTimeoutMs: number,
+    diagnosticsBefore: ReturnType<PageDiagnosticBuffer['snapshot']>,
+    baseline: {
+      completeVisible: boolean;
+      errorVisible: boolean;
+      progress: ProgressSample;
+    },
+  ): Promise<{
+    result: BrowserCommandOutput<'setInputFiles'>['processing'];
+    warnings: FileSelectionWarning[];
+  }> {
+    const budgetMs = Math.max(
+      0,
+      Math.min(expectation?.timeoutMs ?? observationMs, remainingTimeoutMs),
+    );
+    const startedAt = Date.now();
+    let progressObserved = false;
+    let completionValueObserved = false;
+    let maxPercentObserved: number | null = null;
+    let finalProgress: ProgressSample = {
+      visibleCount: 0,
+      activeCount: 0,
+      completedCount: 0,
+      maxPercent: null,
+    };
+    let expectedCompletionObserved = false;
+    let expectedErrorObserved = false;
+    let completionMarkerWasAbsent = !baseline.completeVisible;
+    let errorMarkerWasAbsent = !baseline.errorVisible;
+    let completedProgressWasAbsent = baseline.progress.completedCount === 0;
+
+    while (true) {
+      finalProgress = await this.progressSample(frame);
+      progressObserved ||= finalProgress.visibleCount > 0;
+      if (finalProgress.completedCount === 0) {
+        completedProgressWasAbsent = true;
+      } else if (completedProgressWasAbsent) {
+        completionValueObserved = true;
+      }
+      if (finalProgress.maxPercent !== null) {
+        maxPercentObserved = maxPercentObserved === null
+          ? finalProgress.maxPercent
+          : Math.max(maxPercentObserved, finalProgress.maxPercent);
+      }
+      if (expectation?.expectedError !== null && expectation?.expectedError !== undefined) {
+        const visible = await this.visibleExpectationObserved(page, expectation.expectedError);
+        if (!visible) {
+          errorMarkerWasAbsent = true;
+        } else if (errorMarkerWasAbsent) {
+          expectedErrorObserved = true;
+        }
+      }
+      if (!expectedErrorObserved && expectation?.expectedComplete !== null && expectation?.expectedComplete !== undefined) {
+        const visible = await this.visibleExpectationObserved(page, expectation.expectedComplete);
+        if (!visible) {
+          completionMarkerWasAbsent = true;
+        } else if (completionMarkerWasAbsent) {
+          expectedCompletionObserved = true;
+        }
+      }
+      if (expectedErrorObserved || expectedCompletionObserved || completionValueObserved) {
+        break;
+      }
+      const remaining = budgetMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        break;
+      }
+      await page.waitForTimeout(Math.min(200, remaining));
+    }
+
+    const diagnosticsAfter = this.pageDiagnostics.snapshot(page);
+    const successfulResponses = Math.max(
+      0,
+      diagnosticsAfter.totals.httpSuccesses - diagnosticsBefore.totals.httpSuccesses,
+    );
+    const redirects = Math.max(
+      0,
+      diagnosticsAfter.totals.httpRedirects - diagnosticsBefore.totals.httpRedirects,
+    );
+    const httpErrors = Math.max(
+      0,
+      diagnosticsAfter.totals.httpErrors - diagnosticsBefore.totals.httpErrors,
+    );
+    const failedRequests = Math.max(
+      0,
+      diagnosticsAfter.totals.failedRequests - diagnosticsBefore.totals.failedRequests,
+    );
+    const networkErrorObserved = httpErrors > 0 || failedRequests > 0;
+    const activeAtReturn = finalProgress.activeCount > 0;
+    const disappearedAfterObservation = progressObserved && finalProgress.visibleCount === 0;
+
+    let state: BrowserCommandOutput<'setInputFiles'>['processing']['state'];
+    let evidence: BrowserCommandOutput<'setInputFiles'>['processing']['evidence'];
+    if (expectedErrorObserved) {
+      state = 'error_observed';
+      evidence = 'expected_error_visible';
+    } else if (expectedCompletionObserved) {
+      state = 'completion_observed';
+      evidence = 'expected_completion_visible';
+    } else if (completionValueObserved) {
+      state = 'completion_observed';
+      evidence = 'progress_complete';
+    } else if (activeAtReturn) {
+      state = 'in_progress';
+      evidence = 'progress_active';
+    } else if (networkErrorObserved) {
+      state = 'error_observed';
+      evidence = 'network_error_observed';
+    } else if (disappearedAfterObservation) {
+      state = 'unverified';
+      evidence = 'progress_disappeared';
+    } else {
+      state = 'unverified';
+      evidence = 'none';
+    }
+
+    const warnings: FileSelectionWarning[] = [];
+    if (
+      (baseline.completeVisible && !expectedCompletionObserved) ||
+      (baseline.errorVisible && !expectedErrorObserved) ||
+      (baseline.progress.visibleCount > 0 && !completionValueObserved)
+    ) {
+      warnings.push({
+        code: 'processing_marker_preexisting',
+        message: 'A supplied completion/error marker or completed progress control was already present before file selection and did not make a new transition.',
+        suggestedAction: 'Treat the pre-existing marker as non-causal and inspect the fresh attachment preview for a new processing state.',
+      });
+    }
+    if (state === 'error_observed') {
+      warnings.push({
+        code: 'processing_error_observed',
+        message: expectedErrorObserved
+          ? 'The caller-supplied processing error marker became visible.'
+          : 'A failed request or HTTP error occurred during the bounded post-selection window; attribution to this upload is temporal only.',
+        suggestedAction: 'Inspect the fresh attachment preview and page diagnostics before retrying or removing the attachment.',
+      });
+    }
+    if (disappearedAfterObservation && !completionValueObserved && !expectedCompletionObserved) {
+      warnings.push({
+        code: 'progress_disappeared_unverified',
+        message: 'A semantic progress control disappeared without an explicit completion value or caller-supplied completion marker.',
+        suggestedAction: 'Treat processing as unverified and inspect the fresh preview; do not assume disappearance means success.',
+      });
+    }
+    if (state === 'unverified') {
+      warnings.push({
+        code: 'processing_completion_unverified',
+        message: 'The file input retained the attachment, but no explicit processing-completion signal was observed.',
+        suggestedAction: 'Use the returned fresh snapshotId and preview, then inspect or wait for a service-visible completion state before posting.',
+      });
+    }
+
+    return {
+      result: {
+        state,
+        evidence,
+        progress: {
+          observed: progressObserved,
+          activeAtReturn,
+          completionValueObserved,
+          disappearedAfterObservation,
+          maxPercentObserved,
+        },
+        pageActivity: {
+          attribution: 'temporal_only',
+          observationMs: Date.now() - startedAt,
+          successfulResponses,
+          redirects,
+          httpErrors,
+          failedRequests,
+        },
+      },
+      warnings,
+    };
   }
 
   private urlMatches(actual: string, expected: UrlExpectation): boolean {
@@ -2321,7 +3054,7 @@ export class BrowserController {
     this.context = undefined;
     this.activePage = undefined;
     this.framesById.clear();
-    this.observedSnapshots.clear();
+    this.discardAllObservedSnapshots();
     this.frameIds = new WeakMap<Frame, string>();
     this.frameDocumentVersions = new WeakMap<Frame, number>();
     this.boundPages = new WeakSet<Page>();
