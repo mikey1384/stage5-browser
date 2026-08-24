@@ -39,6 +39,9 @@ describe('BrowserSupervisor', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-supervisor-'));
     temporaryRoots.push(root);
     const config: Stage5BrowserConfig = {
+      browser: 'chromium',
+      browserExecutablePath: null,
+      profilesDir: path.join(root, 'profiles'),
       profileDir: path.join(root, 'profile'),
       artifactsDir: path.join(root, 'artifacts'),
       headless: true,
@@ -54,8 +57,10 @@ describe('BrowserSupervisor', () => {
     });
     supervisors.push(supervisor);
 
+    await supervisor.execute('switchBrowser', { browser: 'firefox' });
     const before = await supervisor.execute('status', {});
     const beforeWithDescendant = before.result as BrowserStatus & { descendantPid: number };
+    expect(before.result.browser).toBe('firefox');
     expect(isProcessAlive(beforeWithDescendant.descendantPid)).toBe(true);
     let caught: unknown;
     try {
@@ -69,6 +74,7 @@ describe('BrowserSupervisor', () => {
 
     const after = await supervisor.execute('status', {});
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
+    expect(after.result.browser).toBe('firefox');
     if (process.platform !== 'win32') {
       await waitForProcessExit(beforeWithDescendant.descendantPid);
       expect(isProcessAlive(beforeWithDescendant.descendantPid)).toBe(false);

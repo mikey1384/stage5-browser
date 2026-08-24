@@ -8,7 +8,7 @@ Stage5 Browser is a reliability-first local browser controller for AI agents. It
 
 The first vertical slice is implemented and tested. A standard MCP client can:
 
-- start an isolated persistent Chromium profile
+- preflight and switch among isolated Chromium, Chrome, Brave, Edge, Firefox, and WebKit profiles
 - open HTTP(S) pages with commit-first navigation
 - list and select tabs
 - inspect an AI-oriented ARIA snapshot
@@ -16,7 +16,7 @@ The first vertical slice is implemented and tested. A standard MCP client can:
 - click or fill one unique semantic target
 - stop or explicitly recover the browser
 
-The MCP process supervises a separate worker that owns Playwright and Chromium. If a command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
+The MCP process supervises a separate worker that owns Playwright and the selected browser. If a command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
 
 The initial production smoke test opened `https://translator.tools`, returned its semantic page structure, and captured a screenshot through MCP.
 
@@ -45,14 +45,17 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | Tool | Purpose |
 | --- | --- |
 | `browser_status` | Report worker, browser, tab, and active-page state |
-| `browser_start` | Launch the dedicated persistent profile |
+| `browser_available` | Preflight every backend without launching or closing a browser |
+| `browser_start` | Launch a requested profile without closing another running browser |
+| `browser_switch` | Safely switch to a preflighted isolated browser profile |
 | `browser_open` | Navigate with bounded commit and readiness phases |
 | `browser_tabs` | List live tabs |
 | `browser_select_tab` | Select a tab by an observed index |
-| `browser_snapshot` | Read semantic page structure |
+| `browser_frames` | Inventory the active page's main document and nested frames |
+| `browser_snapshot` | Read semantic structure from the main document or an observed frame |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
-| `browser_click_by_role` | Click one unique role/name target |
-| `browser_fill_by_role` | Fill one unique role/name target |
+| `browser_click_by_role` | Click one unique role/name target in the main document or an observed frame |
+| `browser_fill_by_role` | Fill one unique role/name target in the main document or an observed frame |
 | `browser_recover` | Replace the worker process group and optionally reopen the last URL |
 | `browser_stop` | Close the owned browser context |
 
@@ -68,10 +71,10 @@ MCP server + serialized supervisor
 Browser worker process group
         │ direct Playwright protocol
         ▼
-Pinned project-local Chromium + dedicated persistent profile
+Selected Playwright browser backend + dedicated persistent profile
 ```
 
-The worker boundary is intentional. A stalled browser transport cannot wedge the MCP event loop, and recovery can kill Chromium descendants rather than merely dropping a stale JavaScript object.
+The worker boundary is intentional. A stalled browser transport cannot wedge the MCP event loop, and recovery can kill browser descendants rather than merely dropping a stale JavaScript object.
 
 Key implementation files:
 
@@ -79,6 +82,8 @@ Key implementation files:
 - `src/supervisor.ts` — serialization, deadlines, process-tree replacement, and journaling
 - `src/browser-worker.ts` — IPC command dispatch
 - `src/browser-controller.ts` — direct Playwright browser operations
+- `src/browser-provider.ts` — trusted browser selection and installed-browser discovery
+- `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -95,10 +100,46 @@ Key implementation files:
 
 Regression coverage currently includes URL restrictions, privacy-safe journal URLs, command serialization, semantic targeting, screenshots, ambiguous matches, and deliberate worker hangs followed by PID replacement.
 
+## Browser selection
+
+Bundled Playwright Chromium remains the zero-configuration default. A trusted operator can choose another default when launching the MCP server:
+
+```bash
+STAGE5_BROWSER_BROWSER=brave npm start
+```
+
+Supported values are `chromium`, `chrome`, `brave`, `edge`, `firefox`, and `webkit`. Stage5 Browser discovers standard Chrome, Brave, and Edge installations on macOS, Windows, and Linux. Chromium, Firefox, and WebKit use the project-pinned Playwright runtimes installed by `npm run browser:install`.
+
+Agents do not need an MCP restart to choose browsers. After `browser_available`, a fresh agent uses `browser_start({ browser })`. If another backend is already running, it uses the explicitly destructive `browser_switch` instead; the target is preflighted before current tabs are closed. The supervisor preserves the selected backend across worker recovery. Each backend has an independent Stage5 profile and does not inherit cookies from a person's everyday browser profile.
+
+For a nonstandard installation, a trusted operator can set an absolute executable path:
+
+```bash
+STAGE5_BROWSER_BROWSER=brave \
+STAGE5_BROWSER_EXECUTABLE_PATH="/path/to/Brave Browser" \
+npm start
+```
+
+`STAGE5_BROWSER_EXECUTABLE_PATH` is startup configuration for the configured default and is never exposed as an agent-callable tool argument. `STAGE5_BROWSER_PROFILES_DIR` overrides the isolated-profile root; `STAGE5_BROWSER_PROFILE_DIR` overrides only the configured default browser's profile.
+
+To smoke-test a selected browser through the complete MCP boundary:
+
+```bash
+STAGE5_BROWSER_BROWSER=brave npm run smoke
+```
+
+To exercise an agent-driven runtime switch from the default Chromium profile:
+
+```bash
+STAGE5_BROWSER_SWITCH_TO=firefox npm run smoke
+```
+
+WebKit provides Safari-engine coverage, not control of the installed Safari application or its profile. Safari application control requires a separate WebDriver adapter and explicit Safari Remote Automation permission. See `docs/browser-support.md` for the exact support boundary.
+
 ## Security and privacy
 
-- Stage5 Browser never opens a person's default Chrome profile.
-- Chromium is pinned under `.playwright-browsers/`; profile state is kept in the dedicated Stage5 Browser application-data directory.
+- Stage5 Browser never opens a person's default browser profile.
+- Bundled Chromium, Firefox, and WebKit are pinned under `.playwright-browsers/`; every selected backend keeps profile state in a dedicated Stage5 Browser application-data directory.
 - Only HTTP, HTTPS, and `about:blank` navigation are allowed.
 - URLs with embedded credentials are rejected.
 - The operation journal excludes arguments, page content, form values, cookies, headers, query strings, fragments, screenshots, credentials, and OTPs.

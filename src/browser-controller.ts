@@ -2,18 +2,28 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import { chromium, type BrowserContext, type Page } from 'playwright';
+import type { BrowserContext, Frame, Page } from 'playwright';
 
-import type { Stage5BrowserConfig } from './config.js';
+import {
+  browserAvailability,
+  playwrightBrowserType,
+  resolveBrowserLaunchTarget,
+  SUPPORTED_BROWSER_PRODUCTS,
+  type BrowserProduct,
+  type BrowserSelection,
+} from './browser-provider.js';
+import { profileDirForBrowser, type Stage5BrowserConfig } from './config.js';
 import { Stage5BrowserError } from './errors.js';
 import type {
   BrowserCommandInput,
   BrowserCommandOutput,
   BrowserLifecycleState,
   BrowserStatus,
+  AvailableBrowsers,
+  FrameSummary,
   PageSummary,
 } from './protocol.js';
-import { validateNavigationUrl } from './url-policy.js';
+import { sanitizeUrlForJournal, validateNavigationUrl } from './url-policy.js';
 
 async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -38,28 +48,61 @@ export class BrowserController {
   private activePage: Page | undefined;
   private state: BrowserLifecycleState = 'stopped';
   private lastKnownUrl: string | null = null;
+  private selectedBrowser: BrowserProduct;
+  private frameIds = new WeakMap<Frame, string>();
+  private readonly framesById = new Map<string, Frame>();
+  private boundPages = new WeakSet<Page>();
 
-  constructor(private readonly config: Stage5BrowserConfig) {}
+  constructor(
+    private readonly config: Stage5BrowserConfig,
+    initialBrowser: BrowserProduct = config.browser,
+  ) {
+    this.selectedBrowser = initialBrowser;
+  }
 
-  async start(): Promise<BrowserStatus> {
+  async start(input: BrowserCommandInput<'start'> = {}): Promise<BrowserStatus> {
     if (this.context !== undefined && !this.context.isClosed()) {
+      if (input.browser !== undefined && input.browser !== this.selectedBrowser) {
+        throw new Stage5BrowserError(
+          'OPERATION_FAILED',
+          'Another browser profile is already running. Use browser_switch to close it and change browsers.',
+          {
+            details: {
+              currentBrowser: this.selectedBrowser,
+              requestedBrowser: input.browser,
+              reason: 'browser_already_running',
+            },
+          },
+        );
+      }
       this.state = 'running';
       return this.status();
     }
 
+    if (input.browser !== undefined && input.browser !== this.selectedBrowser) {
+      await resolveBrowserLaunchTarget(this.selectionFor(input.browser));
+      this.selectedBrowser = input.browser;
+      this.lastKnownUrl = null;
+    }
+
     this.state = 'starting';
     try {
+      const launchTarget = await resolveBrowserLaunchTarget(this.selectionFor(this.selectedBrowser));
+      const profileDir = profileDirForBrowser(this.config, this.selectedBrowser);
       await Promise.all([
-        mkdir(this.config.profileDir, { recursive: true, mode: 0o700 }),
+        mkdir(profileDir, { recursive: true, mode: 0o700 }),
         mkdir(this.config.artifactsDir, { recursive: true, mode: 0o700 }),
         mkdir(path.join(this.config.artifactsDir, 'downloads'), { recursive: true, mode: 0o700 }),
       ]);
 
-      const context = await chromium.launchPersistentContext(this.config.profileDir, {
+      const context = await playwrightBrowserType(launchTarget.engine).launchPersistentContext(profileDir, {
         headless: this.config.headless,
         acceptDownloads: true,
         downloadsPath: path.join(this.config.artifactsDir, 'downloads'),
         viewport: { width: 1440, height: 900 },
+        ...(launchTarget.executablePath === null
+          ? {}
+          : { executablePath: launchTarget.executablePath }),
       });
 
       context.setDefaultTimeout(this.config.operationTimeoutMs);
@@ -74,6 +117,9 @@ export class BrowserController {
       return this.status();
     } catch (error) {
       this.state = 'failed';
+      if (error instanceof Stage5BrowserError) {
+        throw error;
+      }
       throw new Stage5BrowserError('BROWSER_NOT_READY', 'The dedicated browser profile could not be started.', {
         recoverable: true,
         cause: error,
@@ -81,10 +127,39 @@ export class BrowserController {
     }
   }
 
+  async availableBrowsers(): Promise<AvailableBrowsers> {
+    const browsers = await Promise.all(
+      SUPPORTED_BROWSER_PRODUCTS.map(async (browser) =>
+        browserAvailability(this.selectionFor(browser)),
+      ),
+    );
+    return {
+      defaultBrowser: this.config.browser,
+      currentBrowser: this.selectedBrowser,
+      browsers,
+    };
+  }
+
+  async switchBrowser(input: BrowserCommandInput<'switchBrowser'>): Promise<BrowserStatus> {
+    if (input.browser === this.selectedBrowser) {
+      return this.start();
+    }
+
+    // Confirm the target is launchable before closing the current browser and its tabs.
+    await resolveBrowserLaunchTarget(this.selectionFor(input.browser));
+    await this.stop();
+    this.selectedBrowser = input.browser;
+    this.lastKnownUrl = null;
+    return this.start();
+  }
+
   async stop(): Promise<BrowserStatus> {
     const context = this.context;
     this.context = undefined;
     this.activePage = undefined;
+    this.framesById.clear();
+    this.frameIds = new WeakMap<Frame, string>();
+    this.boundPages = new WeakSet<Page>();
     this.state = 'stopped';
 
     if (context !== undefined && !context.isClosed()) {
@@ -101,6 +176,7 @@ export class BrowserController {
         this.state = 'stopped';
       }
       return {
+        browser: this.selectedBrowser,
         state: this.state,
         workerPid: process.pid,
         browserConnected: false,
@@ -116,6 +192,7 @@ export class BrowserController {
     this.state = 'running';
 
     return {
+      browser: this.selectedBrowser,
       state: this.state,
       workerPid: process.pid,
       browserConnected: context.browser()?.isConnected() ?? true,
@@ -162,7 +239,8 @@ export class BrowserController {
 
   async snapshot(input: BrowserCommandInput<'snapshot'>): Promise<BrowserCommandOutput<'snapshot'>> {
     const page = await this.ensureActivePage(await this.ensureContext());
-    const snapshot = await page.locator('body').ariaSnapshot({
+    const frame = this.resolveFrame(page, input.frameId);
+    const snapshot = await frame.locator('body').ariaSnapshot({
       mode: 'ai',
       depth: input.depth,
       boxes: input.boxes,
@@ -172,6 +250,7 @@ export class BrowserController {
     this.lastKnownUrl = page.url();
     return {
       page: await this.pageSummary(page),
+      frame: this.frameSummary(frame, page),
       snapshot,
     };
   }
@@ -227,48 +306,83 @@ export class BrowserController {
     return { page: await this.pageSummary(page, input.index) };
   }
 
+  async frames(): Promise<BrowserCommandOutput<'frames'>> {
+    const page = await this.ensureActivePage(await this.ensureContext());
+    const frames = page.frames().filter((frame) => !frame.isDetached());
+    return {
+      page: await this.pageSummary(page),
+      frames: frames.map((frame) => this.frameSummary(frame, page)),
+    };
+  }
+
   async clickByRole(input: BrowserCommandInput<'clickByRole'>): Promise<BrowserCommandOutput<'clickByRole'>> {
     const page = await this.ensureActivePage(await this.ensureContext());
-    const locator = page.getByRole(input.role, { name: input.name, exact: input.exact });
+    const frame = this.resolveFrame(page, input.frameId);
+    const locator = frame.getByRole(input.role, { name: input.name, exact: input.exact });
     await this.requireUniqueTarget(locator.count(), input.role, input.name);
     await locator.click({ timeout: input.timeoutMs });
     this.lastKnownUrl = page.url();
-    return { page: await this.pageSummary(page) };
+    return { page: await this.pageSummary(page), frame: this.frameSummary(frame, page) };
   }
 
   async fillByRole(input: BrowserCommandInput<'fillByRole'>): Promise<BrowserCommandOutput<'fillByRole'>> {
     const page = await this.ensureActivePage(await this.ensureContext());
-    const locator = page.getByRole(input.role, { name: input.name, exact: input.exact });
+    const frame = this.resolveFrame(page, input.frameId);
+    const locator = frame.getByRole(input.role, { name: input.name, exact: input.exact });
     await this.requireUniqueTarget(locator.count(), input.role, input.name);
     await locator.fill(input.value, { timeout: input.timeoutMs });
     this.lastKnownUrl = page.url();
-    return { page: await this.pageSummary(page) };
+    return { page: await this.pageSummary(page), frame: this.frameSummary(frame, page) };
   }
 
   private bindContext(context: BrowserContext): void {
+    for (const page of context.pages()) {
+      this.bindPage(page);
+    }
     context.on('page', (page) => {
       this.activePage = page;
-      page.on('crash', () => {
-        if (this.activePage === page) {
-          this.activePage = undefined;
-        }
-      });
-      page.on('close', () => {
-        if (this.activePage === page) {
-          this.activePage = undefined;
-        }
-      });
+      this.bindPage(page);
     });
 
     context.on('close', () => {
       if (this.context === context) {
         this.context = undefined;
         this.activePage = undefined;
+        this.framesById.clear();
+        this.frameIds = new WeakMap<Frame, string>();
+        this.boundPages = new WeakSet<Page>();
         if (this.state !== 'recovering') {
           this.state = 'stopped';
         }
       }
     });
+  }
+
+  private bindPage(page: Page): void {
+    if (this.boundPages.has(page)) {
+      return;
+    }
+    this.boundPages.add(page);
+    page.on('framedetached', (frame) => this.removeFrame(frame));
+    page.on('crash', () => {
+      if (this.activePage === page) {
+        this.activePage = undefined;
+      }
+      this.removePageFrames(page);
+    });
+    page.on('close', () => {
+      if (this.activePage === page) {
+        this.activePage = undefined;
+      }
+      this.removePageFrames(page);
+    });
+  }
+
+  private selectionFor(browser: BrowserProduct): BrowserSelection {
+    return {
+      browser,
+      executablePath: browser === this.config.browser ? this.config.browserExecutablePath : null,
+    };
   }
 
   private usableContext(): BrowserContext | undefined {
@@ -299,8 +413,60 @@ export class BrowserController {
     }
 
     const page = context.pages().findLast((candidate) => !candidate.isClosed()) ?? (await context.newPage());
+    this.bindPage(page);
     this.activePage = page;
     return page;
+  }
+
+  private resolveFrame(page: Page, frameId: string | null): Frame {
+    if (frameId === null) {
+      return page.mainFrame();
+    }
+
+    const frame = this.framesById.get(frameId);
+    if (frame === undefined || frame.isDetached() || frame.page() !== page) {
+      throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The requested frame is no longer attached to the active tab.', {
+        details: { frameId, availableFrameCount: page.frames().length },
+      });
+    }
+    return frame;
+  }
+
+  private frameSummary(frame: Frame, page: Page): FrameSummary {
+    const parent = frame.parentFrame();
+    return {
+      id: this.frameId(frame),
+      parentId: parent === null ? null : this.frameId(parent),
+      name: frame.name(),
+      url: sanitizeUrlForJournal(frame.url()) ?? '<unavailable>',
+      isMainFrame: frame === page.mainFrame(),
+    };
+  }
+
+  private frameId(frame: Frame): string {
+    const existing = this.frameIds.get(frame);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const id = `frame-${randomUUID()}`;
+    this.frameIds.set(frame, id);
+    this.framesById.set(id, frame);
+    return id;
+  }
+
+  private removeFrame(frame: Frame): void {
+    const id = this.frameIds.get(frame);
+    if (id !== undefined) {
+      this.framesById.delete(id);
+    }
+  }
+
+  private removePageFrames(page: Page): void {
+    for (const [id, frame] of this.framesById) {
+      if (frame.page() === page) {
+        this.framesById.delete(id);
+      }
+    }
   }
 
   private async pageSummary(page: Page, suppliedIndex?: number): Promise<PageSummary> {

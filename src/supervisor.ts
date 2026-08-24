@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+import { SUPPORTED_BROWSER_PRODUCTS, type BrowserProduct } from './browser-provider.js';
 import type { Stage5BrowserConfig } from './config.js';
 import {
   Stage5BrowserError,
@@ -68,6 +69,7 @@ export class BrowserSupervisor {
   private readonly environment: NodeJS.ProcessEnv;
   private readonly pending = new Map<string, PendingRequest>();
   private child: ChildProcess | undefined;
+  private selectedBrowser: BrowserProduct;
   private lastKnownUrl: string | null = null;
   private closing = false;
 
@@ -78,6 +80,7 @@ export class BrowserSupervisor {
     this.workerUrl = options.workerUrl ?? new URL('./browser-worker.js', import.meta.url);
     this.environment = options.environment ?? process.env;
     this.journal = new OperationJournal(config.artifactsDir);
+    this.selectedBrowser = config.browser;
   }
 
   get pendingOperationCount(): number {
@@ -101,6 +104,7 @@ export class BrowserSupervisor {
       try {
         await this.ensureWorker();
         const result = await this.request(command, payload, hardTimeoutMs);
+        this.captureSelectedBrowser(result);
         this.captureLastKnownUrl(result);
         await this.appendJournal({
           operationId,
@@ -217,7 +221,7 @@ export class BrowserSupervisor {
     try {
       await this.request(
         'initialize',
-        { config: this.config },
+        { config: this.config, browser: this.selectedBrowser },
         this.config.workerStartupTimeoutMs,
       );
     } catch (error) {
@@ -448,7 +452,7 @@ export class BrowserSupervisor {
       this.lastKnownUrl = candidate.page.url;
       return;
     }
-    if (typeof candidate.lastKnownUrl === 'string') {
+    if (candidate.lastKnownUrl === null || typeof candidate.lastKnownUrl === 'string') {
       this.lastKnownUrl = candidate.lastKnownUrl;
       return;
     }
@@ -456,6 +460,20 @@ export class BrowserSupervisor {
     if (typeof finalPage?.url === 'string') {
       this.lastKnownUrl = finalPage.url;
     }
+  }
+
+  private captureSelectedBrowser(result: unknown): void {
+    if (typeof result !== 'object' || result === null) {
+      return;
+    }
+    const browser = (result as { browser?: unknown }).browser;
+    if (typeof browser === 'string' && this.isBrowserProduct(browser)) {
+      this.selectedBrowser = browser;
+    }
+  }
+
+  private isBrowserProduct(value: string): value is BrowserProduct {
+    return (SUPPORTED_BROWSER_PRODUCTS as readonly string[]).includes(value);
   }
 
   private async appendJournal(record: Parameters<OperationJournal['append']>[0]): Promise<void> {

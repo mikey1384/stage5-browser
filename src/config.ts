@@ -1,7 +1,15 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import {
+  SUPPORTED_BROWSER_PRODUCTS,
+  type BrowserProduct,
+} from './browser-provider.js';
+
 export interface Stage5BrowserConfig {
+  browser: BrowserProduct;
+  browserExecutablePath: string | null;
+  profilesDir: string;
   profileDir: string;
   artifactsDir: string;
   headless: boolean;
@@ -14,6 +22,17 @@ export interface Stage5BrowserConfig {
 
 const DEFAULT_OPERATION_TIMEOUT_MS = 15_000;
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 20_000;
+
+function parseBrowserProduct(value: string | undefined): BrowserProduct {
+  const normalized = value?.trim().toLowerCase() ?? 'chromium';
+  if ((SUPPORTED_BROWSER_PRODUCTS as readonly string[]).includes(normalized)) {
+    return normalized as BrowserProduct;
+  }
+
+  throw new Error(
+    `STAGE5_BROWSER_BROWSER must be one of: ${SUPPORTED_BROWSER_PRODUCTS.join(', ')}.`,
+  );
+}
 
 function dataRoot(env: NodeJS.ProcessEnv): string {
   if (process.platform === 'darwin') {
@@ -51,9 +70,19 @@ function parseDuration(value: string | undefined, fallback: number, minimum: num
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Stage5BrowserConfig {
   const root = dataRoot(env);
+  const profilesDir = env.STAGE5_BROWSER_PROFILES_DIR ?? path.join(root, 'profiles');
+  const browser = parseBrowserProduct(env.STAGE5_BROWSER_BROWSER);
+  const configuredExecutablePath = env.STAGE5_BROWSER_EXECUTABLE_PATH?.trim();
+  const defaultProfileName = browser === 'chromium' ? 'default' : browser;
 
   return {
-    profileDir: env.STAGE5_BROWSER_PROFILE_DIR ?? path.join(root, 'profiles', 'default'),
+    browser,
+    browserExecutablePath:
+      configuredExecutablePath === undefined || configuredExecutablePath.length === 0
+        ? null
+        : configuredExecutablePath,
+    profilesDir,
+    profileDir: env.STAGE5_BROWSER_PROFILE_DIR ?? path.join(profilesDir, defaultProfileName),
     artifactsDir: env.STAGE5_BROWSER_ARTIFACTS_DIR ?? path.join(root, 'artifacts'),
     headless: parseBoolean(env.STAGE5_BROWSER_HEADLESS, false),
     operationTimeoutMs: parseDuration(
@@ -72,4 +101,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Stage5BrowserC
     workerStartupTimeoutMs: 10_000,
     workerShutdownGraceMs: 1_000,
   };
+}
+
+export function profileDirForBrowser(
+  config: Pick<Stage5BrowserConfig, 'browser' | 'profileDir' | 'profilesDir'>,
+  browser: BrowserProduct,
+): string {
+  if (browser === config.browser) {
+    return config.profileDir;
+  }
+  return path.join(config.profilesDir, browser === 'chromium' ? 'default' : browser);
 }

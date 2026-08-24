@@ -1,4 +1,5 @@
 import type { Stage5BrowserConfig } from './config.js';
+import type { BrowserAvailability, BrowserProduct } from './browser-provider.js';
 import type { SerializedStage5BrowserError } from './errors.js';
 
 export const SUPPORTED_ARIA_ROLES = [
@@ -27,7 +28,16 @@ export interface PageSummary {
   readyState: string;
 }
 
+export interface FrameSummary {
+  id: string;
+  parentId: string | null;
+  name: string;
+  url: string;
+  isMainFrame: boolean;
+}
+
 export interface BrowserStatus {
+  browser: BrowserProduct;
   state: BrowserLifecycleState;
   workerPid: number;
   browserConnected: boolean;
@@ -36,9 +46,15 @@ export interface BrowserStatus {
   lastKnownUrl: string | null;
 }
 
+export interface AvailableBrowsers {
+  defaultBrowser: BrowserProduct;
+  currentBrowser: BrowserProduct;
+  browsers: BrowserAvailability[];
+}
+
 export interface BrowserCommandMap {
   initialize: {
-    input: { config: Stage5BrowserConfig };
+    input: { config: Stage5BrowserConfig; browser: BrowserProduct };
     output: { ready: true; workerPid: number };
   };
   status: {
@@ -46,7 +62,15 @@ export interface BrowserCommandMap {
     output: BrowserStatus;
   };
   start: {
+    input: { browser?: BrowserProduct };
+    output: BrowserStatus;
+  };
+  availableBrowsers: {
     input: Record<string, never>;
+    output: AvailableBrowsers;
+  };
+  switchBrowser: {
+    input: { browser: BrowserProduct };
     output: BrowserStatus;
   };
   stop: {
@@ -63,8 +87,8 @@ export interface BrowserCommandMap {
     };
   };
   snapshot: {
-    input: { depth: number; boxes: boolean; timeoutMs: number };
-    output: { page: PageSummary; snapshot: string };
+    input: { depth: number; boxes: boolean; frameId: string | null; timeoutMs: number };
+    output: { page: PageSummary; frame: FrameSummary; snapshot: string };
   };
   screenshot: {
     input: { fullPage: boolean; timeoutMs: number };
@@ -78,24 +102,30 @@ export interface BrowserCommandMap {
     input: { index: number };
     output: { page: PageSummary };
   };
+  frames: {
+    input: Record<string, never>;
+    output: { page: PageSummary; frames: FrameSummary[] };
+  };
   clickByRole: {
     input: {
       role: SupportedAriaRole;
       name: string;
       exact: boolean;
+      frameId: string | null;
       timeoutMs: number;
     };
-    output: { page: PageSummary };
+    output: { page: PageSummary; frame: FrameSummary };
   };
   fillByRole: {
     input: {
       role: SupportedAriaRole;
       name: string;
       exact: boolean;
+      frameId: string | null;
       value: string;
       timeoutMs: number;
     };
-    output: { page: PageSummary };
+    output: { page: PageSummary; frame: FrameSummary };
   };
   testHang: {
     input: Record<string, never>;

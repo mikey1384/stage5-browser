@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 
 let initialized = false;
+let browser = 'chromium';
 const descendant = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1000)'], {
   stdio: 'ignore',
 });
@@ -18,6 +19,7 @@ process.on('message', (message) => {
 
   if (message.command === 'initialize') {
     initialized = true;
+    browser = message.payload.browser;
     respond(message.id, { ready: true, workerPid: process.pid });
     return;
   }
@@ -30,8 +32,23 @@ process.on('message', (message) => {
     return;
   }
 
+  if (message.command === 'switchBrowser') {
+    browser = message.payload.browser;
+    respond(message.id, {
+      browser,
+      state: 'running',
+      workerPid: process.pid,
+      browserConnected: true,
+      pages: [],
+      activePageIndex: null,
+      lastKnownUrl: 'about:blank',
+    });
+    return;
+  }
+
   if (message.command === 'status') {
     respond(message.id, {
+      browser,
       state: 'stopped',
       workerPid: process.pid,
       browserConnected: false,
@@ -45,6 +62,7 @@ process.on('message', (message) => {
 
   if (message.command === 'stop') {
     respond(message.id, {
+      browser,
       state: 'stopped',
       workerPid: process.pid,
       browserConnected: false,

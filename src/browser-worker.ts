@@ -17,7 +17,7 @@ function send(message: BrowserWorkerResponse): void {
 
 async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
   if (request.command === 'initialize') {
-    controller = new BrowserController(request.payload.config);
+    controller = new BrowserController(request.payload.config, request.payload.browser);
     return { ready: true, workerPid: process.pid };
   }
 
@@ -31,7 +31,11 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
     case 'status':
       return controller.status();
     case 'start':
-      return controller.start();
+      return controller.start(request.payload);
+    case 'availableBrowsers':
+      return controller.availableBrowsers();
+    case 'switchBrowser':
+      return controller.switchBrowser(request.payload);
     case 'stop':
       return controller.stop();
     case 'open':
@@ -44,6 +48,8 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
       return controller.tabs();
     case 'selectTab':
       return controller.selectTab(request.payload);
+    case 'frames':
+      return controller.frames();
     case 'clickByRole':
       return controller.clickByRole(request.payload);
     case 'fillByRole':

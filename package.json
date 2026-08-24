@@ -17,7 +17,7 @@
     "test": "npm run build && PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest run",
     "test:watch": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest",
     "check": "npm run test",
-    "browser:install": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers playwright install chromium",
+    "browser:install": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers playwright install chromium firefox webkit",
     "smoke": "npm run build && PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node dist/smoke.js"
   },
   "dependencies": {
