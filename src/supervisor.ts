@@ -55,6 +55,7 @@ export interface BrowserSupervisorOptions {
   workerUrl?: URL;
   environment?: NodeJS.ProcessEnv;
   expectedBuildFingerprint?: string;
+  runtimeInfoProvider?: () => RuntimeProcessInfo;
 }
 
 export class SupervisedOperationError extends Stage5BrowserError {
@@ -77,12 +78,14 @@ export class BrowserSupervisor {
   private readonly journal: OperationJournal;
   private readonly workerUrl: URL;
   private readonly environment: NodeJS.ProcessEnv;
-  private readonly expectedBuildFingerprint: string | null;
+  private expectedBuildFingerprint: string | null;
+  private readonly runtimeInfoProvider: (() => RuntimeProcessInfo) | undefined;
   private readonly pending = new Map<string, PendingRequest>();
   private child: ChildProcess | undefined;
   private workerRuntime: RuntimeProcessInfo | null = null;
   private selectedBrowser: BrowserProduct;
   private lastKnownUrl: string | null = null;
+  private browserWasConnected = false;
   private closing = false;
 
   constructor(
@@ -92,6 +95,7 @@ export class BrowserSupervisor {
     this.workerUrl = options.workerUrl ?? new URL('./browser-worker.js', import.meta.url);
     this.environment = options.environment ?? process.env;
     this.expectedBuildFingerprint = options.expectedBuildFingerprint ?? null;
+    this.runtimeInfoProvider = options.runtimeInfoProvider;
     this.journal = new OperationJournal(config.artifactsDir);
     this.selectedBrowser = config.browser;
   }
@@ -119,10 +123,12 @@ export class BrowserSupervisor {
       const startedAt = new Date(startedAtMs).toISOString();
 
       try {
+        await this.reloadCompatibleRuntimeIfNeeded();
         await this.ensureWorker();
         const result = await this.request(command, payload, hardTimeoutMs);
         this.captureSelectedBrowser(result);
         this.captureLastKnownUrl(result);
+        this.captureBrowserConnection(result);
         await this.appendJournal({
           operationId,
           command,
@@ -265,7 +271,6 @@ export class BrowserSupervisor {
       );
       if (
         initialized.runtime.protocolVersion !== WORKER_PROTOCOL_VERSION ||
-        initialized.runtime.version !== STAGE5_BROWSER_VERSION ||
         (this.expectedBuildFingerprint !== null &&
           initialized.runtime.artifactFingerprint !== this.expectedBuildFingerprint)
       ) {
@@ -277,8 +282,8 @@ export class BrowserSupervisor {
               reason: 'worker_protocol_mismatch',
               expectedProtocolVersion: WORKER_PROTOCOL_VERSION,
               receivedProtocolVersion: initialized.runtime.protocolVersion,
-              expectedVersion: STAGE5_BROWSER_VERSION,
-              receivedVersion: initialized.runtime.version,
+              mcpVersion: STAGE5_BROWSER_VERSION,
+              workerVersion: initialized.runtime.version,
               expectedBuildFingerprint: this.expectedBuildFingerprint,
               receivedBuildFingerprint: initialized.runtime.artifactFingerprint,
               suggestedAction: 'Restart the MCP host so the MCP server and browser worker load the same build.',
@@ -307,6 +312,42 @@ export class BrowserSupervisor {
   private async replaceWorker(): Promise<void> {
     await this.terminateWorker();
     await this.ensureWorker();
+  }
+
+  private async reloadCompatibleRuntimeIfNeeded(): Promise<void> {
+    const runtime = this.runtimeInfoProvider?.();
+    if (
+      runtime === undefined ||
+      runtime.restartRequired ||
+      !runtime.compatibleUpdateAvailable ||
+      runtime.currentArtifactFingerprint === null ||
+      runtime.currentArtifactFingerprint === this.expectedBuildFingerprint
+    ) {
+      return;
+    }
+
+    const reopenUrl = this.browserWasConnected ? this.lastKnownUrl : null;
+    const restartBrowser = this.browserWasConnected;
+    await this.terminateWorker();
+    this.expectedBuildFingerprint = runtime.currentArtifactFingerprint;
+    await this.ensureWorker();
+
+    if (!restartBrowser) {
+      return;
+    }
+    if (reopenUrl !== null && reopenUrl !== 'about:blank') {
+      const opened = await this.request(
+        'open',
+        { url: reopenUrl, newTab: false, timeoutMs: this.config.navigationTimeoutMs },
+        this.config.navigationTimeoutMs + 2_000,
+      );
+      this.captureLastKnownUrl(opened);
+      this.browserWasConnected = true;
+      return;
+    }
+    const status = await this.request('start', {}, this.config.workerStartupTimeoutMs);
+    this.captureLastKnownUrl(status);
+    this.browserWasConnected = status.browserConnected;
   }
 
   private request<Name extends BrowserCommandName>(
@@ -476,6 +517,7 @@ export class BrowserSupervisor {
       'LOCALAPPDATA',
       'PATH',
       'PLAYWRIGHT_BROWSERS_PATH',
+      'STAGE5_BROWSER_TEST_BUILD_FINGERPRINT',
       'STAGE5_BROWSER_TEST_MODE',
       'TMPDIR',
       'USERPROFILE',
@@ -540,6 +582,20 @@ export class BrowserSupervisor {
     const browser = (result as { browser?: unknown }).browser;
     if (typeof browser === 'string' && this.isBrowserProduct(browser)) {
       this.selectedBrowser = browser;
+    }
+  }
+
+  private captureBrowserConnection(result: unknown): void {
+    if (typeof result !== 'object' || result === null) {
+      return;
+    }
+    const connected = (result as { browserConnected?: unknown }).browserConnected;
+    if (typeof connected === 'boolean') {
+      this.browserWasConnected = connected;
+      return;
+    }
+    if ('page' in result) {
+      this.browserWasConnected = true;
     }
   }
 

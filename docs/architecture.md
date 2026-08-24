@@ -29,7 +29,9 @@ Stage5 Browser MCP server
 
 The MCP server and browser runtime are separate processes. A timeout enforced inside the same event loop cannot recover from that event loop becoming stuck. The supervisor therefore owns the worker process and can terminate its complete process group before replacement.
 
-The separation has an explicit version boundary. MCP and worker exchange the package and protocol versions during initialization. A rebuilt worker cannot silently accept an older in-memory server payload. The MCP also fingerprints its loaded artifact and compares it with the file on disk before browser work, returning `MCP_RESTART_REQUIRED` when the host must rebuild its tool catalog.
+The separation has an explicit version boundary. MCP and worker exchange the package and protocol versions during initialization. Completed builds publish a final build stamp only after TypeScript output succeeds, so a live process never treats half-written output as current.
+
+The resident MCP process compares the published worker protocol and tool-catalog versions with the contract it loaded. When both contracts are unchanged, it replaces its worker automatically and restores the active URL on the next browser operation. No MCP reconnect or local deployment is required for ordinary runtime fixes. It returns `MCP_RESTART_REQUIRED` only when the tool catalog or MCP-to-worker protocol actually changes.
 
 ### Use Playwright protocol, not CDP attachment
 

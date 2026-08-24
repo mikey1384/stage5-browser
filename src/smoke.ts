@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
+import { MCP_TOOL_COUNT, STAGE5_BROWSER_VERSION } from './runtime-info.js';
+
 function assertToolSuccess(result: unknown, name: string): void {
   const candidate = result as { isError?: boolean; structuredContent?: Record<string, unknown> };
   if (candidate.isError === true) {
@@ -22,7 +24,7 @@ const smokeCwd = process.env.STAGE5_BROWSER_SMOKE_CWD ?? projectRoot;
 const smokePlaywrightPath =
   process.env.STAGE5_BROWSER_SMOKE_PLAYWRIGHT_PATH ?? path.join(projectRoot, '.playwright-browsers');
 const usePersistentProfile = process.env.STAGE5_BROWSER_SMOKE_PERSISTENT === '1';
-const client = new Client({ name: 'stage5-browser-smoke', version: '0.2.0' });
+const client = new Client({ name: 'stage5-browser-smoke', version: STAGE5_BROWSER_VERSION });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [path.join(projectRoot, 'dist', 'launcher.js')],
@@ -54,6 +56,9 @@ try {
   await client.connect(transport);
   const tools = await client.listTools();
   const names = new Set(tools.tools.map((tool) => tool.name));
+  if (tools.tools.length !== MCP_TOOL_COUNT) {
+    throw new Error(`Expected ${MCP_TOOL_COUNT} MCP tools, received ${tools.tools.length}.`);
+  }
   for (const required of [
     'browser_available',
     'browser_diagnostics',
@@ -109,7 +114,10 @@ try {
   if (selectedBrowser !== expectedBrowser) {
     throw new Error(`Expected ${expectedBrowser}, but browser_status reported ${String(selectedBrowser)}.`);
   }
-  if (statusPayload?.mcp?.version !== '0.2.0' || statusPayload.mcp.restartRequired !== false) {
+  if (
+    statusPayload?.mcp?.version !== STAGE5_BROWSER_VERSION ||
+    statusPayload.mcp.restartRequired !== false
+  ) {
     throw new Error('browser_status did not report the current non-stale MCP build.');
   }
 

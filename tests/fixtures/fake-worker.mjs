@@ -3,15 +3,20 @@ import { spawn } from 'node:child_process';
 let initialized = false;
 let browser = 'chromium';
 const startedAt = new Date().toISOString();
+const buildFingerprint = process.env.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT ?? 'fake-worker';
 const runtime = {
   component: 'worker',
-  version: '0.2.0',
+  version: '0.3.0',
   protocolVersion: 2,
   processId: process.pid,
   startedAt,
   buildModifiedAt: startedAt,
-  artifactFingerprint: 'fake-worker',
-  currentArtifactFingerprint: 'fake-worker',
+  artifactFingerprint: buildFingerprint,
+  currentArtifactFingerprint: buildFingerprint,
+  currentVersion: '0.3.0',
+  currentProtocolVersion: 2,
+  currentToolCatalogVersion: 2,
+  compatibleUpdateAvailable: false,
   restartRequired: false,
   restartReason: null,
   suggestedAction: null,
@@ -48,6 +53,19 @@ process.on('message', (message) => {
 
   if (message.command === 'switchBrowser') {
     browser = message.payload.browser;
+    respond(message.id, {
+      browser,
+      state: 'running',
+      workerPid: process.pid,
+      browserConnected: true,
+      pages: [],
+      activePageIndex: null,
+      lastKnownUrl: 'about:blank',
+    });
+    return;
+  }
+
+  if (message.command === 'start') {
     respond(message.id, {
       browser,
       state: 'running',

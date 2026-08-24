@@ -21,6 +21,7 @@ const config = loadConfig();
 const runtimeMonitor = new RuntimeArtifactMonitor('mcp', buildStampUrlFor(import.meta.url));
 const supervisor = new BrowserSupervisor(config, {
   expectedBuildFingerprint: runtimeMonitor.inspect().artifactFingerprint,
+  runtimeInfoProvider: () => runtimeMonitor.inspect(),
 });
 
 function mcpRuntimeInfo(): ReturnType<RuntimeArtifactMonitor['inspect']> & {
@@ -86,7 +87,7 @@ function createServer(): McpServer {
     { name: 'stage5-browser', version: STAGE5_BROWSER_VERSION },
     {
       instructions:
-        'Use this local browser only when an API or CLI cannot complete the task. Begin with browser_status and browser_available. If browser_status reports restartRequired, stop browser work and restart the MCP host; browser_recover cannot refresh an MCP tool catalog. Use browser_diagnostics after any launch failure and follow its safe suggested action rather than blind retrying. Use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: authentication survives agent restarts but never comes from the user\'s everyday browser or another backend. Inspect the current page instead of assuming login state; ask the user only for password, passkey, CAPTCHA, or OTP steps that require them, then snapshot again. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
+        'Use this local browser only when an API or CLI cannot complete the task. Begin with browser_status and browser_available. Compatible runtime fixes load automatically; stop browser work only if browser_status reports restartRequired, which means the MCP tool or worker protocol contract changed. Use browser_diagnostics after any launch failure and follow its safe suggested action rather than blind retrying. Use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: authentication survives agent restarts but never comes from the user\'s everyday browser or another backend. Inspect the current page instead of assuming login state; ask the user only for password, passkey, CAPTCHA, or OTP steps that require them, then snapshot again. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
     },
   );
 

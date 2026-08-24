@@ -25,3 +25,5 @@ Several MCP server processes were present because multiple agent sessions had lo
 ## Operational resolution
 
 An agent whose catalog predates this release must restart its MCP host once. In Claude Code, exit and run `claude --continue`; in other hosts, start a fresh agent session. Future rebuilds are detected and reported explicitly.
+
+The follow-up lifecycle fix in `0.3.0` removes restarts for compatible rebuilds. A successful build publishes its stamp last, and the resident MCP process rolls its worker forward on the next operation when the tool catalog and worker protocol are unchanged. Only a real public-contract change asks the host to reconnect.

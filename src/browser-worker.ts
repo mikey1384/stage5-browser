@@ -28,7 +28,6 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
     const workerRuntime = runtimeMonitor.inspect();
     if (
       request.payload.protocolVersion !== WORKER_PROTOCOL_VERSION ||
-      request.payload.mcpVersion !== STAGE5_BROWSER_VERSION ||
       (request.payload.mcpBuildFingerprint !== null &&
         request.payload.mcpBuildFingerprint !== workerRuntime.artifactFingerprint)
     ) {
@@ -40,8 +39,8 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
             reason: 'worker_protocol_mismatch',
             expectedProtocolVersion: WORKER_PROTOCOL_VERSION,
             receivedProtocolVersion: request.payload.protocolVersion ?? null,
-            expectedVersion: STAGE5_BROWSER_VERSION,
-            receivedVersion: request.payload.mcpVersion ?? null,
+            mcpVersion: request.payload.mcpVersion ?? null,
+            workerVersion: STAGE5_BROWSER_VERSION,
             expectedBuildFingerprint: request.payload.mcpBuildFingerprint ?? null,
             receivedBuildFingerprint: workerRuntime.artifactFingerprint,
             suggestedAction: 'Restart the MCP host so the MCP server and browser worker load the same build.',

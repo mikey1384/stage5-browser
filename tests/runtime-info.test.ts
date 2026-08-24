@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { RuntimeArtifactMonitor } from '../src/runtime-info.js';
+import { RuntimeArtifactMonitor, type RuntimeBuildStamp } from '../src/runtime-info.js';
 
 const temporaryRoots: string[] = [];
 
@@ -14,11 +14,21 @@ afterEach(async () => {
 });
 
 describe('RuntimeArtifactMonitor', () => {
-  it('requires an MCP restart when the loaded runtime artifact changes on disk', async () => {
+  const stamp = (overrides: Partial<RuntimeBuildStamp> = {}): RuntimeBuildStamp => ({
+    version: '0.3.0',
+    buildId: 'build-1',
+    builtAt: '2026-08-24T01:00:00.000Z',
+    workerProtocolVersion: 2,
+    toolCatalogVersion: 2,
+    toolCount: 15,
+    ...overrides,
+  });
+
+  it('allows a compatible runtime rebuild without an MCP restart', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-runtime-'));
     temporaryRoots.push(root);
-    const artifact = path.join(root, 'mcp-server.js');
-    await writeFile(artifact, 'export const build = 1;\n');
+    const artifact = path.join(root, 'build-stamp.json');
+    await writeFile(artifact, JSON.stringify(stamp()));
     const monitor = new RuntimeArtifactMonitor(
       'mcp',
       pathToFileURL(artifact),
@@ -32,13 +42,46 @@ describe('RuntimeArtifactMonitor', () => {
       restartReason: null,
     });
 
-    await writeFile(artifact, 'export const build = 2;\n');
+    await writeFile(artifact, JSON.stringify(stamp({ version: '0.3.1', buildId: 'build-2' })));
+    expect(monitor.inspect()).toMatchObject({
+      compatibleUpdateAvailable: true,
+      restartRequired: false,
+      restartReason: null,
+    });
+    expect(() => monitor.assertCurrent()).not.toThrow();
+  });
+
+  it('requires an MCP restart when the tool catalog changes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-contract-'));
+    temporaryRoots.push(root);
+    const artifact = path.join(root, 'build-stamp.json');
+    await writeFile(artifact, JSON.stringify(stamp()));
+    const monitor = new RuntimeArtifactMonitor('mcp', pathToFileURL(artifact));
+
+    await writeFile(
+      artifact,
+      JSON.stringify(stamp({ buildId: 'build-2', toolCatalogVersion: 3, toolCount: 16 })),
+    );
+    expect(monitor.inspect()).toMatchObject({
+      compatibleUpdateAvailable: false,
+      restartRequired: true,
+      restartReason: 'tool_catalog_changed',
+    });
+    expect(() => monitor.assertCurrent()).toThrowError(expect.objectContaining({ code: 'MCP_RESTART_REQUIRED' }));
+  });
+
+  it('marks a rebuilt worker for bounded supervisor replacement', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-worker-runtime-'));
+    temporaryRoots.push(root);
+    const artifact = path.join(root, 'build-stamp.json');
+    await writeFile(artifact, JSON.stringify(stamp()));
+    const monitor = new RuntimeArtifactMonitor('worker', pathToFileURL(artifact));
+
+    await writeFile(artifact, JSON.stringify(stamp({ buildId: 'build-2' })));
     expect(monitor.inspect()).toMatchObject({
       restartRequired: true,
       restartReason: 'runtime_artifact_changed',
     });
-    expect(() => monitor.assertCurrent()).toThrowError(
-      expect.objectContaining({ code: 'MCP_RESTART_REQUIRED' }),
-    );
+    expect(() => monitor.assertCurrent()).toThrowError(expect.objectContaining({ code: 'WORKER_DISCONNECTED' }));
   });
 });

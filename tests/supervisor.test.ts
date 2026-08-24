@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Stage5BrowserConfig } from '../src/config.js';
 import type { BrowserStatus } from '../src/protocol.js';
+import type { RuntimeProcessInfo } from '../src/runtime-info.js';
 import { BrowserSupervisor, SupervisedOperationError } from '../src/supervisor.js';
 
 const supervisors: BrowserSupervisor[] = [];
@@ -52,6 +53,59 @@ afterEach(async () => {
 });
 
 describe('BrowserSupervisor', () => {
+  it('rolls a compatible runtime forward without restarting the MCP host', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-compatible-reload-'));
+    temporaryRoots.push(root);
+    const environment = {
+      ...process.env,
+      STAGE5_BROWSER_TEST_MODE: '1',
+      STAGE5_BROWSER_TEST_BUILD_FINGERPRINT: 'build-1',
+    };
+    let runtime: RuntimeProcessInfo = {
+      component: 'mcp',
+      version: '0.3.0',
+      protocolVersion: 2,
+      processId: 123,
+      startedAt: '2026-08-24T01:00:00.000Z',
+      buildModifiedAt: '2026-08-24T01:00:00.000Z',
+      artifactFingerprint: 'build-1',
+      currentArtifactFingerprint: 'build-1',
+      currentVersion: '0.3.0',
+      currentProtocolVersion: 2,
+      currentToolCatalogVersion: 2,
+      compatibleUpdateAvailable: false,
+      restartRequired: false,
+      restartReason: null,
+      suggestedAction: null,
+    };
+    const supervisor = new BrowserSupervisor(configFor(root), {
+      workerUrl: new URL('./fixtures/fake-worker.mjs', import.meta.url),
+      environment,
+      expectedBuildFingerprint: 'build-1',
+      runtimeInfoProvider: () => runtime,
+    });
+    supervisors.push(supervisor);
+
+    await supervisor.execute('start', {});
+    const before = await supervisor.execute('status', {});
+
+    environment.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT = 'build-2';
+    runtime = {
+      ...runtime,
+      currentArtifactFingerprint: 'build-2',
+      currentVersion: '0.3.1',
+      compatibleUpdateAvailable: true,
+      suggestedAction: 'No host restart is needed.',
+    };
+    const after = await supervisor.execute('status', {});
+
+    expect(after.result.workerPid).not.toBe(before.result.workerPid);
+    expect(supervisor.workerRuntimeInfo).toMatchObject({
+      version: '0.3.0',
+      artifactFingerprint: 'build-2',
+    });
+  });
+
   it('kills and replaces a worker that exceeds the outer hard deadline', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-supervisor-'));
     temporaryRoots.push(root);
