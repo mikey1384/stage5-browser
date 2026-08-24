@@ -54,7 +54,7 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_start` | Launch a requested profile without closing another running browser |
 | `browser_switch` | Safely switch to a preflighted isolated browser profile |
 | `browser_open` | Navigate with bounded commit, readiness, and client-redirect stabilization; report redirects and HTTP warnings |
-| `browser_tabs` | List live tabs and reconcile a uniquely visible user-selected tab |
+| `browser_tabs` | List live tabs, preserve the agent-selected tab across auxiliary pages, and recover the sole remaining tab after closure |
 | `browser_select_tab` | Select a tab by an observed index while Stage5 Browser controls the profile |
 | `browser_frames` | Inventory the active page's main document and nested frames |
 | `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound element and hidden-file-input references |
@@ -104,7 +104,7 @@ Key implementation files:
 - `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
-- `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, selected-state, and dynamic-feed regressions plus the 0.5.0 remedy
+- `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, consumed-input, active-tab, selected-state, and dynamic-feed regressions plus the 0.5.0–0.5.1 remedies
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -121,7 +121,8 @@ Key implementation files:
 - Hidden file-input references follow the same document-bound, one-use capability model. Local selection accepts only explicit absolute paths to readable regular files, rejects symlinks/directories, never opens a native picker, and never journals or returns absolute paths.
 - A unique visible modal becomes the snapshot root; multiple unresolved modals produce a warning instead of an arbitrary choice.
 - A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened. The postcondition loop performs a final deadline-bound reconciliation so a state change during its last wait is not falsely reported as failure.
-- File selection confirms the browser input's privacy-minimized `FileList` metadata before returning. Its bounded processing result is `completion_observed`, `in_progress`, `error_observed`, or `unverified`; temporal network activity is never presented as proof of upload completion.
+- File selection confirms privacy-minimized name/size metadata during the capture-phase input event or from the retained browser `FileList` before returning. Sites may consume and clear the input without creating a false failure. `observationMs` is a quick-sampling window from 0–5,000 ms; a supplied semantic `completion.timeoutMs` can wait up to 60,000 ms within the overall timeout. The bounded processing result is `completion_observed`, `in_progress`, `error_observed`, or `unverified`; temporal network activity is never presented as proof of upload completion.
+- A live agent-selected tab remains active when a transient popup or auxiliary player page appears. If the selected page disappears and exactly one live page remains, the controller deterministically selects that sole page instead of returning `activePageIndex: null`.
 - Downward scrolling reports the geometric document boundary separately from a confirmed feed end. Earlier dynamic growth followed by a stable boundary is `dynamic_content_stalled`, not `endReached: true`, unless the caller supplies a visible end marker.
 - A click that cannot dispatch records sanitized visibility, enabled-state, viewport, and pointer-interception evidence.
 - Human login bootstrap releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume.

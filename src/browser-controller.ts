@@ -135,6 +135,12 @@ interface LocalFileSelection {
   sizeBytes: number;
 }
 
+interface FileInputEventObservation {
+  inputEventObserved: boolean;
+  changeEventObserved: boolean;
+  files: Array<{ name: string; sizeBytes: number }>;
+}
+
 interface ProgressSample {
   visibleCount: number;
   activeCount: number;
@@ -978,12 +984,16 @@ export class BrowserController {
     };
     const startedAtMs = Date.now();
     this.consumeObservedSnapshot(frame, target.handle);
+    const eventObservationKey = await this.armFileInputEventObservation(target.handle);
     try {
       await target.handle.setInputFiles(
         files.map((file) => file.canonicalPath),
         { timeout: input.timeoutMs },
       );
     } catch (error) {
+      if (eventObservationKey !== null) {
+        await this.collectFileInputEventObservation(target.handle, eventObservationKey);
+      }
       await target.handle.dispose().catch(() => undefined);
       throw new Stage5BrowserError(
         'OPERATION_FAILED',
@@ -1002,17 +1012,19 @@ export class BrowserController {
     }
 
     const selectedFiles = await this.selectedFileMetadata(target.handle);
+    const eventObservation = eventObservationKey === null
+      ? null
+      : await this.collectFileInputEventObservation(target.handle, eventObservationKey);
     await target.handle.dispose().catch(() => undefined);
-    const selectionConfirmed =
-      selectedFiles.length === files.length &&
-      selectedFiles.every((selected, index) => {
-        const expected = files[index];
-        return expected !== undefined && selected.name === expected.name && selected.sizeBytes === expected.sizeBytes;
-      });
+    const retainedSelectionConfirmed = this.fileMetadataMatches(selectedFiles, files);
+    const eventSelectionConfirmed = eventObservation !== null
+      && (eventObservation.inputEventObserved || eventObservation.changeEventObserved)
+      && this.fileMetadataMatches(eventObservation.files, files);
+    const selectionConfirmed = retainedSelectionConfirmed || eventSelectionConfirmed;
     if (!selectionConfirmed) {
       throw new Stage5BrowserError(
         'POSTCONDITION_FAILED',
-        'The file selection was dispatched, but the browser input did not retain the expected file metadata.',
+        'The file selection was dispatched, but the browser did not expose the expected file metadata during selection.',
         {
           recoverable: true,
           details: {
@@ -1021,6 +1033,8 @@ export class BrowserController {
             actionOutcome: 'file_selection_dispatched_postcondition_failed',
             expectedFileCount: files.length,
             observedFileCount: selectedFiles.length,
+            selectionEventObserved:
+              eventObservation?.inputEventObserved === true || eventObservation?.changeEventObserved === true,
             suggestedAction: 'Inspect the current composer before any retry. Do not select the file again unless a fresh snapshot proves no attachment exists.',
           },
         },
@@ -1063,7 +1077,7 @@ export class BrowserController {
     } catch {
       warnings.push({
         code: 'attachment_preview_unavailable',
-        message: 'The file input retained the selected file, but a bounded semantic preview could not be captured.',
+        message: 'The browser input event confirmed the selected file, but a bounded semantic preview could not be captured.',
         suggestedAction: 'Do not select the file again. Take one fresh snapshot to inspect attachment and processing state.',
       });
     }
@@ -1996,10 +2010,13 @@ export class BrowserController {
       this.bindPage(page);
     }
     context.on('page', (page) => {
-      if (this.authenticationHandoff === null) {
-        this.activePage = page;
-      }
       this.bindPage(page);
+      if (this.preferredPage() === undefined) {
+        const pages = context.pages().filter((candidate) => !candidate.isClosed());
+        if (pages.length === 1 && pages[0] === page) {
+          this.activePage = page;
+        }
+      }
     });
 
     context.on('close', () => {
@@ -2033,21 +2050,11 @@ export class BrowserController {
     });
     page.on('framedetached', (frame) => this.removeFrame(frame));
     page.on('crash', () => {
-      if (this.activePage === page) {
-        this.activePage = undefined;
-      }
-      if (this.authenticationHandoff?.page === page) {
-        this.authenticationHandoff.page = null;
-      }
+      this.recoverActivePageAfterLoss(page);
       this.removePageFrames(page);
     });
     page.on('close', () => {
-      if (this.activePage === page) {
-        this.activePage = undefined;
-      }
-      if (this.authenticationHandoff?.page === page) {
-        this.authenticationHandoff.page = null;
-      }
+      this.recoverActivePageAfterLoss(page);
       this.removePageFrames(page);
     });
   }
@@ -2111,18 +2118,49 @@ export class BrowserController {
   }
 
   private preferredPage(): Page | undefined {
-    if (this.authenticationHandoff !== null) {
-      const handoffPage = this.authenticationHandoff.page;
-      return handoffPage !== null && !handoffPage.isClosed() ? handoffPage : undefined;
+    const context = this.usableContext();
+    if (context === undefined) {
+      return undefined;
     }
-    return this.activePage !== undefined && !this.activePage.isClosed()
-      ? this.activePage
-      : undefined;
+    const pages = context.pages().filter((page) => !page.isClosed());
+    const preferred = this.authenticationHandoff?.page ?? this.activePage;
+    if (preferred !== null && preferred !== undefined && pages.includes(preferred)) {
+      return preferred;
+    }
+    if (pages.length !== 1 || pages[0] === undefined) {
+      return undefined;
+    }
+    const solePage = pages[0];
+    this.activePage = solePage;
+    if (this.authenticationHandoff !== null) {
+      this.authenticationHandoff.page = solePage;
+      this.authenticationHandoff.targetOrigin = this.urlOrigin(solePage.url());
+    }
+    return solePage;
   }
 
   private async reconcileVisiblePage(context: BrowserContext): Promise<void> {
     const handoff = this.authenticationHandoff;
     const pages = context.pages().filter((page) => !page.isClosed());
+    if (pages.length === 0) {
+      this.activePage = undefined;
+      if (handoff !== null) {
+        handoff.page = null;
+      }
+      return;
+    }
+    if (pages.length === 1 && pages[0] !== undefined) {
+      this.activePage = pages[0];
+      if (handoff !== null) {
+        handoff.page = pages[0];
+        handoff.targetOrigin = this.urlOrigin(pages[0].url());
+      }
+      return;
+    }
+    const preferred = this.preferredPage();
+    if (preferred !== undefined && handoff === null) {
+      return;
+    }
     const visibility = await Promise.all(
       pages.map(async (page) => ({
         page,
@@ -2141,6 +2179,23 @@ export class BrowserController {
     if (handoff !== null && visiblePages[0] !== handoff.page) {
       handoff.page = visiblePages[0];
       handoff.targetOrigin = this.urlOrigin(visiblePages[0].url());
+    }
+  }
+
+  private recoverActivePageAfterLoss(lostPage: Page): void {
+    const context = this.usableContext();
+    const remainingPages = context?.pages().filter(
+      (candidate) => candidate !== lostPage && !candidate.isClosed(),
+    ) ?? [];
+    const soleRemainingPage = remainingPages.length === 1 ? remainingPages[0] : undefined;
+    if (this.activePage === lostPage) {
+      this.activePage = soleRemainingPage;
+    }
+    if (this.authenticationHandoff?.page === lostPage) {
+      this.authenticationHandoff.page = soleRemainingPage ?? null;
+      if (soleRemainingPage !== undefined) {
+        this.authenticationHandoff.targetOrigin = this.urlOrigin(soleRemainingPage.url());
+      }
     }
   }
 
@@ -2337,6 +2392,87 @@ export class BrowserController {
     } catch {
       return [];
     }
+  }
+
+  private async armFileInputEventObservation(
+    handle: ElementHandle<HTMLInputElement>,
+  ): Promise<string | null> {
+    const key = `__stage5_file_input_${randomUUID().replaceAll('-', '')}`;
+    try {
+      await handle.evaluate((element, observationKey) => {
+        const record: FileInputEventObservation = {
+          inputEventObserved: false,
+          changeEventObserved: false,
+          files: [],
+        };
+        const listener = (event: Event): void => {
+          if (event.target !== element) {
+            return;
+          }
+          if (event.type === 'input') {
+            record.inputEventObserved = true;
+          }
+          if (event.type === 'change') {
+            record.changeEventObserved = true;
+          }
+          const observedFiles = Array.from(element.files ?? []).map((file) => ({
+            name: file.name,
+            sizeBytes: file.size,
+          }));
+          if (observedFiles.length > 0) {
+            record.files = observedFiles;
+          }
+        };
+        const eventTarget: EventTarget = element.ownerDocument.defaultView ?? element.ownerDocument;
+        Object.defineProperty(element, observationKey, {
+          configurable: true,
+          enumerable: false,
+          value: { eventTarget, record, listener },
+        });
+        eventTarget.addEventListener('input', listener, { capture: true });
+        eventTarget.addEventListener('change', listener, { capture: true });
+      }, key);
+      return key;
+    } catch {
+      return null;
+    }
+  }
+
+  private async collectFileInputEventObservation(
+    handle: ElementHandle<HTMLInputElement>,
+    key: string,
+  ): Promise<FileInputEventObservation | null> {
+    try {
+      return await handle.evaluate((element, observationKey) => {
+        const observedElement = element as HTMLInputElement & Record<string, unknown>;
+        const stored = observedElement[observationKey] as {
+          eventTarget: EventTarget;
+          record: FileInputEventObservation;
+          listener: EventListener;
+        } | undefined;
+        if (stored === undefined) {
+          return null;
+        }
+        stored.eventTarget.removeEventListener('input', stored.listener, true);
+        stored.eventTarget.removeEventListener('change', stored.listener, true);
+        delete observedElement[observationKey];
+        return stored.record;
+      }, key);
+    } catch {
+      return null;
+    }
+  }
+
+  private fileMetadataMatches(
+    observed: Array<{ name: string; sizeBytes: number }>,
+    expected: LocalFileSelection[],
+  ): boolean {
+    return observed.length === expected.length && observed.every((file, index) => {
+      const expectedFile = expected[index];
+      return expectedFile !== undefined
+        && file.name === expectedFile.name
+        && file.sizeBytes === expectedFile.sizeBytes;
+    });
   }
 
   private async preflightLocalFiles(paths: string[]): Promise<LocalFileSelection[]> {
@@ -2863,7 +2999,7 @@ export class BrowserController {
     if (state === 'unverified') {
       warnings.push({
         code: 'processing_completion_unverified',
-        message: 'The file input retained the attachment, but no explicit processing-completion signal was observed.',
+        message: 'The file-selection event was confirmed, but no explicit processing-completion signal was observed.',
         suggestedAction: 'Use the returned fresh snapshotId and preview, then inspect or wait for a service-visible completion state before posting.',
       });
     }

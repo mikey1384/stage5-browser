@@ -247,6 +247,58 @@ describe('BrowserController', () => {
     }
   });
 
+  it('keeps an auxiliary player from stealing the active tab and recovers the sole remaining tab', async () => {
+    server = createServer((request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      if (request.url === '/player') {
+        response.end(`<!doctype html><html><head><title>Embedded player</title></head><body>
+          <h1>YouTube player</h1>
+          <script>setTimeout(() => window.close(), 150)</script>
+        </body></html>`);
+        return;
+      }
+      response.end(`<!doctype html><html><head><title>X post</title></head><body>
+        <h1>X post verification</h1>
+        <button type="button" onclick="window.open('/player', 'youtube-player')">Open player</button>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    const postUrl = `http://127.0.0.1:${port}/post`;
+
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-active-tab-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: postUrl,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    await controller.clickByRole({
+      role: 'button',
+      name: 'Open player',
+      exact: true,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 5_000,
+    });
+
+    const whilePlayerIsOpen = await controller.snapshot({
+      depth: 6,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(whilePlayerIsOpen.page.url).toBe(postUrl);
+    expect(whilePlayerIsOpen.snapshot).toContain('X post verification');
+    expect(whilePlayerIsOpen.snapshot).not.toContain('YouTube player');
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const tabs = await controller.tabs();
+    expect(tabs.pages).toHaveLength(1);
+    expect(tabs.pages[0]?.url).toBe(postUrl);
+    expect(tabs.activePageIndex).toBe(0);
+  });
+
   it('handles timeline scrolling, text search, observed refs, click postconditions, redirects, and rate limits', async () => {
     server = createServer((request, response) => {
       const requestUrl = request.url ?? '/';
@@ -493,9 +545,12 @@ describe('BrowserController', () => {
       response.end(`<!doctype html><html><head><title>Upload fixture</title></head><body>
         <div role="dialog" aria-modal="true" aria-label="Post composer">
           <h1>Create post</h1>
-          <input id="media" type="file" accept="video/mp4" hidden
-            onchange="
-              document.querySelector('#preview').textContent = this.files[0].name;
+          <input id="media" type="file" accept="video/mp4" hidden>
+          <script>
+            document.addEventListener('input', (event) => {
+              const input = event.target;
+              if (!(input instanceof HTMLInputElement) || input.id !== 'media' || input.files.length === 0) return;
+              document.querySelector('#preview').textContent = input.files[0].name;
               const progress = document.querySelector('#progress');
               progress.hidden = false;
               progress.value = 25;
@@ -503,7 +558,9 @@ describe('BrowserController', () => {
                 progress.value = 100;
                 document.querySelector('#complete').hidden = false;
               });
-            ">
+              input.value = '';
+            }, { capture: true });
+          </script>
           <p id="preview"></p>
           <progress id="progress" max="100" value="0" hidden></progress>
           <button id="complete" hidden>Processing complete</button>

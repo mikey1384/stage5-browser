@@ -52,10 +52,16 @@ describe('MCP file selection', () => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(`<!doctype html><html><head><title>MCP upload</title></head><body>
         <div role="dialog" aria-modal="true" aria-label="Composer">
-          <input type="file" accept="video/mp4" hidden onchange="
-            document.querySelector('#name').textContent = this.files[0].name;
-            document.querySelector('#ready').hidden = false;
-          ">
+          <input id="media" type="file" accept="video/mp4" hidden>
+          <script>
+            document.addEventListener('input', (event) => {
+              const input = event.target;
+              if (!(input instanceof HTMLInputElement) || input.id !== 'media' || input.files.length === 0) return;
+              document.querySelector('#name').textContent = input.files[0].name;
+              document.querySelector('#ready').hidden = false;
+              input.value = '';
+            }, { capture: true });
+          </script>
           <p id="name"></p>
           <button id="ready" hidden>Ready to post</button>
         </div>

@@ -64,14 +64,14 @@ describe('BrowserSupervisor', () => {
     };
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
-      version: '0.5.0',
+      version: '0.5.1',
       protocolVersion: 4,
       processId: 123,
       startedAt: '2026-08-24T01:00:00.000Z',
       buildModifiedAt: '2026-08-24T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
-      currentVersion: '0.5.0',
+      currentVersion: '0.5.1',
       currentProtocolVersion: 4,
       currentToolCatalogVersion: 4,
       compatibleUpdateAvailable: false,
@@ -94,7 +94,7 @@ describe('BrowserSupervisor', () => {
     runtime = {
       ...runtime,
       currentArtifactFingerprint: 'build-2',
-      currentVersion: '0.5.0',
+      currentVersion: '0.5.1',
       compatibleUpdateAvailable: true,
       suggestedAction: 'No host restart is needed.',
     };
@@ -104,7 +104,7 @@ describe('BrowserSupervisor', () => {
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
     expect(Date.now() - reloadStartedAt).toBeGreaterThanOrEqual(250);
     expect(supervisor.workerRuntimeInfo).toMatchObject({
-      version: '0.5.0',
+      version: '0.5.1',
       artifactFingerprint: 'build-2',
     });
   });
@@ -119,14 +119,14 @@ describe('BrowserSupervisor', () => {
     };
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
-      version: '0.5.0',
+      version: '0.5.1',
       protocolVersion: 4,
       processId: 123,
       startedAt: '2026-08-24T01:00:00.000Z',
       buildModifiedAt: '2026-08-24T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
-      currentVersion: '0.5.0',
+      currentVersion: '0.5.1',
       currentProtocolVersion: 4,
       currentToolCatalogVersion: 4,
       compatibleUpdateAvailable: false,

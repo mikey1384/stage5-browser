@@ -7,14 +7,14 @@ const startedAt = new Date().toISOString();
 const buildFingerprint = process.env.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT ?? 'fake-worker';
 const runtime = {
   component: 'worker',
-  version: '0.5.0',
+  version: '0.5.1',
   protocolVersion: 4,
   processId: process.pid,
   startedAt,
   buildModifiedAt: startedAt,
   artifactFingerprint: buildFingerprint,
   currentArtifactFingerprint: buildFingerprint,
-  currentVersion: '0.5.0',
+  currentVersion: '0.5.1',
   currentProtocolVersion: 4,
   currentToolCatalogVersion: 4,
   compatibleUpdateAvailable: false,
