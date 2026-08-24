@@ -46,12 +46,15 @@ import {
 import {
   compareAuthenticationStorage,
   controlledProfileArguments,
+  inspectControlledProfileStorage,
   inspectProfileStorage,
+  inspectRuntimeProfile,
   launchIdentityForTarget,
   profileBindingForBrowser,
   sameLaunchIdentity,
   type BrowserLaunchIdentity,
   type ProfileStorageInspection,
+  type RuntimeProfileObservation,
 } from './profile-binding.js';
 import type {
   AuthenticationBoundaryOutcome,
@@ -117,6 +120,13 @@ interface AuthenticationHandoff {
   shutdownOverrideOffered: boolean;
 }
 
+interface ControlledStartBoundaryObservation {
+  targetOrigin: string;
+  storage: ProfileStorageInspection;
+  targetOriginLoaded: boolean;
+  navigatorWebdriver: boolean | null;
+}
+
 interface SnapshotRoot {
   locator: Locator;
   scope: 'document' | 'modal';
@@ -143,17 +153,24 @@ export class BrowserController {
   private authenticationHandoff: AuthenticationHandoff | null = null;
   private lastHandoffOutcome: AuthenticationBoundaryOutcome | null = null;
   private controlledLaunchIdentity: BrowserLaunchIdentity | null = null;
+  private runtimeProfileObservation: RuntimeProfileObservation | null = null;
+  private controlledStartBoundary: ControlledStartBoundaryObservation | null = null;
 
   constructor(
     private readonly config: Stage5BrowserConfig,
     initialBrowser: BrowserProduct = config.browser,
     private readonly humanBrowserLauncher: HumanBrowserLauncher = new NativeHumanBrowserLauncher(),
     private readonly profileStorageInspector: typeof inspectProfileStorage = inspectProfileStorage,
+    private readonly controlledProfileStorageInspector: typeof inspectControlledProfileStorage = inspectControlledProfileStorage,
+    private readonly runtimeProfileInspector: typeof inspectRuntimeProfile = inspectRuntimeProfile,
   ) {
     this.selectedBrowser = initialBrowser;
   }
 
-  async start(input: BrowserCommandInput<'start'> = {}): Promise<BrowserStatus> {
+  async start(
+    input: BrowserCommandInput<'start'> = {},
+    authenticationProbeTargetOrigin: string | null = null,
+  ): Promise<BrowserStatus> {
     if (this.authenticationHandoff?.state === 'awaiting_user') {
       throw this.humanBootstrapInProgressError();
     }
@@ -215,6 +232,46 @@ export class BrowserController {
 
       const pages = context.pages();
       this.activePage = pages.at(-1) ?? (await context.newPage());
+      const activePageBeforeRuntimeInspection = this.activePage;
+      const initialPages = context.pages().filter((page) => !page.isClosed());
+      const [runtimeProfile, controlledStartStorage, navigatorWebdriver] = await Promise.all([
+        this.runtimeProfileInspector(context, launchIdentity.profile, launchTarget.engine),
+        authenticationProbeTargetOrigin === null
+          ? Promise.resolve(null)
+          : this.controlledProfileStorageInspector(
+              launchIdentity.profile,
+              launchTarget.engine,
+              authenticationProbeTargetOrigin,
+              (urls) => context.cookies(urls).then((cookies) => cookies.map((cookie) => ({
+                domain: cookie.domain,
+                name: cookie.name,
+                expires: cookie.expires,
+              }))),
+            ),
+        authenticationProbeTargetOrigin === null
+          ? Promise.resolve(null)
+          : boundedValue(this.activePage.evaluate(() => navigator.webdriver), 500, null),
+      ]);
+      this.activePage = activePageBeforeRuntimeInspection;
+      this.runtimeProfileObservation = runtimeProfile;
+      const targetOriginLoadedAtControlledStart = authenticationProbeTargetOrigin !== null
+        && (
+          initialPages.some(
+            (candidate) => this.urlOrigin(candidate.url()) === authenticationProbeTargetOrigin,
+          )
+          || context.pages().some(
+            (candidate) => !candidate.isClosed()
+              && this.urlOrigin(candidate.url()) === authenticationProbeTargetOrigin,
+          )
+        );
+      this.controlledStartBoundary = authenticationProbeTargetOrigin === null || controlledStartStorage === null
+        ? null
+        : {
+            targetOrigin: authenticationProbeTargetOrigin,
+            storage: controlledStartStorage,
+            targetOriginLoaded: targetOriginLoadedAtControlledStart,
+            navigatorWebdriver,
+          };
       this.lastKnownUrl = this.activePage.url();
       this.lastLaunchFailure = null;
       this.state = 'running';
@@ -284,6 +341,8 @@ export class BrowserController {
       profile: await inspectProfile(profilePath, currentStatus.browserConnected || humanBootstrapRunning),
       profileBinding,
       launchIdentity: currentStatus.launchIdentity,
+      runtimeProfile: currentStatus.runtimeProfile,
+      authenticationStorageBoundary: this.lastHandoffOutcome?.storageContinuity ?? null,
       lastLaunchFailure: this.lastLaunchFailure,
       launchPolicy: browserLaunchPolicyDiagnostics(
         this.selectedBrowser,
@@ -342,6 +401,8 @@ export class BrowserController {
     this.boundPages = new WeakSet<Page>();
     this.authenticationHandoff = null;
     this.controlledLaunchIdentity = null;
+    this.runtimeProfileObservation = null;
+    this.controlledStartBoundary = null;
     this.state = 'stopped';
 
     if (context !== undefined && !context.isClosed()) {
@@ -366,6 +427,7 @@ export class BrowserController {
         activePageIndex: null,
         lastKnownUrl: this.lastKnownUrl,
         launchIdentity: this.authenticationHandoff?.launchIdentity ?? this.controlledLaunchIdentity,
+        runtimeProfile: null,
       };
     }
 
@@ -385,6 +447,7 @@ export class BrowserController {
       activePageIndex: activePageIndex < 0 ? null : activePageIndex,
       lastKnownUrl: this.lastKnownUrl,
       launchIdentity: this.controlledLaunchIdentity,
+      runtimeProfile: this.runtimeProfileObservation,
     };
   }
 
@@ -1195,7 +1258,7 @@ export class BrowserController {
     handoff.state = 'ready_for_agent_verification';
     let page: Page;
     try {
-      await this.start();
+      await this.start({}, handoff.targetOrigin);
       if (
         this.controlledLaunchIdentity === null
         || !sameLaunchIdentity(handoff.launchIdentity, this.controlledLaunchIdentity)
@@ -1217,6 +1280,21 @@ export class BrowserController {
       const context = this.usableContext();
       if (context === undefined) {
         throw new Stage5BrowserError('BROWSER_NOT_READY', 'The controlled browser did not reconnect after login.');
+      }
+      if (this.runtimeProfileObservation?.matchesConfigured === false) {
+        throw new Stage5BrowserError(
+          'AUTH_NOT_PERSISTED',
+          'The running browser reported a different profile path from the authentication handoff.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'auth_runtime_profile_mismatch',
+              configuredProfile: handoff.launchIdentity.profile,
+              runtimeProfile: this.runtimeProfileObservation,
+              suggestedAction: 'Do not repeat login. Stop before navigation and inspect the reported runtime profile path mismatch.',
+            },
+          },
+        );
       }
       const markerPages = context.pages().filter((candidate) => isStage5HandoffMarkerUrl(candidate.url()));
       await Promise.all(markerPages.map(async (candidate) => candidate.close({ runBeforeUnload: false })));
@@ -1249,16 +1327,43 @@ export class BrowserController {
         authenticationUrlFailure = error;
       }
     }
-    const afterReattachmentStorage = await this.profileStorageInspector(
+    const resumedContext = this.usableContext();
+    if (resumedContext === undefined) {
+      throw new Stage5BrowserError('BROWSER_NOT_READY', 'The controlled browser disappeared during storage-boundary inspection.');
+    }
+    const controlledStartBoundary = this.controlledStartBoundary?.targetOrigin === handoff.targetOrigin
+      ? this.controlledStartBoundary
+      : null;
+    const afterControlledStartStorage = controlledStartBoundary?.storage
+      ?? await this.controlledProfileStorageInspector(
+        handoff.launchIdentity.profile,
+        handoff.launchIdentity.engine,
+        handoff.targetOrigin,
+        (urls) => resumedContext.cookies(urls).then((cookies) => cookies.map((cookie) => ({
+          domain: cookie.domain,
+          name: cookie.name,
+          expires: cookie.expires,
+        }))),
+      );
+    const afterTargetLoadStorage = await this.controlledProfileStorageInspector(
       handoff.launchIdentity.profile,
       handoff.launchIdentity.engine,
       handoff.targetOrigin,
-      { liveBrowser: true },
+      (urls) => resumedContext.cookies(urls).then((cookies) => cookies.map((cookie) => ({
+        domain: cookie.domain,
+        name: cookie.name,
+        expires: cookie.expires,
+      }))),
     );
     const storageComparison = compareAuthenticationStorage(
       handoff.beforeStorage,
       afterHumanStorage,
-      afterReattachmentStorage,
+      afterControlledStartStorage,
+      afterTargetLoadStorage,
+      {
+        targetOriginLoadedAtControlledStart: controlledStartBoundary?.targetOriginLoaded ?? false,
+        navigatorWebdriverAtControlledStart: controlledStartBoundary?.navigatorWebdriver ?? null,
+      },
     );
     handoff.resumedAt = new Date().toISOString();
     const afterUrl = sanitizeUrlForJournal(page.url()) ?? null;
@@ -1276,11 +1381,28 @@ export class BrowserController {
           ? null
           : handoff.beforeSemanticFingerprint !== afterSemanticFingerprint,
       launchIdentityMatched: true,
+      runtimeProfile: this.runtimeProfileObservation,
       storageContinuity: storageComparison.continuity,
       comparedAt: handoff.resumedAt,
     };
     this.lastKnownUrl = page.url();
     const verificationPreview = await this.authenticationVerificationPreview(page);
+    if (storageComparison.authNotPersisted) {
+      throw new Stage5BrowserError(
+        'AUTH_NOT_PERSISTED',
+        'Target-origin session metadata was lost across controlled reattachment.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'authentication_storage_lost',
+            runtimeProfile: this.runtimeProfileObservation,
+            storageContinuity: storageComparison.continuity,
+            currentUrl: sanitizeUrlForJournal(page.url()) ?? null,
+            suggestedAction: 'Do not repeat login. Report the loss boundary, automation correlation, restored-target flag, runtime profile, and visible site state before changing the control architecture.',
+          },
+        },
+      );
+    }
     if (
       authenticationUrlFailure !== null
       && storageComparison.continuity.humanSessionEvidenceObserved === true
@@ -1334,6 +1456,8 @@ export class BrowserController {
         this.frameDocumentVersions = new WeakMap<Frame, number>();
         this.boundPages = new WeakSet<Page>();
         this.authenticationHandoff = null;
+        this.runtimeProfileObservation = null;
+        this.controlledStartBoundary = null;
         if (this.state !== 'recovering') {
           this.state = 'stopped';
         }
@@ -1959,6 +2083,8 @@ export class BrowserController {
     this.frameIds = new WeakMap<Frame, string>();
     this.frameDocumentVersions = new WeakMap<Frame, number>();
     this.boundPages = new WeakSet<Page>();
+    this.runtimeProfileObservation = null;
+    this.controlledStartBoundary = null;
     this.state = 'stopped';
   }
 

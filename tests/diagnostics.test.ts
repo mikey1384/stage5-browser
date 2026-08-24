@@ -27,6 +27,7 @@ describe('browser diagnostics', () => {
       executableSource: 'installed',
       sandbox: 'enabled',
       knownSecurityRelevantArguments: ['--enable-automation'],
+      knownControlledModeStorageArguments: ['--password-store=basic', '--use-mock-keychain'],
       argumentsComplete: false,
     });
     expect(browserLaunchPolicyDiagnostics('chromium', true, 'bundled', 'linux')).toMatchObject({
@@ -36,6 +37,7 @@ describe('browser diagnostics', () => {
     expect(browserLaunchPolicyDiagnostics('firefox', true, 'bundled', 'darwin')).toMatchObject({
       sandbox: 'not_applicable',
       knownSecurityRelevantArguments: [],
+      knownControlledModeStorageArguments: [],
     });
   });
 

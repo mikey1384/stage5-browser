@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -138,7 +138,15 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
         timeoutMs: 10_000,
       });
       expect(reattachedCookiePresent).toBe(true);
-      expect((await controller.status()).launchIdentity).toEqual(launchIdentity);
+      const controlledStatus = await controller.status();
+      expect(controlledStatus.launchIdentity).toEqual(launchIdentity);
+      const expectedRuntimeProfilePath = await realpath(path.join(root, 'Default'));
+      expect(controlledStatus.runtimeProfile).toMatchObject({
+        source: expect.stringMatching(/^chromium_(command_line|version_page)$/),
+        profilePath: expectedRuntimeProfilePath,
+        configuredProfilePath: path.join(root, 'Default'),
+        matchesConfigured: true,
+      });
       const afterReattachmentStorage = await inspectProfileStorage(
         launchIdentity.profile,
         launchIdentity.engine,

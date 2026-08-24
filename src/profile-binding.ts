@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+
+import type { BrowserContext, Page } from 'playwright';
 
 import type {
   BrowserEngine,
@@ -24,6 +26,16 @@ export interface BrowserLaunchIdentity {
   executablePath: string;
   executableSource: BrowserExecutableSource;
   profile: BrowserProfileBinding;
+}
+
+export interface RuntimeProfileObservation {
+  observedAt: string;
+  source: 'chromium_command_line' | 'chromium_version_page' | 'unavailable';
+  userDataDir: string | null;
+  profileDirectory: string | null;
+  profilePath: string | null;
+  configuredProfilePath: string;
+  matchesConfigured: boolean | null;
 }
 
 export type CookieDatabaseKind = 'chromium_legacy' | 'chromium_network' | 'firefox' | 'missing';
@@ -51,6 +63,7 @@ export interface CookieDatabaseMetadata {
     | 'aggregate_metadata'
     | 'database_missing'
     | 'database_unavailable'
+    | 'live_context_metadata'
     | 'live_process_metadata_only'
     | 'unsupported';
 }
@@ -72,10 +85,24 @@ export interface PublicProfileStorageObservation {
 export interface AuthenticationStorageContinuity {
   beforeHandoff: PublicProfileStorageObservation;
   afterHumanBrowser: PublicProfileStorageObservation;
+  afterControlledStart: PublicProfileStorageObservation;
+  afterTargetLoad: PublicProfileStorageObservation;
+  /** Backward-compatible alias for afterTargetLoad. */
   afterReattachment: PublicProfileStorageObservation;
   humanStorageChanged: boolean | null;
+  controlledStartPreservedHumanStorage: boolean | null;
+  targetLoadPreservedControlledStorage: boolean | null;
   reattachmentPreservedHumanStorage: boolean | null;
   humanSessionEvidenceObserved: boolean | null;
+  targetOriginLoadedAtControlledStart: boolean;
+  navigatorWebdriverAtControlledStart: boolean | null;
+  lossBoundary:
+    | 'none'
+    | 'playwright_start'
+    | 'playwright_start_or_restored_target_load'
+    | 'target_load'
+    | 'unverified';
+  automationCorrelation: 'loss_after_automation_exposure' | 'not_observed' | 'unverified';
   state: 'preserved' | 'lost' | 'unverified';
 }
 
@@ -83,6 +110,12 @@ interface CookieKeyRow {
   host: string;
   name: string;
   persistent: boolean;
+}
+
+export interface LiveCookieKeyMetadata {
+  domain: string;
+  name: string;
+  expires: number;
 }
 
 interface FileMetadata {
@@ -160,6 +193,162 @@ export function controlledProfileArguments(binding: BrowserProfileBinding): stri
   return binding.profileDirectory === null
     ? []
     : [`--profile-directory=${binding.profileDirectory}`];
+}
+
+function commandLineSwitchValue(arguments_: readonly string[], switchName: string): string | null {
+  const prefix = `${switchName}=`;
+  const inline = arguments_.find((argument) => argument.startsWith(prefix));
+  if (inline !== undefined) {
+    return inline.slice(prefix.length);
+  }
+  const index = arguments_.indexOf(switchName);
+  return index >= 0 ? arguments_[index + 1] ?? null : null;
+}
+
+function safeRuntimeProfileDirectory(value: string | null): string | null {
+  return value !== null
+    && /^[A-Za-z0-9 _.-]{1,80}$/.test(value)
+    && value !== '.'
+    && value !== '..'
+    ? value
+    : null;
+}
+
+export function runtimeProfileFromChromiumArguments(
+  arguments_: readonly string[],
+  configured: BrowserProfileBinding,
+  observedAt = new Date().toISOString(),
+): RuntimeProfileObservation {
+  const rawUserDataDir = commandLineSwitchValue(arguments_, '--user-data-dir');
+  const rawProfileDirectory = commandLineSwitchValue(arguments_, '--profile-directory')
+    ?? configured.profileDirectory
+    ?? CHROMIUM_PROFILE_DIRECTORY;
+  const userDataDir = rawUserDataDir !== null && path.isAbsolute(rawUserDataDir)
+    ? path.normalize(rawUserDataDir)
+    : null;
+  const profileDirectory = safeRuntimeProfileDirectory(rawProfileDirectory);
+  const profilePath = userDataDir === null || profileDirectory === null
+    ? null
+    : path.join(userDataDir, profileDirectory);
+  return {
+    observedAt,
+    source: profilePath === null ? 'unavailable' : 'chromium_command_line',
+    userDataDir,
+    profileDirectory,
+    profilePath,
+    configuredProfilePath: configured.profilePath,
+    matchesConfigured: profilePath === null
+      ? null
+      : path.resolve(profilePath) === path.resolve(configured.profilePath),
+  };
+}
+
+export function runtimeProfileFromChromiumVersionPath(
+  rawProfilePath: string,
+  configured: BrowserProfileBinding,
+  observedAt = new Date().toISOString(),
+): RuntimeProfileObservation {
+  const trimmedProfilePath = rawProfilePath.trim();
+  const profilePath = path.isAbsolute(trimmedProfilePath)
+    ? path.normalize(trimmedProfilePath)
+    : null;
+  const profileDirectory = profilePath === null
+    ? null
+    : safeRuntimeProfileDirectory(path.basename(profilePath));
+  const userDataDir = profilePath === null || profileDirectory === null
+    ? null
+    : path.dirname(profilePath);
+  return {
+    observedAt,
+    source: userDataDir === null ? 'unavailable' : 'chromium_version_page',
+    userDataDir,
+    profileDirectory,
+    profilePath: userDataDir === null ? null : profilePath,
+    configuredProfilePath: configured.profilePath,
+    matchesConfigured: userDataDir === null || profilePath === null
+      ? null
+      : path.resolve(profilePath) === path.resolve(configured.profilePath),
+  };
+}
+
+async function verifyRuntimeProfileMatch(
+  observation: RuntimeProfileObservation,
+): Promise<RuntimeProfileObservation> {
+  if (observation.profilePath === null) {
+    return observation;
+  }
+  try {
+    const [runtimePath, configuredPath] = await Promise.all([
+      realpath(observation.profilePath),
+      realpath(observation.configuredProfilePath),
+    ]);
+    return {
+      ...observation,
+      matchesConfigured: runtimePath === configuredPath,
+    };
+  } catch {
+    return observation;
+  }
+}
+
+export async function inspectRuntimeProfile(
+  context: BrowserContext,
+  configured: BrowserProfileBinding,
+  engine: BrowserEngine,
+): Promise<RuntimeProfileObservation> {
+  const unavailable = (): RuntimeProfileObservation => ({
+    observedAt: new Date().toISOString(),
+    source: 'unavailable',
+    userDataDir: null,
+    profileDirectory: null,
+    profilePath: null,
+    configuredProfilePath: configured.profilePath,
+    matchesConfigured: null,
+  });
+  if (engine !== 'chromium') {
+    return unavailable();
+  }
+  const page = context.pages().find((candidate) => !candidate.isClosed());
+  if (page === undefined) {
+    return unavailable();
+  }
+  try {
+    const session = await context.newCDPSession(page);
+    try {
+      const response = await session.send('Browser.getBrowserCommandLine') as { arguments?: unknown };
+      if (Array.isArray(response.arguments) && response.arguments.every((value) => typeof value === 'string')) {
+        return verifyRuntimeProfileMatch(
+          runtimeProfileFromChromiumArguments(response.arguments, configured),
+        );
+      }
+    } finally {
+      await session.detach().catch(() => undefined);
+    }
+  } catch {
+    // Some Chromium products do not expose Browser.getBrowserCommandLine even
+    // when controlled over CDP. chrome://version is Chromium's own source of
+    // truth for the live Profile Path, so use a short-lived internal page as a
+    // bounded fallback and return only that allowlisted field.
+  }
+
+  let versionPage: Page | undefined;
+  try {
+    versionPage = await context.newPage();
+    await versionPage.goto('chrome://version', {
+      waitUntil: 'domcontentloaded',
+      timeout: 2_000,
+    });
+    const profilePath = await versionPage.locator('#profile_path').textContent({ timeout: 1_000 });
+    return profilePath === null
+      ? unavailable()
+      : verifyRuntimeProfileMatch(
+          runtimeProfileFromChromiumVersionPath(profilePath, configured),
+        );
+  } catch {
+    return unavailable();
+  } finally {
+    await versionPage?.close().catch(() => undefined);
+  }
 }
 
 async function fileMetadata(candidate: string): Promise<FileMetadata | null> {
@@ -407,6 +596,46 @@ export async function inspectProfileStorage(
   };
 }
 
+export async function inspectControlledProfileStorage(
+  binding: BrowserProfileBinding,
+  engine: BrowserEngine,
+  targetOrigin: string | null,
+  readCookies: (urls: string[]) => Promise<readonly LiveCookieKeyMetadata[]>,
+): Promise<ProfileStorageInspection> {
+  const fileObservation = await inspectProfileStorage(binding, engine, targetOrigin, { liveBrowser: true });
+  const hostname = targetHostname(targetOrigin);
+  if (hostname === null || engine === 'webkit') {
+    return fileObservation;
+  }
+  try {
+    const cookies = await readCookies([targetOrigin!]);
+    const keys = cookies
+      .filter((cookie) => {
+        const domain = cookie.domain.replace(/^\./, '').toLocaleLowerCase();
+        return domain === hostname || hostname.endsWith(`.${domain}`);
+      })
+      .map((cookie) => ({
+        host: cookie.domain.toLocaleLowerCase(),
+        name: cookie.name,
+        persistent: Number.isFinite(cookie.expires) && cookie.expires > 0,
+      }));
+    return {
+      observedAt: new Date().toISOString(),
+      targetOrigin,
+      cookieDatabase: {
+        ...fileObservation.cookieDatabase,
+        targetOriginCookiePresent: keys.length > 0,
+        sessionCookiePresent: keys.some((key) => !key.persistent),
+        persistentCookiePresent: keys.some((key) => key.persistent),
+        inspection: 'live_context_metadata',
+      },
+      keyTokens: new Set(keys.map(cookieKeyToken)),
+    };
+  } catch {
+    return fileObservation;
+  }
+}
+
 export function publicStorageObservation(
   inspection: ProfileStorageInspection,
 ): PublicProfileStorageObservation {
@@ -424,42 +653,91 @@ function setEquals(left: ReadonlySet<string>, right: ReadonlySet<string>): boole
 export function compareAuthenticationStorage(
   beforeHandoff: ProfileStorageInspection,
   afterHumanBrowser: ProfileStorageInspection,
-  afterReattachment: ProfileStorageInspection,
+  afterControlledStart: ProfileStorageInspection,
+  afterTargetLoad: ProfileStorageInspection,
+  context: {
+    targetOriginLoadedAtControlledStart: boolean;
+    navigatorWebdriverAtControlledStart: boolean | null;
+  },
 ): { continuity: AuthenticationStorageContinuity; authNotPersisted: boolean } {
   const beforeKeys = beforeHandoff.keyTokens;
   const humanKeys = afterHumanBrowser.keyTokens;
-  const reattachedKeys = afterReattachment.keyTokens;
-  const comparable = beforeKeys !== null && humanKeys !== null && reattachedKeys !== null;
+  const controlledStartKeys = afterControlledStart.keyTokens;
+  const targetLoadKeys = afterTargetLoad.keyTokens;
+  const comparable = beforeKeys !== null
+    && humanKeys !== null
+    && controlledStartKeys !== null
+    && targetLoadKeys !== null;
   const humanStorageChanged = beforeKeys === null || humanKeys === null
     ? null
     : !setEquals(beforeKeys, humanKeys);
-  const reattachmentPreservedHumanStorage = humanKeys === null || reattachedKeys === null
+  const controlledStartPreservedHumanStorage = humanKeys === null || controlledStartKeys === null
     ? null
-    : [...humanKeys].every((value) => reattachedKeys.has(value));
+    : [...humanKeys].every((value) => controlledStartKeys.has(value));
+  const targetLoadPreservedControlledStorage = controlledStartKeys === null || targetLoadKeys === null
+    ? null
+    : [...controlledStartKeys].every((value) => targetLoadKeys.has(value));
+  const reattachmentPreservedHumanStorage = humanKeys === null || targetLoadKeys === null
+    ? null
+    : [...humanKeys].every((value) => targetLoadKeys.has(value));
   const humanAddedKeys = beforeKeys === null || humanKeys === null
     ? null
     : [...humanKeys].filter((value) => !beforeKeys.has(value));
   const humanSessionEvidenceObserved = humanAddedKeys === null
     ? null
     : humanAddedKeys.length > 0;
-  const addedKeysLost = humanAddedKeys === null || reattachedKeys === null
+  const addedKeysLostAtControlledStart = humanAddedKeys === null || controlledStartKeys === null
     ? false
-    : humanAddedKeys.some((value) => !reattachedKeys.has(value));
-  const allTargetCookiesLost = afterHumanBrowser.cookieDatabase.targetOriginCookiePresent === true
-    && afterReattachment.cookieDatabase.targetOriginCookiePresent === false;
+    : humanAddedKeys.some((value) => !controlledStartKeys.has(value));
+  const addedKeysLostAtTargetLoad = humanAddedKeys === null || targetLoadKeys === null
+    ? false
+    : humanAddedKeys.some((value) => !targetLoadKeys.has(value));
+  const allTargetCookiesLostAtControlledStart =
+    afterHumanBrowser.cookieDatabase.targetOriginCookiePresent === true
+    && afterControlledStart.cookieDatabase.targetOriginCookiePresent === false;
+  const allTargetCookiesLostAtTargetLoad =
+    afterControlledStart.cookieDatabase.targetOriginCookiePresent === true
+    && afterTargetLoad.cookieDatabase.targetOriginCookiePresent === false;
+  const controlledStartLoss = addedKeysLostAtControlledStart || allTargetCookiesLostAtControlledStart;
+  const targetLoadLoss = !controlledStartLoss
+    && (addedKeysLostAtTargetLoad || allTargetCookiesLostAtTargetLoad);
+  const lossBoundary: AuthenticationStorageContinuity['lossBoundary'] = controlledStartLoss
+    ? context.targetOriginLoadedAtControlledStart
+      ? 'playwright_start_or_restored_target_load'
+      : 'playwright_start'
+    : targetLoadLoss
+      ? 'target_load'
+      : comparable && reattachmentPreservedHumanStorage === true
+        ? 'none'
+        : 'unverified';
+  const automationCorrelation: AuthenticationStorageContinuity['automationCorrelation'] =
+    (lossBoundary === 'target_load' || lossBoundary === 'playwright_start_or_restored_target_load')
+      && context.navigatorWebdriverAtControlledStart === true
+      ? 'loss_after_automation_exposure'
+      : lossBoundary === 'unverified'
+        ? 'unverified'
+        : 'not_observed';
   const authNotPersisted = comparable
     && humanSessionEvidenceObserved === true
-    && (addedKeysLost || allTargetCookiesLost);
+    && (controlledStartLoss || targetLoadLoss);
 
   return {
     continuity: {
       beforeHandoff: publicStorageObservation(beforeHandoff),
       afterHumanBrowser: publicStorageObservation(afterHumanBrowser),
-      afterReattachment: publicStorageObservation(afterReattachment),
+      afterControlledStart: publicStorageObservation(afterControlledStart),
+      afterTargetLoad: publicStorageObservation(afterTargetLoad),
+      afterReattachment: publicStorageObservation(afterTargetLoad),
       humanStorageChanged,
+      controlledStartPreservedHumanStorage,
+      targetLoadPreservedControlledStorage,
       reattachmentPreservedHumanStorage,
       humanSessionEvidenceObserved,
-      state: authNotPersisted
+      targetOriginLoadedAtControlledStart: context.targetOriginLoadedAtControlledStart,
+      navigatorWebdriverAtControlledStart: context.navigatorWebdriverAtControlledStart,
+      lossBoundary,
+      automationCorrelation,
+      state: controlledStartLoss || targetLoadLoss
         ? 'lost'
         : comparable && reattachmentPreservedHumanStorage === true
           ? 'preserved'

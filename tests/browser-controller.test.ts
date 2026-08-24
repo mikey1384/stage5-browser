@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -650,6 +650,7 @@ describe('BrowserController', () => {
 
     authenticated = true;
     await humanLauncher.finish(true);
+    const expectedRuntimeProfilePath = await realpath(path.join(config.profileDir, 'Default'));
     const resumed = await controller.resumeAfterLogin({
       expected: { url: `${baseUrl}/login`, match: 'exact' },
       timeoutMs: 5_000,
@@ -678,7 +679,22 @@ describe('BrowserController', () => {
         routeChanged: false,
         semanticStructureChanged: true,
         launchIdentityMatched: true,
-        storageContinuity: { state: expect.stringMatching(/preserved|unverified/) },
+        runtimeProfile: {
+          source: expect.stringMatching(/^chromium_(command_line|version_page)$/),
+          profilePath: expectedRuntimeProfilePath,
+          matchesConfigured: true,
+        },
+        storageContinuity: {
+          state: expect.stringMatching(/preserved|unverified/),
+          afterControlledStart: {
+            cookieDatabase: { inspection: 'live_context_metadata' },
+          },
+          afterTargetLoad: {
+            cookieDatabase: { inspection: 'live_context_metadata' },
+          },
+          targetOriginLoadedAtControlledStart: false,
+          navigatorWebdriverAtControlledStart: true,
+        },
       },
     });
     expect(resumed.verificationPreview).toMatchObject({
@@ -831,10 +847,13 @@ describe('BrowserController', () => {
     const url = `${origin}/account`;
     temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-lost-auth-'));
     const config = browserConfig(temporaryRoot);
-    const inspections = [
+    const offlineInspections = [
       storageInspection(origin, []),
       storageInspection(origin, ['human-added-key']),
-      storageInspection(origin, []),
+    ];
+    const controlledInspections = [
+      storageInspection(origin, ['human-added-key']),
+      storageInspection(origin, ['human-added-key']),
     ];
     humanLauncher = new FakeHumanBrowserLauncher();
     controller = new BrowserController(
@@ -842,9 +861,16 @@ describe('BrowserController', () => {
       config.browser,
       humanLauncher,
       async () => {
-        const inspection = inspections.shift();
+        const inspection = offlineInspections.shift();
         if (inspection === undefined) {
-          throw new Error('Unexpected profile-storage inspection.');
+          throw new Error('Unexpected offline profile-storage inspection.');
+        }
+        return inspection;
+      },
+      async () => {
+        const inspection = controlledInspections.shift();
+        if (inspection === undefined) {
+          throw new Error('Unexpected controlled profile-storage inspection.');
         }
         return inspection;
       },
@@ -871,6 +897,70 @@ describe('BrowserController', () => {
       lastHandoffOutcome: {
         launchIdentityMatched: true,
         storageContinuity: { humanSessionEvidenceObserved: true },
+      },
+    });
+  });
+
+  it('returns the exact storage-loss boundary before asking the user to repeat login', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><head><title>Account</title></head><body><button>Sign in</button></body></html>');
+    });
+    const port = await listen(server);
+    const origin = `http://127.0.0.1:${port}`;
+    const url = `${origin}/account`;
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-storage-boundary-'));
+    const config = browserConfig(temporaryRoot);
+    const offlineInspections = [
+      storageInspection(origin, []),
+      storageInspection(origin, ['human-added-key']),
+    ];
+    const controlledInspections = [
+      storageInspection(origin, ['human-added-key']),
+      storageInspection(origin, []),
+    ];
+    humanLauncher = new FakeHumanBrowserLauncher();
+    controller = new BrowserController(
+      config,
+      config.browser,
+      humanLauncher,
+      async () => {
+        const inspection = offlineInspections.shift();
+        if (inspection === undefined) {
+          throw new Error('Unexpected offline profile-storage inspection.');
+        }
+        return inspection;
+      },
+      async () => {
+        const inspection = controlledInspections.shift();
+        if (inspection === undefined) {
+          throw new Error('Unexpected controlled profile-storage inspection.');
+        }
+        return inspection;
+      },
+    );
+    await controller.open({ url, newTab: false, timeoutMs: 5_000 });
+    config.headless = false;
+    await controller.requestLoginHandoff({ url: null, timeoutMs: 5_000 });
+    await humanLauncher.finish(true);
+
+    await expect(controller.resumeAfterLogin({ expected: null, timeoutMs: 2_000 }))
+      .rejects.toMatchObject<Partial<Stage5BrowserError>>({
+        code: 'AUTH_NOT_PERSISTED',
+        details: {
+          reason: 'authentication_storage_lost',
+          storageContinuity: {
+            lossBoundary: 'target_load',
+            automationCorrelation: 'loss_after_automation_exposure',
+            humanSessionEvidenceObserved: true,
+          },
+        },
+      });
+    expect(await controller.authStatus()).toMatchObject({
+      state: 'ready_for_agent_verification',
+      browserConnected: true,
+      lastHandoffOutcome: {
+        storageContinuity: { lossBoundary: 'target_load', state: 'lost' },
       },
     });
   });

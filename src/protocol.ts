@@ -7,6 +7,7 @@ import type {
   AuthenticationStorageContinuity,
   BrowserLaunchIdentity,
   BrowserProfileBinding,
+  RuntimeProfileObservation,
 } from './profile-binding.js';
 
 export const SUPPORTED_ARIA_ROLES = [
@@ -130,6 +131,7 @@ export interface AuthenticationBoundaryOutcome {
   routeChanged: boolean | null;
   semanticStructureChanged: boolean | null;
   launchIdentityMatched: boolean;
+  runtimeProfile: RuntimeProfileObservation | null;
   storageContinuity: AuthenticationStorageContinuity;
   comparedAt: string;
 }
@@ -179,6 +181,7 @@ export interface BrowserStatus {
   activePageIndex: number | null;
   lastKnownUrl: string | null;
   launchIdentity: BrowserLaunchIdentity | null;
+  runtimeProfile: RuntimeProfileObservation | null;
 }
 
 export interface AvailableBrowsers {

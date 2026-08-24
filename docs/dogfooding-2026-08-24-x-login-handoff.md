@@ -1,4 +1,4 @@
-# X login handoff dogfooding: Stage5 Browser 0.4.1–0.4.4
+# X login handoff dogfooding: Stage5 Browser 0.4.1–0.4.5
 
 ## Stop condition
 
@@ -104,8 +104,20 @@ Stage5 Browser 0.4.4 changes the decision boundary:
 4. A genuinely abnormal or unavailable process exit still pauses once. Because the process is already gone and the profile is unlocked, the suggested action says not to repeat login or Cmd-Q; one deliberate second `browser_resume_after_login` call is the explicit override for that same isolated profile.
 5. Regression coverage reproduces the exact zero-exit/stale-crash combination and proves reattachment succeeds. Separate coverage proves the bounded override is unavailable until the process is gone and locks are clear.
 
+## 0.4.5 follow-up: X storage boundary
+
+A fresh 0.4.4 worker cleared the shutdown gate and started the configured Brave `Default` partition, but X still rendered signed out. Operation `48b7d7c8-47d0-4a70-b106-5940f1b96c0c` established the 0.4.4 worker; `24d4e296-c687-41b1-a5d2-f01069a6ca79` started the existing profile; `7154b202-1018-4e05-864d-5fbac7cf0a29` showed `/home` redirecting to the logged-out root; `6673a795-bb0b-4a99-b786-4b20a3a701a0` captured the logged-out form; and `af87c8cf-7e71-4a57-aa0e-e98a833c876d` observed X's `bundle.LoggedOutAppModules`. That sequence proved the visible outcome, but it could not say whether storage disappeared at controlled launch, during a restored X load, or on the later explicit X navigation.
+
+Stage5 Browser 0.4.5 adds that missing boundary evidence:
+
+1. Immediately after the native browser exits, it records privacy-safe offline target-origin database metadata and cookie-key presence.
+2. Immediately after Playwright starts, before Stage5 explicitly navigates to the target, it reads the live context and reduces cookies to domain/name/expiry facts. It also records whether a target-origin tab was already restored and the initial `navigator.webdriver` value.
+3. After the target route stabilizes, it takes the same privacy-safe live observation again.
+4. Chromium's actual runtime Profile Path is obtained from a live browser diagnostic surface, canonicalized for macOS filesystem aliases, and compared with the configured binding. Raw command-line arguments are never returned.
+5. `lossBoundary` distinguishes `playwright_start`, `playwright_start_or_restored_target_load`, `target_load`, `none`, and `unverified`. `automationCorrelation` reports only whether loss followed an observed automated context; it does not claim that webdriver caused it.
+
+Interpret the next result conservatively. `playwright_start` directs investigation toward profile/keychain or controlled-launch defaults. `playwright_start_or_restored_target_load` requires preventing or accounting for session restore before separating those causes. Repeated `target_load` plus `loss_after_automation_exposure` is the evidence threshold for prototyping extension-based control inside native Brave. `none` plus logged-out UI means cookie-key presence survived but X rejected, expired, or otherwise did not accept the state; values remain deliberately unavailable.
+
 ## Resume condition
 
-This remains a compatible behavior/output patch: the MCP tool count, input schemas, catalog version, and worker protocol remain unchanged, so a directly registered live host rolls its worker forward on the next operation without a reconnect, reinstall, or deployment. Before a new authentication handoff, the agent should verify `restartRequired: false`, the expected tool count, and current worker version `0.4.4`. It should explicitly select the intended backend, request one human bootstrap, identify the exact application and Stage5 marker tab from the returned handoff label, wait for that application to quit normally, and resume once with a non-root post-login URL when one is known. It must inspect the returned semantic preview and then take a fresh full snapshot.
-
-The already-pending operation `806b14f3-929b-436f-a91b-7732b6c7100e` belongs to a resident 0.4.3 worker. Compatible worker replacement is intentionally deferred while a handoff is pending so the native-process handle is not discarded; therefore that old in-memory gate cannot acquire the 0.4.4 decision code. For this one transition only, do **not** repeat login: start a fresh agent/MCP connection after 0.4.4 is built, select the same Brave backend, call `browser_start` on its persistent Stage5 profile, and verify the visible signed-in state with a fresh snapshot. The profile itself is unlocked and remains the source of truth. Future 0.4.4 handoffs use the corrected gate directly. The Rick Rubin workflow remains paused until that verification.
+0.4.5 is a compatible output/behavior patch: tool count 22, input schemas, tool-catalog version 3, and worker protocol 3 are unchanged. A directly registered live host rolls its worker forward on the next operation without a reconnect, reinstall, or deployment, unless a private handoff is currently in progress. Before one new X handoff, verify `restartRequired: false` and worker version `0.4.5`, explicitly select Brave, and use a non-root post-login URL when stable. After resume, report `runtimeProfile`, `lossBoundary`, `automationCorrelation`, `targetOriginLoadedAtControlledStart`, all three storage observations, and the fresh visible X state. Do not repeat login or begin extension-control work until those results establish the boundary. The Rick Rubin workflow remains paused until this verification.

@@ -10,7 +10,12 @@ import {
 } from './browser-provider.js';
 import { Stage5BrowserError } from './errors.js';
 import type { PageRuntimeDiagnostics } from './page-diagnostics.js';
-import type { BrowserLaunchIdentity, BrowserProfileBinding } from './profile-binding.js';
+import type {
+  AuthenticationStorageContinuity,
+  BrowserLaunchIdentity,
+  BrowserProfileBinding,
+  RuntimeProfileObservation,
+} from './profile-binding.js';
 
 export const LAUNCH_FAILURE_REASONS = [
   'browser_executable_missing',
@@ -53,6 +58,8 @@ export interface BrowserDiagnostics {
   profile: ProfileDiagnostics;
   profileBinding: BrowserProfileBinding;
   launchIdentity: BrowserLaunchIdentity | null;
+  runtimeProfile: RuntimeProfileObservation | null;
+  authenticationStorageBoundary: AuthenticationStorageContinuity | null;
   lastLaunchFailure: LaunchFailureDiagnostic | null;
   launchPolicy: BrowserLaunchPolicyDiagnostics;
   automationExposure: AutomationExposureDiagnostics;
@@ -77,6 +84,7 @@ export interface BrowserLaunchPolicyDiagnostics {
   executableSource: BrowserExecutableSource | null;
   sandbox: 'enabled' | 'not_applicable' | 'playwright_default_disabled';
   knownSecurityRelevantArguments: string[];
+  knownControlledModeStorageArguments: string[];
   argumentsComplete: false;
 }
 
@@ -102,6 +110,9 @@ export function browserLaunchPolicyDiagnostics(
       ? chromiumSandboxEnabled
         ? ['--enable-automation']
         : ['--enable-automation', '--no-sandbox']
+      : [],
+    knownControlledModeStorageArguments: engine === 'chromium'
+      ? ['--password-store=basic', '--use-mock-keychain']
       : [],
     argumentsComplete: false,
   };
