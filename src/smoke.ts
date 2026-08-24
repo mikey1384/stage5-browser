@@ -18,18 +18,26 @@ const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-smoke
 const configuredBrowser = process.env.STAGE5_BROWSER_BROWSER?.trim().toLowerCase() ?? 'chromium';
 const switchTarget = process.env.STAGE5_BROWSER_SWITCH_TO?.trim().toLowerCase();
 const expectedBrowser = switchTarget ?? configuredBrowser;
-const client = new Client({ name: 'stage5-browser-smoke', version: '0.1.0' });
+const smokeCwd = process.env.STAGE5_BROWSER_SMOKE_CWD ?? projectRoot;
+const smokePlaywrightPath =
+  process.env.STAGE5_BROWSER_SMOKE_PLAYWRIGHT_PATH ?? path.join(projectRoot, '.playwright-browsers');
+const usePersistentProfile = process.env.STAGE5_BROWSER_SMOKE_PERSISTENT === '1';
+const client = new Client({ name: 'stage5-browser-smoke', version: '0.2.0' });
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [path.join(projectRoot, 'dist', 'mcp-server.js')],
-  cwd: projectRoot,
+  args: [path.join(projectRoot, 'dist', 'launcher.js')],
+  cwd: smokeCwd,
   stderr: 'pipe',
   env: {
     ...getDefaultEnvironment(),
-    PLAYWRIGHT_BROWSERS_PATH: path.join(projectRoot, '.playwright-browsers'),
-    STAGE5_BROWSER_PROFILES_DIR: path.join(temporaryRoot, 'profiles'),
-    STAGE5_BROWSER_PROFILE_DIR: path.join(temporaryRoot, 'profile'),
-    STAGE5_BROWSER_ARTIFACTS_DIR: path.join(temporaryRoot, 'artifacts'),
+    PLAYWRIGHT_BROWSERS_PATH: smokePlaywrightPath,
+    ...(usePersistentProfile
+      ? {}
+      : {
+          STAGE5_BROWSER_PROFILES_DIR: path.join(temporaryRoot, 'profiles'),
+          STAGE5_BROWSER_PROFILE_DIR: path.join(temporaryRoot, 'profile'),
+          STAGE5_BROWSER_ARTIFACTS_DIR: path.join(temporaryRoot, 'artifacts'),
+        }),
     STAGE5_BROWSER_HEADLESS: '1',
     STAGE5_BROWSER_OPERATION_TIMEOUT_MS: '20000',
     STAGE5_BROWSER_NAVIGATION_TIMEOUT_MS: '30000',
@@ -48,6 +56,7 @@ try {
   const names = new Set(tools.tools.map((tool) => tool.name));
   for (const required of [
     'browser_available',
+    'browser_diagnostics',
     'browser_start',
     'browser_switch',
     'browser_open',
@@ -92,10 +101,25 @@ try {
 
   const status = await client.callTool({ name: 'browser_status', arguments: {} });
   assertToolSuccess(status, 'browser_status');
-  const selectedBrowser = (status.structuredContent as { result?: { browser?: unknown } } | undefined)
-    ?.result?.browser;
+  const statusPayload = status.structuredContent as {
+    result?: { browser?: unknown };
+    mcp?: { version?: unknown; restartRequired?: unknown };
+  } | undefined;
+  const selectedBrowser = statusPayload?.result?.browser;
   if (selectedBrowser !== expectedBrowser) {
     throw new Error(`Expected ${expectedBrowser}, but browser_status reported ${String(selectedBrowser)}.`);
+  }
+  if (statusPayload?.mcp?.version !== '0.2.0' || statusPayload.mcp.restartRequired !== false) {
+    throw new Error('browser_status did not report the current non-stale MCP build.');
+  }
+
+  const diagnostics = await client.callTool({ name: 'browser_diagnostics', arguments: {} });
+  assertToolSuccess(diagnostics, 'browser_diagnostics');
+  const diagnosticResult = (diagnostics.structuredContent as {
+    result?: { browser?: { availability?: { available?: unknown }; profile?: { writable?: unknown } } };
+  } | undefined)?.result?.browser;
+  if (diagnosticResult?.availability?.available !== true || diagnosticResult.profile?.writable !== true) {
+    throw new Error('browser_diagnostics did not confirm executable availability and profile writability.');
   }
 
   const frames = await client.callTool({ name: 'browser_frames', arguments: {} });
@@ -130,7 +154,10 @@ try {
       target: 'https://translator.tools',
       browser: selectedBrowser,
       toolCount: tools.tools.length,
+      mcpVersion: statusPayload.mcp.version,
       frameCount: observedFrames.length,
+      diagnosticsPassed: true,
+      persistentProfile: usePersistentProfile,
       snapshotCharacters: snapshotText.length,
       screenshotReturned: screenshot.content.some((item) => item.type === 'image'),
     })}\n`,

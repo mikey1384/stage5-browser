@@ -25,6 +25,10 @@ claude --continue
 
 After reconnection, a natural-language instruction such as “Use the `stage5_browser` MCP tools instead of `claude-in-chrome`” is sufficient. The host exposes the individual tools to the model; no JSON-RPC bridge is necessary.
 
+`browser_status` reports the MCP version, protocol version, process start time, build fingerprint, tool-catalog version, and `restartRequired`. If the files were rebuilt after the MCP process started, Stage5 Browser returns `MCP_RESTART_REQUIRED` for browser work. `browser_recover` intentionally cannot clear this condition because it replaces only the worker; restart the MCP host and resume the agent session.
+
+After any `browser_start` failure, call `browser_diagnostics` before retrying. It reports the selected backend's executable preflight, profile writability and known lock files, the last sanitized launch-failure category, and a safe suggested action. Raw browser errors, credentials, page contents, and form values are not included.
+
 ## Authentication model
 
 The normal mode is one isolated, persistent Stage5 Browser profile per browser backend:

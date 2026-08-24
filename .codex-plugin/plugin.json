@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reliability-first browser control for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -16,17 +16,19 @@
   "interface": {
     "displayName": "Stage5 Browser",
     "shortDescription": "Reliable, recoverable browser control for agents.",
-    "longDescription": "Stage5 Browser provides isolated persistent sessions, bounded operations, automatic worker recovery, and privacy-minimized diagnostics through MCP.",
+    "longDescription": "Stage5 Browser provides isolated persistent sessions, bounded operations, versioned MCP/worker recovery, cross-origin frame control, and privacy-minimized launch diagnostics through MCP.",
     "developerName": "Stage5 Tools LLC",
     "category": "Productivity",
     "capabilities": [
       "Browser automation",
       "Persistent sessions",
-      "Automatic recovery"
+      "Automatic recovery",
+      "Build and launch diagnostics"
     ],
     "defaultPrompt": [
       "Open a page and inspect its semantic structure.",
       "Check the current browser session and tabs.",
+      "Diagnose why a browser profile cannot start.",
       "Recover the browser and reopen the last page."
     ],
     "brandColor": "#2563EB"

@@ -9,9 +9,30 @@ import { loadConfig } from './config.js';
 import { serializeUnknownError } from './errors.js';
 import { SUPPORTED_ARIA_ROLES } from './protocol.js';
 import { BrowserSupervisor, SupervisedOperationError } from './supervisor.js';
+import {
+  buildStampUrlFor,
+  MCP_TOOL_COUNT,
+  RuntimeArtifactMonitor,
+  STAGE5_BROWSER_VERSION,
+  TOOL_CATALOG_VERSION,
+} from './runtime-info.js';
 
 const config = loadConfig();
-const supervisor = new BrowserSupervisor(config);
+const runtimeMonitor = new RuntimeArtifactMonitor('mcp', buildStampUrlFor(import.meta.url));
+const supervisor = new BrowserSupervisor(config, {
+  expectedBuildFingerprint: runtimeMonitor.inspect().artifactFingerprint,
+});
+
+function mcpRuntimeInfo(): ReturnType<RuntimeArtifactMonitor['inspect']> & {
+  toolCatalogVersion: number;
+  toolCount: number;
+} {
+  return {
+    ...runtimeMonitor.inspect(),
+    toolCatalogVersion: TOOL_CATALOG_VERSION,
+    toolCount: MCP_TOOL_COUNT,
+  };
+}
 
 function textResult(value: unknown): {
   content: Array<{ type: 'text'; text: string }>;
@@ -51,12 +72,21 @@ async function safely<T>(operation: () => Promise<T>): Promise<ReturnType<typeof
   }
 }
 
+async function safelyCurrent<T>(
+  operation: () => Promise<T>,
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
+  return safely(async () => {
+    runtimeMonitor.assertCurrent();
+    return operation();
+  });
+}
+
 function createServer(): McpServer {
   const server = new McpServer(
-    { name: 'stage5-browser', version: '0.1.0' },
+    { name: 'stage5-browser', version: STAGE5_BROWSER_VERSION },
     {
       instructions:
-        'Use this local browser only when an API or CLI cannot complete the task. Before a browser-specific workflow, call browser_available, then use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: authentication survives agent restarts but never comes from the user\'s everyday browser or another backend. Inspect the current page instead of assuming login state; ask the user only for password, passkey, CAPTCHA, or OTP steps that require them, then snapshot again. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
+        'Use this local browser only when an API or CLI cannot complete the task. Begin with browser_status and browser_available. If browser_status reports restartRequired, stop browser work and restart the MCP host; browser_recover cannot refresh an MCP tool catalog. Use browser_diagnostics after any launch failure and follow its safe suggested action rather than blind retrying. Use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: authentication survives agent restarts but never comes from the user\'s everyday browser or another backend. Inspect the current page instead of assuming login state; ask the user only for password, passkey, CAPTCHA, or OTP steps that require them, then snapshot again. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
     },
   );
 
@@ -64,7 +94,7 @@ function createServer(): McpServer {
     'browser_status',
     {
       title: 'Browser status',
-      description: 'Report the owned worker, dedicated browser context, tabs, and current recovery state.',
+      description: 'Report MCP/build freshness, worker build, dedicated browser context, tabs, and current recovery state. A stale build reports restartRequired without starting a worker.',
       inputSchema: z.object({}),
       annotations: {
         readOnlyHint: true,
@@ -73,7 +103,21 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async () => safely(() => supervisor.execute('status', {})),
+    async () =>
+      safely(async () => {
+        const mcp = mcpRuntimeInfo();
+        if (mcp.restartRequired) {
+          return {
+            operationId: null,
+            recovery: 'not_needed' as const,
+            result: null,
+            mcp,
+            worker: supervisor.workerRuntimeInfo,
+          };
+        }
+        const outcome = await supervisor.execute('status', {});
+        return { ...outcome, mcp, worker: supervisor.workerRuntimeInfo };
+      }),
   );
 
   server.registerTool(
@@ -90,7 +134,42 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async () => safely(() => supervisor.execute('availableBrowsers', {})),
+    async () => safelyCurrent(() => supervisor.execute('availableBrowsers', {})),
+  );
+
+  server.registerTool(
+    'browser_diagnostics',
+    {
+      title: 'Browser diagnostics',
+      description:
+        'Report MCP/worker build freshness, selected executable preflight, isolated-profile writability and lock state, browser state, and the last sanitized launch-failure category with a suggested action.',
+      inputSchema: z.object({}),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () =>
+      safely(async () => {
+        const mcp = mcpRuntimeInfo();
+        if (mcp.restartRequired) {
+          return {
+            operationId: null,
+            recovery: 'not_needed' as const,
+            result: null,
+            mcp,
+            worker: supervisor.workerRuntimeInfo,
+            diagnostic: {
+              reason: 'mcp_restart_required',
+              suggestedAction: mcp.suggestedAction,
+            },
+          };
+        }
+        const outcome = await supervisor.execute('diagnostics', {});
+        return { ...outcome, mcp, worker: outcome.result.worker };
+      }),
   );
 
   server.registerTool(
@@ -98,7 +177,7 @@ function createServer(): McpServer {
     {
       title: 'Start dedicated browser',
       description:
-        'Start the requested isolated persistent browser profile, or the configured default when omitted. Its login state survives agent restarts but is not imported from the user\'s everyday browser. Does not close a different profile that is already running.',
+        'Start the requested isolated persistent browser profile, or the configured default when omitted. Its login state survives agent restarts but is not imported from the user\'s everyday browser. Does not close a different profile that is already running. On failure, use browser_diagnostics instead of retrying blindly.',
       inputSchema: z.object({ browser: z.enum(SUPPORTED_BROWSER_PRODUCTS).optional() }),
       annotations: {
         readOnlyHint: false,
@@ -108,7 +187,7 @@ function createServer(): McpServer {
       },
     },
     async ({ browser }) =>
-      safely(() => supervisor.execute('start', browser === undefined ? {} : { browser })),
+      safelyCurrent(() => supervisor.execute('start', browser === undefined ? {} : { browser })),
   );
 
   server.registerTool(
@@ -125,7 +204,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async (input) => safely(() => supervisor.execute('switchBrowser', input)),
+    async (input) => safelyCurrent(() => supervisor.execute('switchBrowser', input)),
   );
 
   server.registerTool(
@@ -146,7 +225,7 @@ function createServer(): McpServer {
         openWorldHint: true,
       },
     },
-    async (input) => safely(() => supervisor.execute('open', input)),
+    async (input) => safelyCurrent(() => supervisor.execute('open', input)),
   );
 
   server.registerTool(
@@ -162,7 +241,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async () => safely(() => supervisor.execute('tabs', {})),
+    async () => safelyCurrent(() => supervisor.execute('tabs', {})),
   );
 
   server.registerTool(
@@ -178,7 +257,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async (input) => safely(() => supervisor.execute('selectTab', input)),
+    async (input) => safelyCurrent(() => supervisor.execute('selectTab', input)),
   );
 
   server.registerTool(
@@ -195,7 +274,7 @@ function createServer(): McpServer {
         openWorldHint: true,
       },
     },
-    async () => safely(() => supervisor.execute('frames', {})),
+    async () => safelyCurrent(() => supervisor.execute('frames', {})),
   );
 
   server.registerTool(
@@ -217,7 +296,7 @@ function createServer(): McpServer {
         openWorldHint: true,
       },
     },
-    async (input) => safely(() => supervisor.execute('snapshot', input)),
+    async (input) => safelyCurrent(() => supervisor.execute('snapshot', input)),
   );
 
   server.registerTool(
@@ -238,6 +317,7 @@ function createServer(): McpServer {
     },
     async (input) => {
       try {
+        runtimeMonitor.assertCurrent();
         const outcome = await supervisor.execute('screenshot', input);
         const { dataBase64, ...screenshot } = outcome.result;
         const structuredContent = {
@@ -278,7 +358,7 @@ function createServer(): McpServer {
         openWorldHint: true,
       },
     },
-    async (input) => safely(() => supervisor.execute('clickByRole', input)),
+    async (input) => safelyCurrent(() => supervisor.execute('clickByRole', input)),
   );
 
   server.registerTool(
@@ -302,7 +382,7 @@ function createServer(): McpServer {
         openWorldHint: true,
       },
     },
-    async (input) => safely(() => supervisor.execute('fillByRole', input)),
+    async (input) => safelyCurrent(() => supervisor.execute('fillByRole', input)),
   );
 
   server.registerTool(
@@ -310,7 +390,7 @@ function createServer(): McpServer {
     {
       title: 'Recover browser worker',
       description:
-        'Kill the owned worker process group, start a clean worker, and optionally reopen the last sanitized browser URL.',
+        'Recover only the owned worker process group, then optionally reopen the last sanitized browser URL. The result distinguishes worker recovery from browser recovery; a stopped browser is reported as worker_recovered_browser_stopped. This cannot refresh a stale MCP build or tool catalog.',
       inputSchema: z.object({ reopenLastUrl: z.boolean().default(true) }),
       annotations: {
         readOnlyHint: false,
@@ -319,7 +399,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async ({ reopenLastUrl }) => safely(() => supervisor.forceRecover(reopenLastUrl)),
+    async ({ reopenLastUrl }) => safelyCurrent(() => supervisor.forceRecover(reopenLastUrl)),
   );
 
   server.registerTool(

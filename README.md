@@ -6,7 +6,7 @@ Stage5 Browser is a reliability-first local browser controller for AI agents. It
 
 ## Current status
 
-The first vertical slice is implemented and tested. A standard MCP client can:
+The reliability and diagnostics slice is implemented and tested. A standard MCP client can:
 
 - preflight and switch among isolated Chromium, Chrome, Brave, Edge, Firefox, and WebKit profiles
 - open HTTP(S) pages with commit-first navigation
@@ -15,6 +15,7 @@ The first vertical slice is implemented and tested. A standard MCP client can:
 - capture a screenshot
 - click or fill one unique semantic target
 - stop or explicitly recover the browser
+- detect a stale MCP build, diagnose launch preflight/profile failures, and distinguish worker recovery from browser recovery
 
 The MCP process supervises a separate worker that owns Playwright and the selected browser. If a command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
 
@@ -44,8 +45,9 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 
 | Tool | Purpose |
 | --- | --- |
-| `browser_status` | Report worker, browser, tab, and active-page state |
+| `browser_status` | Report MCP/build freshness plus worker, browser, tab, and active-page state |
 | `browser_available` | Preflight every backend without launching or closing a browser |
+| `browser_diagnostics` | Diagnose build freshness, executable availability, profile writability/locks, and the last safe launch cause |
 | `browser_start` | Launch a requested profile without closing another running browser |
 | `browser_switch` | Safely switch to a preflighted isolated browser profile |
 | `browser_open` | Navigate with bounded commit and readiness phases |
@@ -97,9 +99,12 @@ Key implementation files:
 - A timed-out consequential action is never retried automatically.
 - A zero-match or multi-match semantic locator fails explicitly.
 - A hung or disconnected worker is killed and replaced before another operation proceeds.
+- MCP and worker builds complete a versioned protocol handshake; incompatible builds fail with `MCP_RESTART_REQUIRED`.
+- A running MCP detects when its loaded artifact was rebuilt and refuses browser work until the host restarts.
+- Worker recovery reports whether a browser was actually running afterward; it never implies that the MCP catalog was refreshed.
 - Diagnostic journaling is best-effort and cannot change an operation's result.
 
-Regression coverage currently includes URL restrictions, privacy-safe journal URLs, command serialization, semantic targeting, screenshots, ambiguous matches, and deliberate worker hangs followed by PID replacement.
+Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, screenshots, ambiguous matches, cross-origin frames, browser switching, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
 
 ## Browser selection
 

@@ -3,7 +3,7 @@
     "stage5_browser": {
       "command": "node",
       "args": [
-        "./dist/mcp-server.js"
+        "./dist/launcher.js"
       ],
       "cwd": ".",
       "enabled": true,
@@ -21,9 +21,6 @@
         "STAGE5_BROWSER_OPERATION_TIMEOUT_MS",
         "STAGE5_BROWSER_NAVIGATION_TIMEOUT_MS"
       ],
-      "env": {
-        "PLAYWRIGHT_BROWSERS_PATH": ".playwright-browsers"
-      },
       "startup_timeout_sec": 10,
       "tool_timeout_sec": 75,
       "default_tools_approval_mode": "writes"

@@ -1,6 +1,9 @@
 import { appendFile, chmod, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
+import type { BrowserProduct } from './browser-provider.js';
+import type { LaunchFailureReason } from './diagnostics.js';
+import type { BrowserLifecycleState } from './protocol.js';
 import { sanitizeUrlForJournal } from './url-policy.js';
 
 export type OperationOutcome = 'succeeded' | 'failed' | 'timed_out';
@@ -13,6 +16,9 @@ export interface OperationJournalRecord {
   outcome: OperationOutcome;
   recovery: 'not_needed' | 'succeeded' | 'failed';
   errorCode?: string;
+  diagnosticCause?: LaunchFailureReason;
+  browser?: BrowserProduct;
+  browserState?: BrowserLifecycleState;
   currentUrl?: string;
 }
 
@@ -38,6 +44,9 @@ export class OperationJournal {
       outcome: record.outcome,
       recovery: record.recovery,
       ...(record.errorCode === undefined ? {} : { errorCode: record.errorCode }),
+      ...(record.diagnosticCause === undefined ? {} : { diagnosticCause: record.diagnosticCause }),
+      ...(record.browser === undefined ? {} : { browser: record.browser }),
+      ...(record.browserState === undefined ? {} : { browserState: record.browserState }),
       ...(sanitizeUrlForJournal(record.currentUrl) === undefined
         ? {}
         : { currentUrl: sanitizeUrlForJournal(record.currentUrl) }),

@@ -5,7 +5,9 @@ Stage5 Browser treats failures according to the layer that owns recovery. A gene
 | Layer | Examples | Detection | Recovery owner | Default response |
 | --- | --- | --- | --- | --- |
 | MCP transport | host disconnect, malformed protocol output | transport close or protocol error | MCP host/server | close cleanly; never write non-protocol data to stdout |
+| MCP build lifecycle | server artifact rebuilt after process start, stale tool catalog | runtime fingerprint and build metadata | MCP host | return `MCP_RESTART_REQUIRED`; restart/resume the host session |
 | Supervisor | queue corruption, worker startup failure | failed readiness handshake | supervisor | reject with a structured terminal error |
+| MCP/worker protocol | stale MCP starts a worker from a newer build | versioned initialization handshake | MCP host | reject with `MCP_RESTART_REQUIRED`; never attempt worker recovery loops |
 | Worker process | deadlock, event-loop stall, crash | hard deadline, process exit, IPC disconnect | supervisor | terminate the process group and spawn a clean worker |
 | Browser process | crash, orphan, profile lock | Playwright disconnect or failed launch | supervisor and worker | close or kill the owned process tree; relaunch the dedicated profile |
 | Browser context | unexpected close, unusable persistent context | context close event or operation error | worker | recreate the context; preserve only the dedicated profile |
@@ -15,6 +17,8 @@ Stage5 Browser treats failures according to the layer that owns recovery. A gene
 | Element targeting | missing or ambiguous role/name | locator count and actionability checks | caller | return candidates/error; never click an arbitrary first match |
 | Consequential ambiguity | click or submission times out after it may have fired | timeout after dispatch | caller and service adapter | do not retry; verify authoritative external state first |
 | Authentication/site policy | CAPTCHA, expired login, bot rejection | visible page state and service response | user or service adapter | request the smallest user-only action or switch to API/CLI |
+
+`browser_recover` recovers the worker boundary only. Its terminal result explicitly reports either `worker_recovered_browser_running` or `worker_recovered_browser_stopped`; neither outcome claims that an MCP tool catalog was reloaded.
 
 ## Recovery invariants
 

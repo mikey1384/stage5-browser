@@ -1,6 +1,8 @@
 import type { Stage5BrowserConfig } from './config.js';
+import type { BrowserDiagnostics } from './diagnostics.js';
 import type { BrowserAvailability, BrowserProduct } from './browser-provider.js';
 import type { SerializedStage5BrowserError } from './errors.js';
+import type { RuntimeProcessInfo } from './runtime-info.js';
 
 export const SUPPORTED_ARIA_ROLES = [
   'button',
@@ -54,8 +56,14 @@ export interface AvailableBrowsers {
 
 export interface BrowserCommandMap {
   initialize: {
-    input: { config: Stage5BrowserConfig; browser: BrowserProduct };
-    output: { ready: true; workerPid: number };
+    input: {
+      config: Stage5BrowserConfig;
+      browser: BrowserProduct;
+      protocolVersion: number;
+      mcpVersion: string;
+      mcpBuildFingerprint: string | null;
+    };
+    output: { ready: true; workerPid: number; runtime: RuntimeProcessInfo };
   };
   status: {
     input: Record<string, never>;
@@ -68,6 +76,10 @@ export interface BrowserCommandMap {
   availableBrowsers: {
     input: Record<string, never>;
     output: AvailableBrowsers;
+  };
+  diagnostics: {
+    input: Record<string, never>;
+    output: { browser: BrowserDiagnostics; status: BrowserStatus; worker: RuntimeProcessInfo };
   };
   switchBrowser: {
     input: { browser: BrowserProduct };

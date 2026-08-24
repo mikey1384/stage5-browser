@@ -1,6 +1,6 @@
 {
   "name": "@stage5/browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Reliability-first local browser control for AI agents.",
@@ -8,12 +8,12 @@
     "node": ">=22"
   },
   "bin": {
-    "stage5-browser": "./dist/mcp-server.js"
+    "stage5-browser": "./dist/launcher.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers tsx src/mcp-server.ts",
-    "start": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node dist/mcp-server.js",
+    "build": "node scripts/write-build-stamp.mjs && tsc -p tsconfig.json",
+    "dev": "tsx src/launcher.ts",
+    "start": "node dist/launcher.js",
     "test": "npm run build && PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest run",
     "test:watch": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest",
     "check": "npm run test",

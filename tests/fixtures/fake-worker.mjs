@@ -2,6 +2,20 @@ import { spawn } from 'node:child_process';
 
 let initialized = false;
 let browser = 'chromium';
+const startedAt = new Date().toISOString();
+const runtime = {
+  component: 'worker',
+  version: '0.2.0',
+  protocolVersion: 2,
+  processId: process.pid,
+  startedAt,
+  buildModifiedAt: startedAt,
+  artifactFingerprint: 'fake-worker',
+  currentArtifactFingerprint: 'fake-worker',
+  restartRequired: false,
+  restartReason: null,
+  suggestedAction: null,
+};
 const descendant = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1000)'], {
   stdio: 'ignore',
 });
@@ -20,7 +34,7 @@ process.on('message', (message) => {
   if (message.command === 'initialize') {
     initialized = true;
     browser = message.payload.browser;
-    respond(message.id, { ready: true, workerPid: process.pid });
+    respond(message.id, { ready: true, workerPid: process.pid, runtime });
     return;
   }
 
@@ -56,6 +70,31 @@ process.on('message', (message) => {
       activePageIndex: null,
       lastKnownUrl: null,
       descendantPid: descendant.pid,
+    });
+    return;
+  }
+
+  if (message.command === 'diagnostics') {
+    const status = {
+      browser,
+      state: 'stopped',
+      workerPid: process.pid,
+      browserConnected: false,
+      pages: [],
+      activePageIndex: null,
+      lastKnownUrl: null,
+    };
+    respond(message.id, {
+      browser: {
+        browser,
+        engine: browser === 'firefox' ? 'firefox' : browser === 'webkit' ? 'webkit' : 'chromium',
+        availability: { browser, engine: 'chromium', available: true, source: 'bundled', reason: null },
+        preflightSuggestedAction: null,
+        profile: { path: '/tmp/fake', exists: false, writable: true, lockFiles: [], lockState: 'none' },
+        lastLaunchFailure: null,
+      },
+      status,
+      worker: runtime,
     });
     return;
   }

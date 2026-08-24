@@ -4,10 +4,17 @@ import type {
   BrowserWorkerRequest,
   BrowserWorkerResponse,
 } from './protocol.js';
+import {
+  buildStampUrlFor,
+  RuntimeArtifactMonitor,
+  STAGE5_BROWSER_VERSION,
+  WORKER_PROTOCOL_VERSION,
+} from './runtime-info.js';
 
 let controller: BrowserController | undefined;
 let commandTail: Promise<void> = Promise.resolve();
 let shuttingDown = false;
+const runtimeMonitor = new RuntimeArtifactMonitor('worker', buildStampUrlFor(import.meta.url));
 
 function send(message: BrowserWorkerResponse): void {
   if (process.connected) {
@@ -17,9 +24,36 @@ function send(message: BrowserWorkerResponse): void {
 
 async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
   if (request.command === 'initialize') {
+    runtimeMonitor.assertCurrent();
+    const workerRuntime = runtimeMonitor.inspect();
+    if (
+      request.payload.protocolVersion !== WORKER_PROTOCOL_VERSION ||
+      request.payload.mcpVersion !== STAGE5_BROWSER_VERSION ||
+      (request.payload.mcpBuildFingerprint !== null &&
+        request.payload.mcpBuildFingerprint !== workerRuntime.artifactFingerprint)
+    ) {
+      throw new Stage5BrowserError(
+        'MCP_RESTART_REQUIRED',
+        'The MCP server and browser worker loaded incompatible Stage5 Browser builds.',
+        {
+          details: {
+            reason: 'worker_protocol_mismatch',
+            expectedProtocolVersion: WORKER_PROTOCOL_VERSION,
+            receivedProtocolVersion: request.payload.protocolVersion ?? null,
+            expectedVersion: STAGE5_BROWSER_VERSION,
+            receivedVersion: request.payload.mcpVersion ?? null,
+            expectedBuildFingerprint: request.payload.mcpBuildFingerprint ?? null,
+            receivedBuildFingerprint: workerRuntime.artifactFingerprint,
+            suggestedAction: 'Restart the MCP host so the MCP server and browser worker load the same build.',
+          },
+        },
+      );
+    }
     controller = new BrowserController(request.payload.config, request.payload.browser);
-    return { ready: true, workerPid: process.pid };
+    return { ready: true, workerPid: process.pid, runtime: workerRuntime };
   }
+
+  runtimeMonitor.assertCurrent();
 
   if (controller === undefined) {
     throw new Stage5BrowserError('BROWSER_NOT_READY', 'The browser worker has not been initialized.', {
@@ -34,6 +68,10 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
       return controller.start(request.payload);
     case 'availableBrowsers':
       return controller.availableBrowsers();
+    case 'diagnostics': {
+      const status = await controller.status();
+      return { browser: await controller.diagnostics(status), status, worker: runtimeMonitor.inspect() };
+    }
     case 'switchBrowser':
       return controller.switchBrowser(request.payload);
     case 'stop':

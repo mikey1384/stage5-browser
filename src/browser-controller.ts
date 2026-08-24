@@ -13,6 +13,13 @@ import {
   type BrowserSelection,
 } from './browser-provider.js';
 import { profileDirForBrowser, type Stage5BrowserConfig } from './config.js';
+import {
+  inspectProfile,
+  launchFailureDiagnostic,
+  suggestedActionForReason,
+  type BrowserDiagnostics,
+  type LaunchFailureDiagnostic,
+} from './diagnostics.js';
 import { Stage5BrowserError } from './errors.js';
 import type {
   BrowserCommandInput,
@@ -52,6 +59,7 @@ export class BrowserController {
   private frameIds = new WeakMap<Frame, string>();
   private readonly framesById = new Map<string, Frame>();
   private boundPages = new WeakSet<Page>();
+  private lastLaunchFailure: LaunchFailureDiagnostic | null = null;
 
   constructor(
     private readonly config: Stage5BrowserConfig,
@@ -113,15 +121,30 @@ export class BrowserController {
       const pages = context.pages();
       this.activePage = pages.at(-1) ?? (await context.newPage());
       this.lastKnownUrl = this.activePage.url();
+      this.lastLaunchFailure = null;
       this.state = 'running';
       return this.status();
     } catch (error) {
       this.state = 'failed';
+      const diagnostic = launchFailureDiagnostic(this.selectedBrowser, error);
+      this.lastLaunchFailure = diagnostic;
       if (error instanceof Stage5BrowserError) {
-        throw error;
+        throw new Stage5BrowserError(error.code, error.message, {
+          recoverable: error.recoverable,
+          details: {
+            ...error.details,
+            browser: diagnostic.browser,
+            engine: diagnostic.engine,
+            reason: diagnostic.reason,
+            suggestedAction: diagnostic.suggestedAction,
+            occurredAt: diagnostic.occurredAt,
+          },
+          cause: error,
+        });
       }
       throw new Stage5BrowserError('BROWSER_NOT_READY', 'The dedicated browser profile could not be started.', {
         recoverable: true,
+        details: { ...diagnostic },
         cause: error,
       });
     }
@@ -137,6 +160,22 @@ export class BrowserController {
       defaultBrowser: this.config.browser,
       currentBrowser: this.selectedBrowser,
       browsers,
+    };
+  }
+
+  async diagnostics(status?: BrowserStatus): Promise<BrowserDiagnostics> {
+    const currentStatus = status ?? (await this.status());
+    const availability = await browserAvailability(this.selectionFor(this.selectedBrowser));
+    const profilePath = profileDirForBrowser(this.config, this.selectedBrowser);
+    return {
+      browser: this.selectedBrowser,
+      engine: availability.engine,
+      availability,
+      preflightSuggestedAction: availability.available
+        ? null
+        : suggestedActionForReason(availability.reason),
+      profile: await inspectProfile(profilePath, currentStatus.browserConnected),
+      lastLaunchFailure: this.lastLaunchFailure,
     };
   }
 

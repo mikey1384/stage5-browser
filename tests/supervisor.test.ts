@@ -11,6 +11,23 @@ import { BrowserSupervisor, SupervisedOperationError } from '../src/supervisor.j
 const supervisors: BrowserSupervisor[] = [];
 const temporaryRoots: string[] = [];
 
+function configFor(root: string, overrides: Partial<Stage5BrowserConfig> = {}): Stage5BrowserConfig {
+  return {
+    browser: 'chromium',
+    browserExecutablePath: null,
+    profilesDir: path.join(root, 'profiles'),
+    profileDir: path.join(root, 'profile'),
+    artifactsDir: path.join(root, 'artifacts'),
+    headless: true,
+    operationTimeoutMs: 500,
+    navigationTimeoutMs: 500,
+    readinessTimeoutMs: 250,
+    workerStartupTimeoutMs: 1_000,
+    workerShutdownGraceMs: 100,
+    ...overrides,
+  };
+}
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -38,19 +55,7 @@ describe('BrowserSupervisor', () => {
   it('kills and replaces a worker that exceeds the outer hard deadline', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-supervisor-'));
     temporaryRoots.push(root);
-    const config: Stage5BrowserConfig = {
-      browser: 'chromium',
-      browserExecutablePath: null,
-      profilesDir: path.join(root, 'profiles'),
-      profileDir: path.join(root, 'profile'),
-      artifactsDir: path.join(root, 'artifacts'),
-      headless: true,
-      operationTimeoutMs: 500,
-      navigationTimeoutMs: 500,
-      readinessTimeoutMs: 250,
-      workerStartupTimeoutMs: 1_000,
-      workerShutdownGraceMs: 100,
-    };
+    const config = configFor(root);
     const supervisor = new BrowserSupervisor(config, {
       workerUrl: new URL('./fixtures/fake-worker.mjs', import.meta.url),
       environment: { ...process.env, STAGE5_BROWSER_TEST_MODE: '1' },
@@ -80,8 +85,71 @@ describe('BrowserSupervisor', () => {
       expect(isProcessAlive(beforeWithDescendant.descendantPid)).toBe(false);
     }
 
+    const recovered = await supervisor.forceRecover(false);
+    expect(recovered).toMatchObject({
+      recovery: 'succeeded',
+      outcome: 'worker_recovered_browser_stopped',
+      workerRecovered: true,
+      browserRecovered: false,
+      status: { state: 'stopped', browserConnected: false },
+    });
+
     const journal = await readFile(path.join(root, 'artifacts', 'operations.jsonl'), 'utf8');
     const records = journal.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(records.some((record) => record.outcome === 'timed_out' && record.recovery === 'succeeded')).toBe(true);
+    expect(
+      records.some(
+        (record) =>
+          record.command === 'recover' &&
+          record.browserState === 'stopped' &&
+          record.recovery === 'succeeded',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a worker from an incompatible build with MCP_RESTART_REQUIRED', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-mismatch-'));
+    temporaryRoots.push(root);
+    const supervisor = new BrowserSupervisor(configFor(root), {
+      workerUrl: new URL('./fixtures/mismatched-worker.mjs', import.meta.url),
+      expectedBuildFingerprint: 'expected-build',
+    });
+    supervisors.push(supervisor);
+
+    await expect(supervisor.execute('status', {})).rejects.toMatchObject({
+      code: 'MCP_RESTART_REQUIRED',
+      recovery: 'not_needed',
+      details: { reason: 'worker_protocol_mismatch' },
+    });
+  });
+
+  it('journals a sanitized launch cause and selected backend', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-launch-failure-'));
+    temporaryRoots.push(root);
+    const supervisor = new BrowserSupervisor(
+      configFor(root, { browserExecutablePath: './not-an-absolute-browser-path' }),
+      { workerUrl: new URL('../dist/browser-worker.js', import.meta.url) },
+    );
+    supervisors.push(supervisor);
+
+    await expect(supervisor.execute('start', {})).rejects.toMatchObject({
+      code: 'BROWSER_NOT_READY',
+      details: {
+        browser: 'chromium',
+        reason: 'path_not_absolute',
+        suggestedAction: expect.any(String),
+      },
+    });
+
+    const journal = await readFile(path.join(root, 'artifacts', 'operations.jsonl'), 'utf8');
+    const record = JSON.parse(journal.trim()) as Record<string, unknown>;
+    expect(record).toMatchObject({
+      command: 'start',
+      outcome: 'failed',
+      errorCode: 'BROWSER_NOT_READY',
+      diagnosticCause: 'path_not_absolute',
+      browser: 'chromium',
+    });
+    expect(journal).not.toContain('not-an-absolute-browser-path');
   });
 });

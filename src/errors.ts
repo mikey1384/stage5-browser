@@ -2,6 +2,7 @@ export type Stage5BrowserErrorCode =
   | 'AMBIGUOUS_TARGET'
   | 'BROWSER_NOT_READY'
   | 'INVALID_URL'
+  | 'MCP_RESTART_REQUIRED'
   | 'NO_ACTIVE_PAGE'
   | 'OPERATION_FAILED'
   | 'OPERATION_TIMEOUT'

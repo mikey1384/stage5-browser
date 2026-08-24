@@ -29,6 +29,8 @@ Stage5 Browser MCP server
 
 The MCP server and browser runtime are separate processes. A timeout enforced inside the same event loop cannot recover from that event loop becoming stuck. The supervisor therefore owns the worker process and can terminate its complete process group before replacement.
 
+The separation has an explicit version boundary. MCP and worker exchange the package and protocol versions during initialization. A rebuilt worker cannot silently accept an older in-memory server payload. The MCP also fingerprints its loaded artifact and compares it with the file on disk before browser work, returning `MCP_RESTART_REQUIRED` when the host must rebuild its tool catalog.
+
 ### Use Playwright protocol, not CDP attachment
 
 The first slice launches the browser through Playwright rather than attaching to an externally launched Chrome instance over CDP. This provides the higher-fidelity connection and makes browser ownership and cleanup unambiguous.
@@ -62,6 +64,8 @@ The initial product is a local stdio MCP server. It exposes a narrow tool surfac
 The supervisor journal records operation identifiers, names, timings, outcomes, recovery state, and sanitized URL origin/path where useful. It must not record tool arguments, DOM/page content, query strings, fragments, headers, cookies, form values, screenshots, or credentials.
 
 Screenshots are captured only through an explicit tool call, stored with restrictive local permissions, and returned only to the invoking MCP client.
+
+Launch diagnostics expose only allowlisted cause categories, selected backend, profile writability/known lock names, build metadata, and static suggested actions. The journal may store the allowlisted cause and backend but never the raw launch error or filesystem configuration supplied by an operator.
 
 ## Future boundaries
 

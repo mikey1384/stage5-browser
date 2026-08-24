@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { SUPPORTED_BROWSER_PRODUCTS, type BrowserProduct } from './browser-provider.js';
 import type { Stage5BrowserConfig } from './config.js';
+import { isLaunchFailureReason } from './diagnostics.js';
 import {
   Stage5BrowserError,
   serializeUnknownError,
@@ -19,6 +20,11 @@ import type {
   BrowserWorkerResponse,
 } from './protocol.js';
 import { SerialQueue } from './serial-queue.js';
+import {
+  STAGE5_BROWSER_VERSION,
+  WORKER_PROTOCOL_VERSION,
+  type RuntimeProcessInfo,
+} from './runtime-info.js';
 
 export type RecoveryOutcome = 'not_needed' | 'succeeded' | 'failed';
 
@@ -31,6 +37,9 @@ export interface SupervisedResult<T> {
 export interface RecoveryResult {
   operationId: string;
   recovery: Exclude<RecoveryOutcome, 'not_needed'>;
+  outcome: 'worker_recovered_browser_running' | 'worker_recovered_browser_stopped';
+  workerRecovered: true;
+  browserRecovered: boolean;
   reopenedUrl: string | null;
   status: BrowserStatus;
 }
@@ -45,6 +54,7 @@ interface PendingRequest {
 export interface BrowserSupervisorOptions {
   workerUrl?: URL;
   environment?: NodeJS.ProcessEnv;
+  expectedBuildFingerprint?: string;
 }
 
 export class SupervisedOperationError extends Stage5BrowserError {
@@ -67,8 +77,10 @@ export class BrowserSupervisor {
   private readonly journal: OperationJournal;
   private readonly workerUrl: URL;
   private readonly environment: NodeJS.ProcessEnv;
+  private readonly expectedBuildFingerprint: string | null;
   private readonly pending = new Map<string, PendingRequest>();
   private child: ChildProcess | undefined;
+  private workerRuntime: RuntimeProcessInfo | null = null;
   private selectedBrowser: BrowserProduct;
   private lastKnownUrl: string | null = null;
   private closing = false;
@@ -79,12 +91,17 @@ export class BrowserSupervisor {
   ) {
     this.workerUrl = options.workerUrl ?? new URL('./browser-worker.js', import.meta.url);
     this.environment = options.environment ?? process.env;
+    this.expectedBuildFingerprint = options.expectedBuildFingerprint ?? null;
     this.journal = new OperationJournal(config.artifactsDir);
     this.selectedBrowser = config.browser;
   }
 
   get pendingOperationCount(): number {
     return this.queue.pendingCount;
+  }
+
+  get workerRuntimeInfo(): RuntimeProcessInfo | null {
+    return this.workerRuntime;
   }
 
   async execute<Name extends BrowserCommandName>(
@@ -138,6 +155,7 @@ export class BrowserSupervisor {
           outcome,
           recovery,
           errorCode: serialized.code,
+          ...this.safeJournalDiagnostic(serialized),
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
         });
         throw new SupervisedOperationError(serialized, operationId, recovery);
@@ -165,6 +183,10 @@ export class BrowserSupervisor {
           this.lastKnownUrl = reopenedUrl;
         }
         const status = await this.request('status', {}, this.config.operationTimeoutMs);
+        const browserRecovered = status.browserConnected;
+        const outcome = browserRecovered
+          ? 'worker_recovered_browser_running'
+          : 'worker_recovered_browser_stopped';
         await this.appendJournal({
           operationId,
           command: 'recover',
@@ -172,9 +194,19 @@ export class BrowserSupervisor {
           durationMs: Date.now() - startedAtMs,
           outcome: 'succeeded',
           recovery: 'succeeded',
+          browser: status.browser,
+          browserState: status.state,
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
         });
-        return { operationId, recovery: 'succeeded', reopenedUrl, status };
+        return {
+          operationId,
+          recovery: 'succeeded',
+          outcome,
+          workerRecovered: true,
+          browserRecovered,
+          reopenedUrl,
+          status,
+        };
       } catch (error) {
         const serialized = serializeUnknownError(error);
         await this.terminateWorker();
@@ -186,6 +218,7 @@ export class BrowserSupervisor {
           outcome: 'failed',
           recovery: 'failed',
           errorCode: serialized.code,
+          ...this.safeJournalDiagnostic(serialized),
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
         });
         throw new SupervisedOperationError(serialized, operationId, 'failed');
@@ -219,14 +252,50 @@ export class BrowserSupervisor {
     child.once('exit', () => this.handleWorkerFailure(child));
 
     try {
-      await this.request(
+      const initialized = await this.request(
         'initialize',
-        { config: this.config, browser: this.selectedBrowser },
+        {
+          config: this.config,
+          browser: this.selectedBrowser,
+          protocolVersion: WORKER_PROTOCOL_VERSION,
+          mcpVersion: STAGE5_BROWSER_VERSION,
+          mcpBuildFingerprint: this.expectedBuildFingerprint,
+        },
         this.config.workerStartupTimeoutMs,
       );
+      if (
+        initialized.runtime.protocolVersion !== WORKER_PROTOCOL_VERSION ||
+        initialized.runtime.version !== STAGE5_BROWSER_VERSION ||
+        (this.expectedBuildFingerprint !== null &&
+          initialized.runtime.artifactFingerprint !== this.expectedBuildFingerprint)
+      ) {
+        throw new Stage5BrowserError(
+          'MCP_RESTART_REQUIRED',
+          'The browser worker reported an incompatible Stage5 Browser build.',
+          {
+            details: {
+              reason: 'worker_protocol_mismatch',
+              expectedProtocolVersion: WORKER_PROTOCOL_VERSION,
+              receivedProtocolVersion: initialized.runtime.protocolVersion,
+              expectedVersion: STAGE5_BROWSER_VERSION,
+              receivedVersion: initialized.runtime.version,
+              expectedBuildFingerprint: this.expectedBuildFingerprint,
+              receivedBuildFingerprint: initialized.runtime.artifactFingerprint,
+              suggestedAction: 'Restart the MCP host so the MCP server and browser worker load the same build.',
+            },
+          },
+        );
+      }
+      this.workerRuntime = initialized.runtime;
     } catch (error) {
       await this.terminateWorker(child);
       const serialized = serializeUnknownError(error);
+      if (serialized.code === 'MCP_RESTART_REQUIRED') {
+        throw new Stage5BrowserError(serialized.code, serialized.message, {
+          recoverable: serialized.recoverable,
+          ...(serialized.details === undefined ? {} : { details: serialized.details }),
+        });
+      }
       throw new Stage5BrowserError('WORKER_START_FAILED', 'The browser worker did not initialize.', {
         recoverable: true,
         details: { causeCode: serialized.code },
@@ -325,6 +394,7 @@ export class BrowserSupervisor {
   private handleWorkerFailure(child: ChildProcess, cause?: unknown): void {
     if (this.child === child) {
       this.child = undefined;
+      this.workerRuntime = null;
     }
 
     for (const [id, entry] of this.pending) {
@@ -349,6 +419,7 @@ export class BrowserSupervisor {
     }
     if (this.child === child) {
       this.child = undefined;
+      this.workerRuntime = null;
     }
     this.handleWorkerFailure(child);
 
@@ -474,6 +545,17 @@ export class BrowserSupervisor {
 
   private isBrowserProduct(value: string): value is BrowserProduct {
     return (SUPPORTED_BROWSER_PRODUCTS as readonly string[]).includes(value);
+  }
+
+  private safeJournalDiagnostic(
+    error: SerializedStage5BrowserError,
+  ): { diagnosticCause?: import('./diagnostics.js').LaunchFailureReason; browser?: BrowserProduct } {
+    const reason = error.details?.reason;
+    const browser = error.details?.browser;
+    return {
+      ...(isLaunchFailureReason(reason) ? { diagnosticCause: reason } : {}),
+      ...(typeof browser === 'string' && this.isBrowserProduct(browser) ? { browser } : {}),
+    };
   }
 
   private async appendJournal(record: Parameters<OperationJournal['append']>[0]): Promise<void> {
