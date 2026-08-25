@@ -31,3 +31,9 @@ Disposable headless fixtures prove that:
 - an offscreen unnamed contenteditable is moved into its modal's visible region using the bounded exact-handle path, then accepts multiline Korean text and a URL;
 - neither path calls Playwright's stability-gated `scrollIntoViewIfNeeded`; and
 - the existing structured timeout, detached-scope, capability-consumption, value-privacy, and logical-value evidence tests continue to pass.
+
+## Live acceptance
+
+YouTube Agent resumed the prepare-only workflow on Stage5 Browser 0.8.0 after a fresh status check and snapshot. One `browser_fill_ref` changed the exact logical value from empty to the requested draft while the retained contenteditable stayed connected. A fresh semantic snapshot showed the complete draft, the expected link preview, and the continuation control enabled; the agent did not retry, continue, or submit.
+
+The site did not expose standard `input` or `change` events to Stage5 Browser's bounded observer. Those booleans report event observation, not whether an event necessarily existed elsewhere in the page. The pre-fill mismatch, exact post-fill value match, connected target, and fresh site-visible state establish that input occurred and make replay unsafe. A disposable fixture now covers this branch by suppressing later page-level event observers while still updating visible application state.

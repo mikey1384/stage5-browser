@@ -414,6 +414,79 @@ describe('BrowserController', () => {
     });
   });
 
+  it('treats an exact contenteditable value transition as dispatched when page listeners hide input events', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Event-suppressing composer</title></head><body>
+        <div role="dialog" aria-modal="true" aria-label="Create post">
+          <div id="editor" role="textbox" contenteditable="true" tabindex="0"><p><br></p></div>
+          <output id="preview">pending</output>
+        </div>
+        <script>
+          const editor = document.querySelector('#editor');
+          document.addEventListener('input', (event) => {
+            if (!event.composedPath().includes(editor)) return;
+            document.querySelector('#preview').textContent = 'ready';
+            event.stopImmediatePropagation();
+          }, true);
+          document.addEventListener('change', (event) => {
+            if (event.composedPath().includes(editor)) event.stopImmediatePropagation();
+          }, true);
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-fill-ref-hidden-events-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/compose`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    const editorRef = observed.snapshot.match(/textbox[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(editorRef).toBeDefined();
+    if (editorRef === undefined) throw new Error('Event-suppressing fixture did not expose its editor ref.');
+
+    const draft = '정확한 값 전환 증거를 확인합니다.\n\nhttps://example.com/stage5';
+    await expect(controller.fillRef({
+      snapshotId: observed.snapshotId,
+      ref: editorRef,
+      frameId: null,
+      value: draft,
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({
+      input: {
+        actionDispatched: true,
+        inputEventObserved: false,
+        changeEventObserved: false,
+        valueMatchedBefore: false,
+        valueMatches: true,
+        targetConnectedAfter: true,
+        targetKind: 'contenteditable',
+      },
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator('#preview').textContent()).resolves.toBe('ready');
+    await expect(page.locator('#editor p').allTextContents()).resolves.toEqual([
+      '정확한 값 전환 증거를 확인합니다.',
+      '',
+      'https://example.com/stage5',
+    ]);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'fill_ref',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      inputEvidence: {
+        inputEventObserved: false,
+        changeEventObserved: false,
+        valueMatchedBefore: false,
+        valueMatches: true,
+      },
+    });
+  });
+
   it('scrolls an offscreen retained editor without Playwright stability-gated preparation', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
