@@ -128,7 +128,6 @@ import type {
   PostconditionCheck,
   PostconditionResult,
   RedirectHop,
-  ScrollContainerObservation,
   ScrollContentObservation,
   ScrollPosition,
   ScrollEndState,
@@ -141,6 +140,13 @@ import {
   sanitizeUrlForJournal,
   validateNavigationUrl,
 } from './url-policy.js';
+import {
+  MAX_SCROLL_CONTAINERS_PER_SNAPSHOT,
+  inspectScrollContainer,
+  observeScrollContainers,
+  type ObservedScrollContainer,
+  withScrollContainerSemanticDetails,
+} from './scroll-container-snapshot.js';
 
 async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -185,11 +191,6 @@ interface ObservedTextEditor {
 interface ObservedFileInput {
   handle: ElementHandle<HTMLInputElement>;
   observation: FileInputObservation;
-}
-
-interface ObservedScrollContainer {
-  handle: ElementHandle<HTMLElement>;
-  observation: ScrollContainerObservation;
 }
 
 interface LocalFileSelection {
@@ -401,7 +402,6 @@ const NATIVE_WINDOW_VISIBILITY_POLL_MS = 50;
 const SCREENSHOT_MIN_COMPRESSED_BYTES_PER_PIXEL = 0.01;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 const MAX_TEXT_EDITORS_PER_SNAPSHOT = 100;
-const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
 
 function clickFinalizationReserve(timeoutMs: number): number {
@@ -1665,12 +1665,14 @@ export class BrowserController {
       boxes: input.boxes,
       timeout: Math.max(1, remainingUntil(deadlineAt)),
     });
-    const snapshot = await this.filterInactivePopupSnapshot(frame, rawSnapshot, deadlineAt);
-    const refs = new Set(snapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? []);
+    const baseSnapshot = await this.filterInactivePopupSnapshot(frame, rawSnapshot, deadlineAt);
+    const baseRefs = new Set(
+      baseSnapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? [],
+    );
     let scopeHandle: ElementHandle<HTMLElement> | null = null;
     let observedTextEditors: Awaited<ReturnType<BrowserController['observeTextEditors']>> | null = null;
     let observedFileInputs: Awaited<ReturnType<BrowserController['observeFileInputs']>> | null = null;
-    let observedScrollContainers: Awaited<ReturnType<BrowserController['observeScrollContainers']>> | null = null;
+    let observedScrollContainers: Awaited<ReturnType<typeof observeScrollContainers>> | null = null;
     let retained = false;
     try {
       scopeHandle = await boundedValue(
@@ -1687,9 +1689,22 @@ export class BrowserController {
           },
         });
       }
-      observedTextEditors = await this.observeTextEditors(root.locator, refs, deadlineAt);
+      observedTextEditors = await this.observeTextEditors(root.locator, baseRefs, deadlineAt);
       observedFileInputs = await this.observeFileInputs(root.locator);
-      observedScrollContainers = await this.observeScrollContainers(root.locator);
+      observedScrollContainers = await observeScrollContainers(root.locator);
+      const snapshot = await withScrollContainerSemanticDetails({
+        frame,
+        snapshot: baseSnapshot,
+        containers: observedScrollContainers.containers,
+        requestedDepth: input.depth,
+        boxes: input.boxes,
+        deadlineAt,
+        filterInactivePopupSnapshot: (detail) =>
+          this.filterInactivePopupSnapshot(frame, detail, deadlineAt),
+      });
+      const refs = new Set(
+        snapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? [],
+      );
       if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
         throw new Stage5BrowserError(
           'TARGET_NOT_FOUND',
@@ -3026,7 +3041,7 @@ export class BrowserController {
     const frame = this.resolveFrame(page, input.frameId);
     const observedTarget = this.resolveObservedScrollContainer(frame, input.target);
     const targetHandle = observedTarget?.handle ?? null;
-    if (targetHandle !== null && await this.inspectScrollContainer(targetHandle) === null) {
+    if (targetHandle !== null && await inspectScrollContainer(targetHandle) === null) {
       throw new Stage5BrowserError(
         'TARGET_NOT_FOUND',
         'The observed nested scroll container is no longer attached or scrollable.',
@@ -5419,183 +5434,6 @@ export class BrowserController {
           disabled: element.disabled || element.getAttribute('aria-disabled') === 'true',
           visible,
           label: label.length === 0 ? null : label,
-        };
-      });
-    } catch {
-      return null;
-    }
-  }
-
-  private async observeScrollContainers(
-    root: Locator,
-  ): Promise<{ containers: Map<string, ObservedScrollContainer>; truncated: boolean }> {
-    const descendants = root.locator('*');
-    const candidateIndexes = await descendants.evaluateAll(
-      (elements, limit) => elements
-        .map((element, index) => {
-          if (!(element instanceof HTMLElement)) {
-            return null;
-          }
-          const style = getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          const visible =
-            rect.width > 0 &&
-            rect.height > 0 &&
-            style.display !== 'none' &&
-            style.visibility !== 'hidden' &&
-            style.opacity !== '0';
-          const overflowAllowsScrolling =
-            style.overflowY === 'auto' ||
-            style.overflowY === 'scroll' ||
-            style.overflowY === 'overlay' ||
-            element.scrollTop > 0;
-          if (!visible || !overflowAllowsScrolling || element.scrollHeight - element.clientHeight <= 1) {
-            return null;
-          }
-          const inViewport =
-            rect.bottom > 0 &&
-            rect.right > 0 &&
-            rect.top < window.innerHeight &&
-            rect.left < window.innerWidth;
-          const role = element.getAttribute('role')?.trim().split(/\s+/)[0]?.toLocaleLowerCase() ?? null;
-          const containsPopupSemantics =
-            role === 'listbox' ||
-            role === 'menu' ||
-            role === 'tree' ||
-            element.matches('select') ||
-            element.querySelector(
-              '[role="option"], option, [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"]',
-            ) !== null;
-          if (!inViewport && containsPopupSemantics) {
-            return null;
-          }
-          return {
-            index,
-            inViewport,
-            visibleArea: Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0))
-              * Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)),
-          };
-        })
-        .filter((candidate): candidate is { index: number; inViewport: boolean; visibleArea: number } => candidate !== null)
-        .sort((left, right) =>
-          Number(right.inViewport) - Number(left.inViewport) || right.visibleArea - left.visibleArea)
-        .slice(0, limit + 1)
-        .map(({ index }) => index),
-      MAX_SCROLL_CONTAINERS_PER_SNAPSHOT,
-    );
-    const containers = new Map<string, ObservedScrollContainer>();
-    let rootCandidateCount = 0;
-    try {
-      const rootHandle = await root.elementHandle() as ElementHandle<HTMLElement> | null;
-      if (rootHandle !== null) {
-        const rootObservation = await this.inspectScrollContainer(rootHandle);
-        if (rootObservation === null) {
-          await rootHandle.dispose().catch(() => undefined);
-        } else {
-          const ref = `scroll-${randomUUID()}`;
-          containers.set(ref, { handle: rootHandle, observation: { ref, ...rootObservation } });
-          rootCandidateCount = 1;
-        }
-      }
-
-      const remainingCapacity = MAX_SCROLL_CONTAINERS_PER_SNAPSHOT - containers.size;
-      for (const index of candidateIndexes.slice(0, remainingCapacity)) {
-        const handle = await descendants.nth(index).elementHandle() as ElementHandle<HTMLElement> | null;
-        if (handle === null) {
-          continue;
-        }
-        const observation = await this.inspectScrollContainer(handle);
-        if (observation === null) {
-          await handle.dispose().catch(() => undefined);
-          continue;
-        }
-        const ref = `scroll-${randomUUID()}`;
-        containers.set(ref, { handle, observation: { ref, ...observation } });
-      }
-    } catch (error) {
-      for (const { handle } of containers.values()) {
-        await handle.dispose().catch(() => undefined);
-      }
-      throw error;
-    }
-    return {
-      containers,
-      truncated: candidateIndexes.length > MAX_SCROLL_CONTAINERS_PER_SNAPSHOT - rootCandidateCount,
-    };
-  }
-
-  private async inspectScrollContainer(
-    handle: ElementHandle<HTMLElement>,
-  ): Promise<Omit<ScrollContainerObservation, 'ref'> | null> {
-    try {
-      return await handle.evaluate((element) => {
-        if (
-          !(element instanceof HTMLElement) ||
-          element === document.scrollingElement ||
-          element === document.documentElement ||
-          element === document.body
-        ) {
-          return null;
-        }
-        const style = getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        const visible =
-          rect.width > 0 &&
-          rect.height > 0 &&
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          style.opacity !== '0';
-        const overflowAllowsScrolling =
-          style.overflowY === 'auto' ||
-          style.overflowY === 'scroll' ||
-          style.overflowY === 'overlay' ||
-          element.scrollTop > 0;
-        const maxY = Math.max(0, element.scrollHeight - element.clientHeight);
-        if (!visible || !overflowAllowsScrolling || maxY <= 1) {
-          return null;
-        }
-        const inViewport =
-          rect.bottom > 0 &&
-          rect.right > 0 &&
-          rect.top < window.innerHeight &&
-          rect.left < window.innerWidth;
-        const semanticRole = element.getAttribute('role')?.trim().split(/\s+/)[0]?.toLocaleLowerCase() ?? null;
-        const containsPopupSemantics =
-          semanticRole === 'listbox' ||
-          semanticRole === 'menu' ||
-          semanticRole === 'tree' ||
-          element.matches('select') ||
-          element.querySelector(
-            '[role="option"], option, [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"]',
-          ) !== null;
-        if (!inViewport && containsPopupSemantics) {
-          return null;
-        }
-        const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
-          .split(/\s+/)
-          .filter(Boolean)
-          .map((id) => document.getElementById(id)?.textContent ?? '')
-          .join(' ');
-        const rawLabel = [
-          element.getAttribute('aria-label') ?? '',
-          labelledBy,
-          element.getAttribute('title') ?? '',
-        ].find((candidate) => candidate.trim().length > 0) ?? '';
-        const label = rawLabel.replace(/\s+/g, ' ').trim().slice(0, 200);
-        return {
-          label: label.length === 0 ? null : label,
-          role: element.getAttribute('role'),
-          inViewport,
-          position: {
-            x: element.scrollLeft,
-            y: element.scrollTop,
-            maxX: Math.max(0, element.scrollWidth - element.clientWidth),
-            maxY,
-            viewportWidth: element.clientWidth,
-            viewportHeight: element.clientHeight,
-            contentWidth: element.scrollWidth,
-            contentHeight: element.scrollHeight,
-          },
         };
       });
     } catch {
