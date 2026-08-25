@@ -14,6 +14,7 @@ import type {
   HumanBrowserProcessState,
   HumanBrowserSession,
 } from '../src/human-auth-bootstrap.js';
+import type { OwnedBrowserWindowActivator } from '../src/native-window-activation.js';
 import {
   launchIdentityForTarget,
   type ProfileStorageInspection,
@@ -826,6 +827,234 @@ describe('BrowserController', () => {
         targetStateChangeBlocked: false,
       },
     });
+  });
+
+  it('restores the exact owned Chromium window before dispatch when the selected page stays hidden', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Native activation target</title></head><body>
+        <button id="target" type="button"
+          onclick="document.querySelector('#expanded').hidden = false">See more</button>
+        <a id="expanded" href="#expanded" hidden>Expanded after native activation</a>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-native-activation-'));
+    const config = browserConfig(temporaryRoot);
+    let nativeApplicationActivated = false;
+    const activateOwnedProcess = vi.fn(async () => {
+      nativeApplicationActivated = true;
+      return {
+        attempted: true,
+        supported: true,
+        ownedProcessRunning: true,
+        applicationActivated: true,
+        reason: 'activated' as const,
+      };
+    });
+    const activator: OwnedBrowserWindowActivator = {
+      supported: true,
+      activateOwnedProcess,
+    };
+    controller = new BrowserController(
+      config,
+      config.browser,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      activator,
+    );
+    await controller.open({
+      url: `http://127.0.0.1:${port}/post`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    const seeMoreRef = observed.snapshot
+      .split('\n')
+      .find((line) => line.includes('See more'))
+      ?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(seeMoreRef).toBeDefined();
+    if (seeMoreRef === undefined) {
+      throw new Error('Fixture did not expose the native-activation target reference.');
+    }
+
+    config.headless = false;
+    const internals = controller as unknown as {
+      controlledBrowserProcessId: number | null;
+      observePageActivation: () => Promise<{
+        documentFocused: boolean | null;
+        visibility: 'hidden' | 'prerender' | 'unknown' | 'visible';
+      }>;
+      prepareChromiumTargetWindow: () => Promise<{
+        targetWindowResolved: boolean;
+        windowStateBefore: 'fullscreen' | 'maximized' | 'minimized' | 'normal' | 'unknown';
+        normalizationAttempted: boolean;
+        normalizationSucceeded: boolean | null;
+      }>;
+    };
+    internals.controlledBrowserProcessId = 42_424;
+    vi.spyOn(internals, 'observePageActivation').mockImplementation(async () => ({
+      documentFocused: true,
+      visibility: nativeApplicationActivated ? 'visible' : 'hidden',
+    }));
+    const prepareWindow = vi.spyOn(internals, 'prepareChromiumTargetWindow').mockResolvedValue({
+      targetWindowResolved: true,
+      windowStateBefore: 'minimized',
+      normalizationAttempted: true,
+      normalizationSucceeded: true,
+    });
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: seeMoreRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'link',
+          name: 'Expanded after native activation',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect(prepareWindow).toHaveBeenCalledTimes(1);
+    expect(activateOwnedProcess).toHaveBeenCalledWith(42_424, 1_000);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      dispatchEvidence: {
+        pageActivation: {
+          visibilityBefore: 'hidden',
+          visibilityAfter: 'visible',
+          nativeWindow: {
+            required: true,
+            attempted: true,
+            ownedProcessAvailable: true,
+            ownedProcessRunning: true,
+            targetWindowResolved: true,
+            windowStateBefore: 'minimized',
+            normalizationAttempted: true,
+            normalizationSucceeded: true,
+            applicationActivationAttempted: true,
+            applicationActivationSucceeded: true,
+            result: 'activated',
+          },
+        },
+      },
+    });
+  });
+
+  it('dispatches no input when native activation cannot make the selected page visible', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Hidden native target</title></head><body>
+        <button id="target" type="button"
+          onclick="document.querySelector('#danger').hidden = false">See more</button>
+        <p id="danger" hidden>Input was dispatched</p>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-native-hidden-'));
+    const config = browserConfig(temporaryRoot);
+    const activateOwnedProcess = vi.fn(async () => ({
+      attempted: true,
+      supported: true,
+      ownedProcessRunning: true,
+      applicationActivated: true,
+      reason: 'activated' as const,
+    }));
+    controller = new BrowserController(
+      config,
+      config.browser,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { supported: true, activateOwnedProcess },
+    );
+    await controller.open({
+      url: `http://127.0.0.1:${port}/post`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    const seeMoreRef = observed.snapshot
+      .split('\n')
+      .find((line) => line.includes('See more'))
+      ?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(seeMoreRef).toBeDefined();
+    if (seeMoreRef === undefined) {
+      throw new Error('Fixture did not expose the hidden native target reference.');
+    }
+
+    config.headless = false;
+    const internals = controller as unknown as {
+      controlledBrowserProcessId: number | null;
+      observePageActivation: () => Promise<{
+        documentFocused: boolean | null;
+        visibility: 'hidden' | 'prerender' | 'unknown' | 'visible';
+      }>;
+      prepareChromiumTargetWindow: () => Promise<{
+        targetWindowResolved: boolean;
+        windowStateBefore: 'fullscreen' | 'maximized' | 'minimized' | 'normal' | 'unknown';
+        normalizationAttempted: boolean;
+        normalizationSucceeded: boolean | null;
+      }>;
+    };
+    internals.controlledBrowserProcessId = 42_424;
+    vi.spyOn(internals, 'observePageActivation').mockResolvedValue({
+      documentFocused: true,
+      visibility: 'hidden',
+    });
+    vi.spyOn(internals, 'prepareChromiumTargetWindow').mockResolvedValue({
+      targetWindowResolved: true,
+      windowStateBefore: 'normal',
+      normalizationAttempted: false,
+      normalizationSucceeded: null,
+    });
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: seeMoreRef,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'page_not_active',
+        actionDispatched: false,
+        clickDispatched: false,
+        dispatchEvidence: {
+          pageActivation: {
+            visibilityAfter: 'hidden',
+            nativeWindow: {
+              applicationActivationSucceeded: true,
+              result: 'visibility_unchanged',
+            },
+          },
+        },
+      },
+    });
+    expect(activateOwnedProcess).toHaveBeenCalledTimes(1);
+    const rendered = await controller.findText({
+      query: 'Input was dispatched',
+      mode: 'contains',
+      caseSensitive: false,
+      maxResults: 10,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(rendered.matchCount).toBe(0);
   });
 
   it('does not force a click when the exact target detaches before pointer dispatch', async () => {

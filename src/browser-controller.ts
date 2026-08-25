@@ -42,6 +42,7 @@ import {
   type SafeTargetState,
   type SanitizedActionDiagnostic,
   type SanitizedClickDispatchEvidence,
+  type SanitizedNativeWindowActivationEvidence,
   type SanitizedPageActivationEvidence,
 } from './page-diagnostics.js';
 import {
@@ -64,6 +65,11 @@ import {
   writeNativeControlRecord,
   type NativeControlRecord,
 } from './native-control-channel.js';
+import {
+  chromiumProfileOwnerProcessId,
+  NativeOwnedBrowserWindowActivator,
+  type OwnedBrowserWindowActivator,
+} from './native-window-activation.js';
 import {
   compareAuthenticationStorage,
   controlledProfileArguments,
@@ -231,6 +237,13 @@ interface PageActivationObservation {
   visibility: SanitizedPageActivationEvidence['visibilityAfter'];
 }
 
+interface ChromiumTargetWindowPreparation {
+  targetWindowResolved: boolean;
+  windowStateBefore: SanitizedNativeWindowActivationEvidence['windowStateBefore'];
+  normalizationAttempted: boolean;
+  normalizationSucceeded: boolean | null;
+}
+
 interface ClickDispatchProbeController {
   snapshot: () => RawClickDispatchEvidence;
   finish: () => RawClickDispatchEvidence;
@@ -261,6 +274,10 @@ const CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
 const CLICK_ROLE_RESOLUTION_TIMEOUT_MS = 1_000;
 const SCREENSHOT_RENDER_SETTLE_MS = 100;
+const NATIVE_WINDOW_ACTIVATION_TIMEOUT_MS = 1_000;
+const NATIVE_WINDOW_NORMALIZATION_WAIT_MS = 750;
+const NATIVE_WINDOW_VISIBILITY_WAIT_MS = 750;
+const NATIVE_WINDOW_VISIBILITY_POLL_MS = 50;
 const SCREENSHOT_MIN_COMPRESSED_BYTES_PER_PIXEL = 0.01;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
@@ -287,6 +304,7 @@ export class BrowserController {
   private controlledStartBoundary: ControlledStartBoundaryObservation | null = null;
   private nativeAttachedBrowser: Browser | undefined;
   private nativeControlRecord: NativeControlRecord | null = null;
+  private controlledBrowserProcessId: number | null = null;
 
   constructor(
     private readonly config: Stage5BrowserConfig,
@@ -295,6 +313,7 @@ export class BrowserController {
     private readonly profileStorageInspector: typeof inspectProfileStorage = inspectProfileStorage,
     private readonly controlledProfileStorageInspector: typeof inspectControlledProfileStorage = inspectControlledProfileStorage,
     private readonly runtimeProfileInspector: typeof inspectRuntimeProfile = inspectRuntimeProfile,
+    private readonly nativeWindowActivator: OwnedBrowserWindowActivator = new NativeOwnedBrowserWindowActivator(),
   ) {
     this.selectedBrowser = initialBrowser;
   }
@@ -537,6 +556,7 @@ export class BrowserController {
     this.controlledStartBoundary = null;
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
+    this.controlledBrowserProcessId = null;
     this.state = 'stopped';
 
     if (nativeBrowser !== undefined && nativeRecord !== null) {
@@ -560,6 +580,7 @@ export class BrowserController {
     this.activePage = undefined;
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
+    this.controlledBrowserProcessId = null;
     this.state = 'stopped';
     await nativeBrowser.close().catch(() => undefined);
   }
@@ -2264,6 +2285,12 @@ export class BrowserController {
     context.setDefaultNavigationTimeout(this.config.navigationTimeoutMs);
     this.context = context;
     this.controlledLaunchIdentity = launchIdentity;
+    this.controlledBrowserProcessId = engine === 'chromium'
+      ? this.nativeControlRecord?.processId
+        ?? (launchIdentity.profile.userDataDir === null
+          ? null
+          : await chromiumProfileOwnerProcessId(launchIdentity.profile.userDataDir))
+      : null;
     this.bindContext(context);
 
     const pages = context.pages();
@@ -2375,6 +2402,7 @@ export class BrowserController {
         this.authenticationHandoff = null;
         this.runtimeProfileObservation = null;
         this.controlledStartBoundary = null;
+        this.controlledBrowserProcessId = null;
         if (this.state !== 'recovering') {
           this.state = 'stopped';
         }
@@ -3961,6 +3989,7 @@ export class BrowserController {
     this.controlledStartBoundary = null;
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
+    this.controlledBrowserProcessId = null;
     this.state = 'stopped';
   }
 
@@ -4335,6 +4364,7 @@ export class BrowserController {
       visibilityAfter: 'unknown',
       documentFocusedBefore: null,
       documentFocusedAfter: null,
+      nativeWindow: this.nativeWindowActivationNotRequired(),
     };
     const readProbe = async (finish: boolean): Promise<SanitizedClickDispatchEvidence | null> => {
       if (finish && probeFinished) {
@@ -4368,7 +4398,11 @@ export class BrowserController {
     };
 
     try {
-      pageActivation = await this.activateSelectedPageForInput(page, pageActivation.attemptCount + 1);
+      pageActivation = await this.activateSelectedPageForInput(
+        page,
+        pageActivation.attemptCount + 1,
+        pageActivation.nativeWindow,
+      );
       if (!this.pageIsActivatedForInput(pageActivation)) {
         const evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
@@ -4417,7 +4451,11 @@ export class BrowserController {
         );
       }
 
-      pageActivation = await this.activateSelectedPageForInput(page, pageActivation.attemptCount + 1);
+      pageActivation = await this.activateSelectedPageForInput(
+        page,
+        pageActivation.attemptCount + 1,
+        pageActivation.nativeWindow,
+      );
       if (!this.pageIsActivatedForInput(pageActivation)) {
         evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
@@ -4468,7 +4506,11 @@ export class BrowserController {
         );
       }
 
-      pageActivation = await this.activateSelectedPageForInput(page, pageActivation.attemptCount + 1);
+      pageActivation = await this.activateSelectedPageForInput(
+        page,
+        pageActivation.attemptCount + 1,
+        pageActivation.nativeWindow,
+      );
       const point = this.pageIsActivatedForInput(pageActivation)
         ? await this.freshMainFrameTargetPoint(page, preparedTarget.handle)
         : null;
@@ -4526,8 +4568,10 @@ export class BrowserController {
   private async activateSelectedPageForInput(
     page: Page,
     attemptCount: number,
+    priorNativeWindow?: SanitizedNativeWindowActivationEvidence,
   ): Promise<SanitizedPageActivationEvidence> {
     const before = await this.observePageActivation(page);
+    const controllerSelected = this.preferredPage() === page;
     let bringToFrontSucceeded = false;
     try {
       await page.bringToFront();
@@ -4535,17 +4579,221 @@ export class BrowserController {
     } catch {
       bringToFrontSucceeded = false;
     }
-    const after = await this.observePageActivation(page);
+    let after = await this.observePageActivation(page);
+    let nativeWindow = priorNativeWindow?.attempted === true
+      ? priorNativeWindow
+      : this.nativeWindowActivationNotRequired();
+    if (
+      controllerSelected &&
+      bringToFrontSucceeded &&
+      after.visibility !== 'visible'
+    ) {
+      nativeWindow = await this.activateOwnedNativeWindow(page);
+      if (nativeWindow.applicationActivationSucceeded === true) {
+        try {
+          await page.bringToFront();
+        } catch {
+          bringToFrontSucceeded = false;
+        }
+      }
+      after = await this.waitForVisiblePageActivation(page, after);
+      if (after.visibility === 'visible') {
+        nativeWindow = { ...nativeWindow, result: 'activated' };
+      } else if (nativeWindow.result === 'activated') {
+        nativeWindow = { ...nativeWindow, result: 'visibility_unchanged' };
+      }
+    }
     return {
       attemptCount,
-      controllerSelected: this.preferredPage() === page,
+      controllerSelected,
       bringToFrontAttempted: true,
       bringToFrontSucceeded,
       visibilityBefore: before.visibility,
       visibilityAfter: after.visibility,
       documentFocusedBefore: before.documentFocused,
       documentFocusedAfter: after.documentFocused,
+      nativeWindow,
     };
+  }
+
+  private nativeWindowActivationNotRequired(): SanitizedNativeWindowActivationEvidence {
+    const supported = !this.config.headless &&
+      this.controlledLaunchIdentity?.engine === 'chromium' &&
+      this.nativeWindowActivator.supported;
+    return {
+      required: false,
+      attempted: false,
+      supported,
+      ownedProcessAvailable: this.controlledBrowserProcessId !== null,
+      ownedProcessRunning: null,
+      targetWindowResolved: null,
+      windowStateBefore: 'unknown',
+      normalizationAttempted: false,
+      normalizationSucceeded: null,
+      applicationActivationAttempted: false,
+      applicationActivationSucceeded: null,
+      result: 'not_required',
+    };
+  }
+
+  private async activateOwnedNativeWindow(
+    page: Page,
+  ): Promise<SanitizedNativeWindowActivationEvidence> {
+    const supported = !this.config.headless &&
+      this.controlledLaunchIdentity?.engine === 'chromium' &&
+      this.nativeWindowActivator.supported;
+    const base: SanitizedNativeWindowActivationEvidence = {
+      required: true,
+      attempted: true,
+      supported,
+      ownedProcessAvailable: this.controlledBrowserProcessId !== null,
+      ownedProcessRunning: null,
+      targetWindowResolved: null,
+      windowStateBefore: 'unknown',
+      normalizationAttempted: false,
+      normalizationSucceeded: null,
+      applicationActivationAttempted: false,
+      applicationActivationSucceeded: null,
+      result: 'native_activation_unsupported',
+    };
+    if (this.config.headless) {
+      return { ...base, result: 'headless_not_applicable' };
+    }
+    if (this.controlledLaunchIdentity?.engine !== 'chromium') {
+      return base;
+    }
+    const processId = this.controlledBrowserProcessId;
+    if (processId === null) {
+      return { ...base, result: 'owned_process_unavailable' };
+    }
+
+    const prepared = await this.prepareChromiumTargetWindow(page);
+    const withWindow: SanitizedNativeWindowActivationEvidence = {
+      ...base,
+      targetWindowResolved: prepared.targetWindowResolved,
+      windowStateBefore: prepared.windowStateBefore,
+      normalizationAttempted: prepared.normalizationAttempted,
+      normalizationSucceeded: prepared.normalizationSucceeded,
+    };
+    if (!prepared.targetWindowResolved) {
+      return { ...withWindow, result: 'target_window_unavailable' };
+    }
+    if (prepared.normalizationAttempted && prepared.normalizationSucceeded !== true) {
+      return { ...withWindow, result: 'window_normalization_failed' };
+    }
+
+    const activated = await this.nativeWindowActivator.activateOwnedProcess(
+      processId,
+      NATIVE_WINDOW_ACTIVATION_TIMEOUT_MS,
+    );
+    return {
+      ...withWindow,
+      supported: activated.supported,
+      ownedProcessRunning: activated.ownedProcessRunning,
+      applicationActivationAttempted: activated.attempted,
+      applicationActivationSucceeded: activated.applicationActivated,
+      result: activated.applicationActivated
+        ? 'activated'
+        : activated.reason === 'owned_process_not_running'
+          ? 'owned_process_not_running'
+          : activated.reason === 'platform_unsupported'
+            ? 'native_activation_unsupported'
+            : 'application_activation_failed',
+    };
+  }
+
+  private async prepareChromiumTargetWindow(
+    page: Page,
+  ): Promise<ChromiumTargetWindowPreparation> {
+    const unavailable: ChromiumTargetWindowPreparation = {
+      targetWindowResolved: false,
+      windowStateBefore: 'unknown',
+      normalizationAttempted: false,
+      normalizationSucceeded: null,
+    };
+    let session: Awaited<ReturnType<BrowserContext['newCDPSession']>> | null = null;
+    try {
+      session = await page.context().newCDPSession(page);
+      const observed = await session.send('Browser.getWindowForTarget') as {
+        windowId?: unknown;
+        bounds?: { windowState?: unknown };
+      };
+      if (
+        typeof observed.windowId !== 'number' ||
+        !Number.isSafeInteger(observed.windowId) ||
+        observed.windowId < 0
+      ) {
+        return unavailable;
+      }
+      const observedState = observed.bounds?.windowState;
+      const windowStateBefore = observedState === 'fullscreen' ||
+        observedState === 'maximized' ||
+        observedState === 'minimized' ||
+        observedState === 'normal'
+        ? observedState
+        : 'unknown';
+      if (windowStateBefore !== 'minimized') {
+        return {
+          targetWindowResolved: true,
+          windowStateBefore,
+          normalizationAttempted: false,
+          normalizationSucceeded: null,
+        };
+      }
+      try {
+        await session.send('Browser.setWindowBounds', {
+          windowId: observed.windowId,
+          bounds: { windowState: 'normal' },
+        });
+        let normalizationSucceeded = false;
+        const deadline = Date.now() + NATIVE_WINDOW_NORMALIZATION_WAIT_MS;
+        while (!normalizationSucceeded && Date.now() < deadline) {
+          const normalized = await session.send('Browser.getWindowForTarget') as {
+            bounds?: { windowState?: unknown };
+          };
+          normalizationSucceeded = normalized.bounds?.windowState !== 'minimized';
+          if (!normalizationSucceeded) {
+            await new Promise((resolve) => setTimeout(
+              resolve,
+              Math.min(NATIVE_WINDOW_VISIBILITY_POLL_MS, Math.max(1, deadline - Date.now())),
+            ));
+          }
+        }
+        return {
+          targetWindowResolved: true,
+          windowStateBefore,
+          normalizationAttempted: true,
+          normalizationSucceeded,
+        };
+      } catch {
+        return {
+          targetWindowResolved: true,
+          windowStateBefore,
+          normalizationAttempted: true,
+          normalizationSucceeded: false,
+        };
+      }
+    } catch {
+      return unavailable;
+    } finally {
+      await session?.detach().catch(() => undefined);
+    }
+  }
+
+  private async waitForVisiblePageActivation(
+    page: Page,
+    initial: PageActivationObservation,
+  ): Promise<PageActivationObservation> {
+    let observed = initial;
+    const deadline = Date.now() + NATIVE_WINDOW_VISIBILITY_WAIT_MS;
+    while (observed.visibility !== 'visible' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Math.min(NATIVE_WINDOW_VISIBILITY_POLL_MS, Math.max(1, deadline - Date.now())),
+      ));
+      observed = await this.observePageActivation(page);
+    }
+    return observed;
   }
 
   private async observePageActivation(page: Page): Promise<PageActivationObservation> {

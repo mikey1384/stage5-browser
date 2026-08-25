@@ -59,6 +59,33 @@ export interface SafeTargetState {
   coveredBy: { tagName: string; role: string | null; pointerEvents: string } | null;
 }
 
+export type SanitizedNativeWindowActivationResult =
+  | 'activated'
+  | 'application_activation_failed'
+  | 'headless_not_applicable'
+  | 'native_activation_unsupported'
+  | 'not_required'
+  | 'owned_process_not_running'
+  | 'owned_process_unavailable'
+  | 'target_window_unavailable'
+  | 'visibility_unchanged'
+  | 'window_normalization_failed';
+
+export interface SanitizedNativeWindowActivationEvidence {
+  required: boolean;
+  attempted: boolean;
+  supported: boolean;
+  ownedProcessAvailable: boolean;
+  ownedProcessRunning: boolean | null;
+  targetWindowResolved: boolean | null;
+  windowStateBefore: 'fullscreen' | 'maximized' | 'minimized' | 'normal' | 'unknown';
+  normalizationAttempted: boolean;
+  normalizationSucceeded: boolean | null;
+  applicationActivationAttempted: boolean;
+  applicationActivationSucceeded: boolean | null;
+  result: SanitizedNativeWindowActivationResult;
+}
+
 export interface SanitizedPageActivationEvidence {
   attemptCount: number;
   controllerSelected: boolean;
@@ -68,6 +95,7 @@ export interface SanitizedPageActivationEvidence {
   visibilityAfter: 'hidden' | 'prerender' | 'unknown' | 'visible';
   documentFocusedBefore: boolean | null;
   documentFocusedAfter: boolean | null;
+  nativeWindow: SanitizedNativeWindowActivationEvidence;
 }
 
 export interface SanitizedClickDispatchEvidence {
