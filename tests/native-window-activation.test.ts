@@ -46,12 +46,15 @@ describe('NativeOwnedBrowserWindowActivator', () => {
       unhideAttempted: true,
       unhideSucceeded: true,
       activationRequestAccepted: true,
+      frontProcessFallbackAttempted: false,
+      frontProcessFallbackProcessResolved: null,
+      frontProcessFallbackRequestSucceeded: null,
       applicationFrontmostAfter: true,
       applicationHiddenAfter: false,
       reason: 'activated',
     });
     expect(processProbe).toHaveBeenCalledWith(42_424);
-    expect(runner).toHaveBeenCalledWith(42_424, 750);
+    expect(runner).toHaveBeenCalledWith(42_424, 375);
   });
 
   it('never runs native activation for an absent process or unsupported platform', async () => {
@@ -100,6 +103,14 @@ describe('NativeOwnedBrowserWindowActivator', () => {
   });
 
   it('does not treat an accepted activation request as proof of visible foreground state', async () => {
+    const frontProcessRunner = vi.fn(async () => ({
+      outcome: 'failed' as const,
+      state: {
+        processResolved: true,
+        requestSucceeded: true,
+        applicationFrontmostAfter: false,
+      },
+    }));
     const activator = new NativeOwnedBrowserWindowActivator(
       'darwin',
       async () => ({
@@ -113,6 +124,7 @@ describe('NativeOwnedBrowserWindowActivator', () => {
         },
       }),
       () => true,
+      frontProcessRunner,
     );
 
     await expect(activator.activateOwnedProcess(12_345, 500)).resolves.toMatchObject({
@@ -121,10 +133,58 @@ describe('NativeOwnedBrowserWindowActivator', () => {
       unhideAttempted: true,
       unhideSucceeded: true,
       activationRequestAccepted: true,
+      frontProcessFallbackAttempted: true,
+      frontProcessFallbackProcessResolved: true,
+      frontProcessFallbackRequestSucceeded: true,
       applicationFrontmostAfter: false,
       applicationHiddenAfter: false,
       reason: 'activation_state_unverified',
     });
+    expect(frontProcessRunner).toHaveBeenCalledOnce();
+  });
+
+  it('uses one exact-process fallback when AppKit accepts but does not foreground an unhidden app', async () => {
+    const commandRunner = vi.fn<NativeActivationCommandRunner>().mockResolvedValue({
+      outcome: 'failed',
+      state: {
+        applicationHiddenBefore: false,
+        unhideAttempted: false,
+        activationRequestAccepted: true,
+        applicationFrontmostAfter: false,
+        applicationHiddenAfter: false,
+      },
+    });
+    const frontProcessRunner = vi.fn(async () => ({
+      outcome: 'succeeded' as const,
+      state: {
+        processResolved: true,
+        requestSucceeded: true,
+        applicationFrontmostAfter: true,
+      },
+    }));
+    const activator = new NativeOwnedBrowserWindowActivator(
+      'darwin',
+      commandRunner,
+      () => true,
+      frontProcessRunner,
+    );
+
+    await expect(activator.activateOwnedProcess(12_345, 1_000)).resolves.toMatchObject({
+      applicationActivated: true,
+      applicationHiddenBefore: false,
+      unhideAttempted: false,
+      activationRequestAccepted: true,
+      frontProcessFallbackAttempted: true,
+      frontProcessFallbackProcessResolved: true,
+      frontProcessFallbackRequestSucceeded: true,
+      applicationFrontmostAfter: true,
+      applicationHiddenAfter: false,
+      reason: 'activated',
+    });
+    expect(commandRunner).toHaveBeenCalledWith(12_345, 500);
+    expect(frontProcessRunner).toHaveBeenCalledWith(12_345, expect.any(Number));
+    expect(frontProcessRunner.mock.calls[0]?.[1]).toBeGreaterThan(0);
+    expect(frontProcessRunner.mock.calls[0]?.[1]).toBeLessThanOrEqual(1_000);
   });
 });
 

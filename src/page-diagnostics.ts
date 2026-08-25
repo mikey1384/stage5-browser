@@ -88,6 +88,9 @@ export interface SanitizedNativeWindowActivationEvidence {
   unhideAttempted: boolean;
   unhideSucceeded: boolean | null;
   activationRequestAccepted: boolean | null;
+  frontProcessFallbackAttempted: boolean;
+  frontProcessFallbackProcessResolved: boolean | null;
+  frontProcessFallbackRequestSucceeded: boolean | null;
   applicationFrontmostAfter: boolean | null;
   applicationHiddenAfter: boolean | null;
   result: SanitizedNativeWindowActivationResult;

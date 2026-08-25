@@ -9,6 +9,7 @@ import type { Page } from 'playwright';
 
 import { BrowserController } from '../src/browser-controller.js';
 import type { Stage5BrowserConfig } from '../src/config.js';
+import { NativeOwnedBrowserWindowActivator } from '../src/native-window-activation.js';
 import type { SanitizedNativeWindowActivationEvidence } from '../src/page-diagnostics.js';
 
 const runNativeSmoke = process.platform === 'darwin' &&
@@ -33,11 +34,50 @@ if (!application.hidden) {
   await execFileAsync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script]);
 }
 
+async function forceExactOwnedApplicationFront(processId: number): Promise<void> {
+  const frontProcessScript = String.raw`
+require 'fiddle/import'
+module Stage5ApplicationServices
+  extend Fiddle::Importer
+  dlload '/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices'
+  extern 'int GetProcessForPID(int, void*)'
+  extern 'int SetFrontProcess(void*)'
+end
+target = "\0" * 8
+exit 65 unless Stage5ApplicationServices.GetProcessForPID(Integer(ARGV.fetch(0), 10), target).zero?
+exit 66 unless Stage5ApplicationServices.SetFrontProcess(target).zero?
+`;
+  await execFileAsync('/usr/bin/ruby', ['-e', frontProcessScript, String(processId)]);
+  const script = String.raw`
+ObjC.import('AppKit');
+const application = $.NSRunningApplication.runningApplicationWithProcessIdentifier(${processId});
+for (let attempt = 0; attempt < 20 && application && !application.active; attempt += 1) {
+  $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.025));
+}
+if (!application || !application.active) {
+  throw new Error('temporary_owned_application_front_unverified');
+}
+`;
+  await execFileAsync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script]);
+}
+
+async function exactOwnedApplicationIsFront(processId: number): Promise<boolean> {
+  const script = String.raw`
+ObjC.import('AppKit');
+const application = $.NSRunningApplication.runningApplicationWithProcessIdentifier(${processId});
+Boolean(application && application.active);
+`;
+  const { stdout } = await execFileAsync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script]);
+  return stdout.trim() === 'true';
+}
+
 describe.skipIf(!runNativeSmoke)('native window activation smoke', () => {
   let root: string | undefined;
   let controller: BrowserController | undefined;
+  let competingController: BrowserController | undefined;
 
   afterAll(async () => {
+    await competingController?.stop().catch(() => undefined);
     await controller?.stop().catch(() => undefined);
     if (root !== undefined) {
       await rm(root, { recursive: true, force: true });
@@ -75,6 +115,53 @@ describe.skipIf(!runNativeSmoke)('native window activation smoke', () => {
     }
     await page.setContent('<!doctype html><html><body><h1>Stage5 native activation smoke</h1></body></html>');
 
+    const competingConfig: Stage5BrowserConfig = {
+      ...config,
+      profilesDir: path.join(root, 'competing-profiles'),
+      profileDir: path.join(root, 'competing-profile'),
+      artifactsDir: path.join(root, 'competing-artifacts'),
+    };
+    competingController = new BrowserController(competingConfig);
+    await competingController.start();
+    const competingInternals = competingController as unknown as {
+      activePage: Page | undefined;
+      controlledBrowserProcessId: number | null;
+    };
+    const competingPage = competingInternals.activePage;
+    const competingProcessId = competingInternals.controlledBrowserProcessId;
+    expect(competingPage).toBeDefined();
+    expect(competingProcessId).toEqual(expect.any(Number));
+    if (competingPage === undefined || competingProcessId === null) {
+      throw new Error('The competing isolated Chromium profile did not expose its page and process.');
+    }
+    await competingPage.setContent('<!doctype html><html><body><h1>Competing Stage5 window</h1></body></html>');
+    await competingPage.bringToFront();
+    await forceExactOwnedApplicationFront(competingProcessId);
+    expect(await exactOwnedApplicationIsFront(processId)).toBe(false);
+
+    const fallbackActivator = new NativeOwnedBrowserWindowActivator(
+      'darwin',
+      async () => ({
+        outcome: 'failed',
+        state: {
+          applicationHiddenBefore: false,
+          unhideAttempted: false,
+          activationRequestAccepted: true,
+          applicationFrontmostAfter: false,
+          applicationHiddenAfter: false,
+        },
+      }),
+    );
+    await expect(fallbackActivator.activateOwnedProcess(processId, 1_000)).resolves.toMatchObject({
+      applicationActivated: true,
+      frontProcessFallbackAttempted: true,
+      frontProcessFallbackProcessResolved: true,
+      frontProcessFallbackRequestSucceeded: true,
+      applicationFrontmostAfter: true,
+      reason: 'activated',
+    });
+    expect(await exactOwnedApplicationIsFront(processId)).toBe(true);
+
     const session = await page.context().newCDPSession(page);
     const observedWindow = await session.send('Browser.getWindowForTarget') as { windowId: number };
     await session.send('Browser.setWindowBounds', {
@@ -111,6 +198,7 @@ describe.skipIf(!runNativeSmoke)('native window activation smoke', () => {
       unhideAttempted: false,
       unhideSucceeded: null,
       activationRequestAccepted: true,
+      frontProcessFallbackAttempted: expect.any(Boolean),
       applicationFrontmostAfter: expect.any(Boolean),
       applicationHiddenAfter: false,
       result: expect.stringMatching(/^(activated|application_activation_unverified)$/),
@@ -138,6 +226,7 @@ describe.skipIf(!runNativeSmoke)('native window activation smoke', () => {
       unhideAttempted: true,
       unhideSucceeded: true,
       activationRequestAccepted: true,
+      frontProcessFallbackAttempted: expect.any(Boolean),
       applicationFrontmostAfter: expect.any(Boolean),
       applicationHiddenAfter: false,
       result: expect.stringMatching(/^(activated|application_activation_unverified)$/),
