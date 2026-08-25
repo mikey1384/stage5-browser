@@ -367,6 +367,7 @@ const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
 const CLICK_ROLE_RESOLUTION_TIMEOUT_MS = 1_000;
 const CLICK_RESULT_FINALIZATION_RESERVE_MS = 500;
 const FILL_RESULT_FINALIZATION_RESERVE_MS = 750;
+const FILL_REF_VIEWPORT_PREPARATION_TIMEOUT_MS = 500;
 const SCROLL_RESULT_FINALIZATION_RESERVE_MS = 750;
 const HANDOFF_RESULT_FINALIZATION_RESERVE_MS = 500;
 const SCREENSHOT_RENDER_SETTLE_MS = 100;
@@ -2394,21 +2395,85 @@ export class BrowserController {
       }
 
       fillPreparationStep = 'viewport_preparation';
-      try {
-        await handle.scrollIntoViewIfNeeded({
-          timeout: Math.max(1, remainingUntil(actionDeadlineAt)),
+      targetState = await boundedValue(
+        inspectTargetState(handle),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      );
+      if (targetState === null) {
+        throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The observed editor detached before viewport preparation.', {
+          recoverable: true,
+          details: {
+            reason: 'target_detached_before_input',
+            actionDispatched: false,
+            targetState,
+            suggestedAction: 'Take one fresh snapshot; Stage5 Browser confirmed that no text was entered.',
+          },
         });
-      } catch (error) {
+      }
+      if (!targetState.visible) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The observed editor is not visibly actionable.', {
+          recoverable: true,
+          details: {
+            reason: 'target_not_actionable',
+            actionDispatched: false,
+            targetState,
+            suggestedAction: 'Take one fresh snapshot after the editor becomes visible; Stage5 Browser did not enter any text.',
+          },
+        });
+      }
+      if (!targetState.inViewport) {
+        const viewportTimeoutMs = Math.min(
+          FILL_REF_VIEWPORT_PREPARATION_TIMEOUT_MS,
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+        );
+        const viewportPreparation = await boundedValue<{
+          kind: 'detached' | 'failed' | 'scrolled' | 'timeout';
+        }>(
+          handle.evaluate((element) => {
+            if (!element.isConnected) return 'detached' as const;
+            element.scrollIntoView({ behavior: 'instant', block: 'nearest', inline: 'nearest' });
+            return 'scrolled' as const;
+          }).then(
+            (result) => ({ kind: result }),
+            () => ({ kind: 'failed' as const }),
+          ),
+          viewportTimeoutMs,
+          { kind: 'timeout' as const },
+        );
+        if (viewportPreparation.kind !== 'scrolled') {
+          const timedOut = viewportPreparation.kind === 'timeout';
+          const detached = viewportPreparation.kind === 'detached';
+          throw new Stage5BrowserError(
+            detached ? 'TARGET_NOT_FOUND' : 'OPERATION_FAILED',
+            'The observed editor could not be prepared for bounded text input.',
+            {
+              recoverable: true,
+              details: {
+                reason: timedOut
+                  ? 'target_preparation_timeout'
+                  : detached
+                    ? 'target_detached_before_input'
+                    : 'target_scroll_failed',
+                actionDispatched: false,
+                targetState,
+                suggestedAction: 'Take one fresh snapshot after the editor is visible; Stage5 Browser confirmed that no text was entered.',
+              },
+            },
+          );
+        }
+        const settleMs = Math.min(CLICK_REF_INCREMENTAL_SETTLE_MS, remainingUntil(actionDeadlineAt));
+        if (settleMs > 0) await page.waitForTimeout(settleMs);
+      }
+      if (remainingUntil(actionDeadlineAt) <= 0) {
         throw new Stage5BrowserError('OPERATION_FAILED', 'The observed editor could not be prepared before the fill deadline.', {
           recoverable: true,
           details: {
-            reason: remainingUntil(actionDeadlineAt) === 0
-              ? 'target_preparation_timeout'
-              : 'target_scroll_failed',
+            reason: 'target_preparation_timeout',
             actionDispatched: false,
+            targetState,
             suggestedAction: 'Take one fresh snapshot after the editor is visible; Stage5 Browser confirmed that no text was entered.',
           },
-          cause: error,
         });
       }
       fillPreparationStep = 'target_state';
