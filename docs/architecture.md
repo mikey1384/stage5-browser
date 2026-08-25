@@ -31,7 +31,7 @@ The MCP server and browser runtime are separate processes. A timeout enforced in
 
 The separation has an explicit version boundary. MCP and worker exchange the package and protocol versions during initialization. Completed builds publish a final build stamp only after TypeScript output succeeds, so a live process never treats half-written output as current.
 
-The resident MCP process compares the published worker protocol and tool-catalog versions with the contract it loaded. When both contracts are unchanged, it replaces its worker automatically and restores the active URL on the next browser operation. No MCP reconnect or local deployment is required for ordinary runtime fixes. It returns `MCP_RESTART_REQUIRED` only when the tool catalog or MCP-to-worker protocol actually changes.
+The resident MCP process compares the published worker protocol and tool-catalog versions with the contract it loaded. Exact build fingerprints identify artifacts for diagnostics but do not define compatibility. When both contracts are unchanged, the supervisor adopts the completed artifact identity, replaces its worker automatically, and restores the active URL on the next browser operation. This also applies when the old worker exits during a deferred private handoff. No MCP reconnect or local deployment is required for ordinary runtime fixes. It returns `MCP_RESTART_REQUIRED` only when the tool catalog or MCP-to-worker protocol actually changes.
 
 ### Use an owned browser, with same-process Chromium attachment only for authentication
 

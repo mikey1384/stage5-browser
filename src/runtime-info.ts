@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Stage5BrowserError } from './errors.js';
 
-export const STAGE5_BROWSER_VERSION = '0.6.7';
+export const STAGE5_BROWSER_VERSION = '0.6.8';
 export const WORKER_PROTOCOL_VERSION = 5;
 export const TOOL_CATALOG_VERSION = 5;
 export const MCP_TOOL_COUNT = 23;
@@ -42,6 +42,67 @@ export interface RuntimeProcessInfo {
   restartRequired: boolean;
   restartReason: RuntimeRestartReason | null;
   suggestedAction: string | null;
+  initializationCompatibility?: {
+    mode: 'legacy_fingerprint_gate';
+    loadedArtifactFingerprint: string;
+  };
+}
+
+export interface WorkerInitializationContract {
+  protocolVersion: number;
+  mcpVersion: string;
+  mcpBuildFingerprint: string | null;
+  buildFingerprintPolicy?: 'diagnostic_only';
+}
+
+/**
+ * Build fingerprints identify exact artifacts; they do not define MCP/worker
+ * compatibility. Older MCP hosts incorrectly gated initialization on fingerprint
+ * equality. Echo their expected fingerprint for one initialization response so a
+ * compatible worker can finish an in-progress private handoff, while retaining the
+ * worker's true loaded fingerprint as explicit diagnostic evidence.
+ */
+export function negotiateWorkerInitialization(
+  contract: WorkerInitializationContract,
+  workerRuntime: RuntimeProcessInfo,
+): RuntimeProcessInfo {
+  if (contract.protocolVersion !== WORKER_PROTOCOL_VERSION) {
+    throw new Stage5BrowserError(
+      'MCP_RESTART_REQUIRED',
+      'The MCP server and browser worker use different worker protocol contracts.',
+      {
+        details: {
+          reason: 'worker_protocol_mismatch',
+          expectedProtocolVersion: WORKER_PROTOCOL_VERSION,
+          receivedProtocolVersion: contract.protocolVersion,
+          mcpVersion: contract.mcpVersion,
+          workerVersion: STAGE5_BROWSER_VERSION,
+          suggestedAction: 'Reconnect the MCP host so it loads the current Stage5 Browser worker protocol contract.',
+        },
+      },
+    );
+  }
+
+  const legacyFingerprint = contract.mcpBuildFingerprint;
+  if (
+    contract.buildFingerprintPolicy === 'diagnostic_only' ||
+    legacyFingerprint === null ||
+    legacyFingerprint === workerRuntime.artifactFingerprint
+  ) {
+    return workerRuntime;
+  }
+
+  return {
+    ...workerRuntime,
+    artifactFingerprint: legacyFingerprint,
+    compatibleUpdateAvailable: true,
+    suggestedAction:
+      'No MCP reconnect is needed. Finish the current operation; the next operation will adopt the completed worker identity.',
+    initializationCompatibility: {
+      mode: 'legacy_fingerprint_gate',
+      loadedArtifactFingerprint: workerRuntime.artifactFingerprint,
+    },
+  };
 }
 
 function fingerprint(filePath: string): string {

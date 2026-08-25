@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -103,6 +103,95 @@ describe('BrowserSupervisor', () => {
 
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
     expect(Date.now() - reloadStartedAt).toBeGreaterThanOrEqual(250);
+    expect(supervisor.workerRuntimeInfo).toMatchObject({
+      version: '0.6.5',
+      artifactFingerprint: 'build-2',
+    });
+  });
+
+  it('accepts a same-protocol worker when only its build fingerprint differs', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-fingerprint-identity-'));
+    temporaryRoots.push(root);
+    const supervisor = new BrowserSupervisor(configFor(root), {
+      workerUrl: new URL('./fixtures/fake-worker.mjs', import.meta.url),
+      environment: {
+        ...process.env,
+        STAGE5_BROWSER_TEST_MODE: '1',
+        STAGE5_BROWSER_TEST_BUILD_FINGERPRINT: 'worker-build-2',
+      },
+      expectedBuildFingerprint: 'mcp-build-1',
+    });
+    supervisors.push(supervisor);
+
+    const first = await supervisor.execute('status', {});
+    const second = await supervisor.execute('status', {});
+
+    expect(second.result.workerPid).toBe(first.result.workerPid);
+    expect(supervisor.workerRuntimeInfo).toMatchObject({
+      protocolVersion: 5,
+      artifactFingerprint: 'worker-build-2',
+    });
+  });
+
+  it('adopts a compatible worker after disconnect during a private handoff', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-handoff-update-race-'));
+    temporaryRoots.push(root);
+    const disconnectMarker = path.join(root, 'disconnect-once');
+    const environment = {
+      ...process.env,
+      STAGE5_BROWSER_TEST_MODE: '1',
+      STAGE5_BROWSER_TEST_BUILD_FINGERPRINT: 'build-1',
+      STAGE5_BROWSER_TEST_DISCONNECT_ON_RESUME_PATH: disconnectMarker,
+    };
+    let runtime: RuntimeProcessInfo = {
+      component: 'mcp',
+      version: '0.6.7',
+      protocolVersion: 5,
+      processId: 123,
+      startedAt: '2026-08-25T01:00:00.000Z',
+      buildModifiedAt: '2026-08-25T01:00:00.000Z',
+      artifactFingerprint: 'build-1',
+      currentArtifactFingerprint: 'build-1',
+      currentVersion: '0.6.7',
+      currentProtocolVersion: 5,
+      currentToolCatalogVersion: 5,
+      compatibleUpdateAvailable: false,
+      restartRequired: false,
+      restartReason: null,
+      suggestedAction: null,
+    };
+    const supervisor = new BrowserSupervisor(configFor(root), {
+      workerUrl: new URL('./fixtures/fake-worker.mjs', import.meta.url),
+      environment,
+      expectedBuildFingerprint: 'build-1',
+      runtimeInfoProvider: () => runtime,
+    });
+    supervisors.push(supervisor);
+
+    const before = await supervisor.execute('status', {});
+    await supervisor.execute('requestLoginHandoff', { url: null, timeoutMs: 500 });
+    environment.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT = 'build-2';
+    runtime = {
+      ...runtime,
+      currentArtifactFingerprint: 'build-2',
+      currentVersion: '0.6.8',
+      compatibleUpdateAvailable: true,
+      suggestedAction: 'No host restart is needed.',
+    };
+    await writeFile(disconnectMarker, 'disconnect once');
+
+    await expect(
+      supervisor.execute('resumeAfterLogin', { expected: null, timeoutMs: 500 }),
+    ).rejects.toMatchObject({ code: 'WORKER_DISCONNECTED', recovery: 'succeeded' });
+    const replacementPid = supervisor.workerRuntimeInfo?.processId;
+    expect(replacementPid).not.toBe(before.result.workerPid);
+
+    await expect(
+      supervisor.execute('resumeAfterLogin', { expected: null, timeoutMs: 500 }),
+    ).resolves.toMatchObject({ result: { state: 'ready_for_agent_verification' } });
+    const after = await supervisor.execute('status', {});
+
+    expect(after.result.workerPid).toBe(replacementPid);
     expect(supervisor.workerRuntimeInfo).toMatchObject({
       version: '0.6.5',
       artifactFingerprint: 'build-2',

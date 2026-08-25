@@ -294,17 +294,14 @@ export class BrowserSupervisor {
           protocolVersion: WORKER_PROTOCOL_VERSION,
           mcpVersion: STAGE5_BROWSER_VERSION,
           mcpBuildFingerprint: this.expectedBuildFingerprint,
+          buildFingerprintPolicy: 'diagnostic_only',
         },
         this.config.workerStartupTimeoutMs,
       );
-      if (
-        initialized.runtime.protocolVersion !== WORKER_PROTOCOL_VERSION ||
-        (this.expectedBuildFingerprint !== null &&
-          initialized.runtime.artifactFingerprint !== this.expectedBuildFingerprint)
-      ) {
+      if (initialized.runtime.protocolVersion !== WORKER_PROTOCOL_VERSION) {
         throw new Stage5BrowserError(
           'MCP_RESTART_REQUIRED',
-          'The browser worker reported an incompatible Stage5 Browser build.',
+          'The browser worker reported an incompatible worker protocol contract.',
           {
             details: {
               reason: 'worker_protocol_mismatch',
@@ -312,13 +309,14 @@ export class BrowserSupervisor {
               receivedProtocolVersion: initialized.runtime.protocolVersion,
               mcpVersion: STAGE5_BROWSER_VERSION,
               workerVersion: initialized.runtime.version,
-              expectedBuildFingerprint: this.expectedBuildFingerprint,
-              receivedBuildFingerprint: initialized.runtime.artifactFingerprint,
-              suggestedAction: 'Restart the MCP host so the MCP server and browser worker load the same build.',
+              suggestedAction: 'Reconnect the MCP host so it loads the current Stage5 Browser worker protocol contract.',
             },
           },
         );
       }
+      this.expectedBuildFingerprint =
+        initialized.runtime.initializationCompatibility?.loadedArtifactFingerprint ??
+        initialized.runtime.artifactFingerprint;
       this.workerRuntime = initialized.runtime;
     } catch (error) {
       await this.terminateWorker(child);
@@ -339,7 +337,20 @@ export class BrowserSupervisor {
 
   private async replaceWorker(): Promise<void> {
     await this.terminateWorker();
+    this.adoptCompatibleRuntimeFingerprint();
     await this.ensureWorker();
+  }
+
+  private adoptCompatibleRuntimeFingerprint(): void {
+    const runtime = this.runtimeInfoProvider?.();
+    if (
+      runtime !== undefined &&
+      !runtime.restartRequired &&
+      runtime.compatibleUpdateAvailable &&
+      runtime.currentArtifactFingerprint !== null
+    ) {
+      this.expectedBuildFingerprint = runtime.currentArtifactFingerprint;
+    }
   }
 
   private async reloadCompatibleRuntimeIfNeeded(): Promise<void> {
@@ -556,6 +567,7 @@ export class BrowserSupervisor {
       'PATH',
       'PLAYWRIGHT_BROWSERS_PATH',
       'STAGE5_BROWSER_TEST_BUILD_FINGERPRINT',
+      'STAGE5_BROWSER_TEST_DISCONNECT_ON_RESUME_PATH',
       'STAGE5_BROWSER_TEST_SHUTDOWN_DELAY_MS',
       'STAGE5_BROWSER_TEST_MODE',
       'TMPDIR',

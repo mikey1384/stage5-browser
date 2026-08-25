@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync, unlinkSync } from 'node:fs';
 
 let initialized = false;
 let browser = 'chromium';
@@ -29,6 +30,12 @@ const descendant = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 
 function respond(id, result) {
   if (process.connected) {
     process.send({ kind: 'response', id, ok: true, result });
+  }
+}
+
+function respondError(id, error) {
+  if (process.connected) {
+    process.send({ kind: 'response', id, ok: false, error });
   }
 }
 
@@ -66,6 +73,16 @@ process.on('message', (message) => {
   }
 
   if (message.command === 'resumeAfterLogin') {
+    const disconnectMarker = process.env.STAGE5_BROWSER_TEST_DISCONNECT_ON_RESUME_PATH;
+    if (disconnectMarker !== undefined && existsSync(disconnectMarker)) {
+      unlinkSync(disconnectMarker);
+      respondError(message.id, {
+        code: 'WORKER_DISCONNECTED',
+        message: 'The test worker observed a compatible artifact replacement.',
+        recoverable: true,
+      });
+      return;
+    }
     humanAuthenticationInProgress = false;
     respond(message.id, {
       browser,

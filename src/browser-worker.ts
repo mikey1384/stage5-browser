@@ -6,9 +6,8 @@ import type {
 } from './protocol.js';
 import {
   buildStampUrlFor,
+  negotiateWorkerInitialization,
   RuntimeArtifactMonitor,
-  STAGE5_BROWSER_VERSION,
-  WORKER_PROTOCOL_VERSION,
 } from './runtime-info.js';
 
 let controller: BrowserController | undefined;
@@ -26,30 +25,9 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
   if (request.command === 'initialize') {
     runtimeMonitor.assertCurrent();
     const workerRuntime = runtimeMonitor.inspect();
-    if (
-      request.payload.protocolVersion !== WORKER_PROTOCOL_VERSION ||
-      (request.payload.mcpBuildFingerprint !== null &&
-        request.payload.mcpBuildFingerprint !== workerRuntime.artifactFingerprint)
-    ) {
-      throw new Stage5BrowserError(
-        'MCP_RESTART_REQUIRED',
-        'The MCP server and browser worker loaded incompatible Stage5 Browser builds.',
-        {
-          details: {
-            reason: 'worker_protocol_mismatch',
-            expectedProtocolVersion: WORKER_PROTOCOL_VERSION,
-            receivedProtocolVersion: request.payload.protocolVersion ?? null,
-            mcpVersion: request.payload.mcpVersion ?? null,
-            workerVersion: STAGE5_BROWSER_VERSION,
-            expectedBuildFingerprint: request.payload.mcpBuildFingerprint ?? null,
-            receivedBuildFingerprint: workerRuntime.artifactFingerprint,
-            suggestedAction: 'Restart the MCP host so the MCP server and browser worker load the same build.',
-          },
-        },
-      );
-    }
+    const initializedRuntime = negotiateWorkerInitialization(request.payload, workerRuntime);
     controller = new BrowserController(request.payload.config, request.payload.browser);
-    return { ready: true, workerPid: process.pid, runtime: workerRuntime };
+    return { ready: true, workerPid: process.pid, runtime: initializedRuntime };
   }
 
   if (controller === undefined) {

@@ -5,7 +5,12 @@ import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { RuntimeArtifactMonitor, type RuntimeBuildStamp } from '../src/runtime-info.js';
+import {
+  negotiateWorkerInitialization,
+  RuntimeArtifactMonitor,
+  type RuntimeBuildStamp,
+  type RuntimeProcessInfo,
+} from '../src/runtime-info.js';
 
 const temporaryRoots: string[] = [];
 
@@ -83,5 +88,79 @@ describe('RuntimeArtifactMonitor', () => {
       restartReason: 'runtime_artifact_changed',
     });
     expect(() => monitor.assertCurrent()).toThrowError(expect.objectContaining({ code: 'WORKER_DISCONNECTED' }));
+  });
+});
+
+describe('worker initialization compatibility', () => {
+  const workerRuntime = (overrides: Partial<RuntimeProcessInfo> = {}): RuntimeProcessInfo => ({
+    component: 'worker',
+    version: '0.6.8',
+    protocolVersion: 5,
+    processId: 456,
+    startedAt: '2026-08-25T01:00:00.000Z',
+    buildModifiedAt: '2026-08-25T01:00:00.000Z',
+    artifactFingerprint: 'worker-build-2',
+    currentArtifactFingerprint: 'worker-build-2',
+    currentVersion: '0.6.8',
+    currentProtocolVersion: 5,
+    currentToolCatalogVersion: 5,
+    compatibleUpdateAvailable: false,
+    restartRequired: false,
+    restartReason: null,
+    suggestedAction: null,
+    ...overrides,
+  });
+
+  it('treats a build fingerprint as diagnostic identity for a current supervisor', () => {
+    const runtime = negotiateWorkerInitialization(
+      {
+        protocolVersion: 5,
+        mcpVersion: '0.6.7',
+        mcpBuildFingerprint: 'mcp-build-1',
+        buildFingerprintPolicy: 'diagnostic_only',
+      },
+      workerRuntime(),
+    );
+
+    expect(runtime).toMatchObject({
+      artifactFingerprint: 'worker-build-2',
+      currentArtifactFingerprint: 'worker-build-2',
+      compatibleUpdateAvailable: false,
+    });
+    expect(runtime.initializationCompatibility).toBeUndefined();
+  });
+
+  it('bridges the legacy fingerprint gate without hiding the loaded worker identity', () => {
+    const runtime = negotiateWorkerInitialization(
+      {
+        protocolVersion: 5,
+        mcpVersion: '0.6.6',
+        mcpBuildFingerprint: 'mcp-build-1',
+      },
+      workerRuntime(),
+    );
+
+    expect(runtime).toMatchObject({
+      artifactFingerprint: 'mcp-build-1',
+      currentArtifactFingerprint: 'worker-build-2',
+      compatibleUpdateAvailable: true,
+      initializationCompatibility: {
+        mode: 'legacy_fingerprint_gate',
+        loadedArtifactFingerprint: 'worker-build-2',
+      },
+    });
+  });
+
+  it('still rejects a real worker protocol mismatch', () => {
+    expect(() =>
+      negotiateWorkerInitialization(
+        {
+          protocolVersion: 4,
+          mcpVersion: '0.5.1',
+          mcpBuildFingerprint: 'mcp-build-1',
+        },
+        workerRuntime(),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'MCP_RESTART_REQUIRED' }));
   });
 });

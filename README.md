@@ -45,7 +45,7 @@ npm run build
 npm start
 ```
 
-The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. A host reconnect is needed once after initial registration or a real tool-catalog change. Compatible runtime patches roll forward automatically on the next browser operation and do not require reinstalling or redeploying Stage5 Browser. See `docs/agent-setup.md` for the ChatGPT and Claude connection decision trees, discovery checks, and authentication behavior.
+The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. A host reconnect is needed once after initial registration or a real tool-catalog change. Compatible runtime patches roll forward automatically on the next browser operation—even when the exact build fingerprint changes during a private handoff—and do not require reinstalling or redeploying Stage5 Browser. See `docs/agent-setup.md` for the ChatGPT and Claude connection decision trees, discovery checks, and authentication behavior.
 
 ## MCP tools
 
@@ -123,6 +123,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-25-twinkle-runtime-friction.md` — Twinkle profile-lock, transitioning-role, unknown-dispatch, and managed-capture findings plus their 0.6.4 evidence boundaries
 - `docs/dogfooding-2026-08-25-coinbase-release-gate.md` — Coinbase ownership, shared-click, Firefox release, private-input, and availability blockers plus the compatible 0.6.6 remedies
 - `docs/dogfooding-2026-08-25-facebook-auth-route.md` — Facebook authentication false-negative caused by incidental post-login query metadata, fixed in 0.6.7
+- `docs/dogfooding-2026-08-25-compatible-worker-fingerprint.md` — compatible update during a private handoff falsely required an MCP reconnect, fixed in 0.6.8
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 

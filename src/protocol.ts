@@ -289,6 +289,7 @@ export interface BrowserCommandMap {
       protocolVersion: number;
       mcpVersion: string;
       mcpBuildFingerprint: string | null;
+      buildFingerprintPolicy?: 'diagnostic_only';
     };
     output: { ready: true; workerPid: number; runtime: RuntimeProcessInfo };
   };
