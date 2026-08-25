@@ -525,6 +525,187 @@ describe('BrowserController', () => {
     });
   });
 
+  it('uses a guarded forced dispatch only after proving the stable-click attempt emitted no event', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Animated exact target</title><style>
+        @keyframes continuous-motion {
+          from { transform: translateX(0); }
+          to { transform: translateX(40px); }
+        }
+        #moving-target {
+          animation: continuous-motion 100ms linear infinite alternate;
+          margin: 100px;
+          width: 240px;
+          height: 48px;
+        }
+      </style></head><body>
+        <button id="moving-target" type="button"
+          onclick="document.querySelector('#expanded').hidden = false">See more</button>
+        <a id="expanded" href="#expanded" hidden>Expanded moving caption</a>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-guarded-dispatch-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/post`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const observed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    const seeMoreLine = observed.snapshot.split('\n').find((line) => line.includes('See more'));
+    const seeMoreRef = seeMoreLine?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(seeMoreRef).toBeDefined();
+    if (seeMoreRef === undefined) {
+      throw new Error('Fixture did not expose the moving exact-target reference.');
+    }
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: seeMoreRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'link',
+          name: 'Expanded moving caption',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
+      dispatchEvidence: {
+        strategy: 'guarded_exact_handle',
+        forcedFallbackUsed: true,
+        guardExpired: false,
+        targetConnectedBefore: true,
+        targetConnectedAtFirstEvent: true,
+        targetConnectedAfter: true,
+        trustedEventObserved: true,
+        pointerDownOnTarget: true,
+        mouseDownOnTarget: true,
+        pointerUpOnTarget: true,
+        mouseUpOnTarget: true,
+        clickOnTarget: true,
+        misdirectedEventBlocked: false,
+        targetStateChangeBlocked: false,
+      },
+    });
+  });
+
+  it('does not force a click when the exact target detaches before pointer dispatch', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Detached dispatch target</title><style>
+        @keyframes continuous-motion {
+          from { transform: translateX(0); }
+          to { transform: translateX(40px); }
+        }
+        #unstable-target {
+          animation: continuous-motion 100ms linear infinite alternate;
+          margin: 100px;
+          width: 240px;
+          height: 48px;
+        }
+      </style></head><body>
+        <button id="unstable-target" type="button">See more</button>
+        <p id="danger" hidden>Replacement was clicked</p>
+        <script>
+          const nativeAddEventListener = window.addEventListener.bind(window);
+          let dispatchProbeObserved = false;
+          window.addEventListener = function(type, listener, options) {
+            nativeAddEventListener(type, listener, options);
+            if (!dispatchProbeObserved && type === 'pointerdown') {
+              dispatchProbeObserved = true;
+              setTimeout(() => {
+                const current = document.querySelector('#unstable-target');
+                const replacement = current.cloneNode(true);
+                replacement.removeAttribute('style');
+                replacement.setAttribute(
+                  'onclick',
+                  "document.querySelector('#danger').hidden = false",
+                );
+                current.replaceWith(replacement);
+              }, 50);
+            }
+          };
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-detached-dispatch-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/post`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const observed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    const seeMoreLine = observed.snapshot.split('\n').find((line) => line.includes('See more'));
+    const seeMoreRef = seeMoreLine?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(seeMoreRef).toBeDefined();
+    if (seeMoreRef === undefined) {
+      throw new Error('Fixture did not expose the detachable exact-target reference.');
+    }
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: seeMoreRef,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'detached',
+        actionDispatched: false,
+        clickDispatched: false,
+        dispatchEvidence: {
+          strategy: 'guarded_exact_handle',
+          forcedFallbackUsed: false,
+          targetConnectedBefore: true,
+          targetConnectedAfter: false,
+          trustedEventObserved: false,
+          clickOnTarget: false,
+        },
+      },
+    });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'blocked',
+      reason: 'detached',
+      actionDispatched: false,
+      clickDispatched: false,
+      dispatchEvidence: {
+        forcedFallbackUsed: false,
+        targetConnectedAfter: false,
+        trustedEventObserved: false,
+      },
+    });
+    const rendered = await controller.findText({
+      query: 'Replacement was clicked',
+      mode: 'contains',
+      caseSensitive: false,
+      maxResults: 10,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(rendered.matchCount).toBe(0);
+  });
+
   it('handles timeline scrolling, text search, observed refs, click postconditions, redirects, and rate limits', async () => {
     server = createServer((request, response) => {
       const requestUrl = request.url ?? '/';

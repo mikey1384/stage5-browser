@@ -58,6 +58,24 @@ export interface SafeTargetState {
   coveredBy: { tagName: string; role: string | null; pointerEvents: string } | null;
 }
 
+export interface SanitizedClickDispatchEvidence {
+  strategy: 'guarded_exact_handle';
+  forcedFallbackUsed: boolean;
+  guardExpired: boolean;
+  targetConnectedBefore: boolean;
+  targetConnectedAtFirstEvent: boolean | null;
+  targetConnectedAfter: boolean;
+  geometryChangedBeforeFirstEvent: boolean | null;
+  trustedEventObserved: boolean;
+  pointerDownOnTarget: boolean;
+  mouseDownOnTarget: boolean;
+  pointerUpOnTarget: boolean;
+  mouseUpOnTarget: boolean;
+  clickOnTarget: boolean;
+  misdirectedEventBlocked: boolean;
+  targetStateChangeBlocked: boolean;
+}
+
 export interface SanitizedActionDiagnostic {
   action: 'click_by_ref' | 'click_by_role' | 'scroll';
   outcome: 'blocked' | 'failed' | 'postcondition_failed' | 'succeeded';
@@ -65,6 +83,7 @@ export interface SanitizedActionDiagnostic {
   actionDispatched: boolean | 'unknown';
   clickDispatched: boolean | 'unknown' | null;
   targetState: SafeTargetState | null;
+  dispatchEvidence?: SanitizedClickDispatchEvidence;
   pageUrl: string | null;
   startedAt: string;
   occurredAt: string;
@@ -86,7 +105,7 @@ export interface PageRuntimeDiagnostics {
   lastAction: SanitizedActionDiagnostic | null;
   lastActionNetworkEvents: SanitizedNetworkDiagnostic[];
   privacy:
-    'Raw console messages, exception text, request bodies, headers, query strings, and fragments are excluded.';
+    'Raw console messages, exception text, request bodies, headers, query strings, fragments, click coordinates, and event payloads are excluded.';
 }
 
 interface PageDiagnosticRecord {
@@ -203,7 +222,7 @@ function clickFailureReason(error: unknown, state: SafeTargetState | null): Acti
   if (descriptor.includes('not visible') || descriptor.includes('outside of the viewport')) {
     return 'not_visible';
   }
-  if (descriptor.includes('detached')) {
+  if (descriptor.includes('detached') || descriptor.includes('not attached')) {
     return 'detached';
   }
   if (descriptor.includes('timeout') || descriptor.includes('timed out')) {
@@ -366,7 +385,7 @@ export class PageDiagnosticBuffer {
       networkEvents: [...record.networkEvents],
       lastAction: record.lastAction === null ? null : { ...record.lastAction },
       lastActionNetworkEvents: [...record.lastActionNetworkEvents],
-      privacy: 'Raw console messages, exception text, request bodies, headers, query strings, and fragments are excluded.',
+      privacy: 'Raw console messages, exception text, request bodies, headers, query strings, fragments, click coordinates, and event payloads are excluded.',
     };
   }
 

@@ -8,6 +8,7 @@ import type {
   BrowserContext,
   ElementHandle,
   Frame,
+  JSHandle,
   Locator,
   Page,
   Request,
@@ -40,6 +41,7 @@ import {
   privacyFingerprint,
   type SafeTargetState,
   type SanitizedActionDiagnostic,
+  type SanitizedClickDispatchEvidence,
 } from './page-diagnostics.js';
 import {
   compareProfileExitMarker,
@@ -218,6 +220,13 @@ interface PreparedObservedClickTarget {
   targetState: SafeTargetState;
 }
 
+type RawClickDispatchEvidence = Omit<SanitizedClickDispatchEvidence, 'forcedFallbackUsed'>;
+
+interface ClickDispatchProbeController {
+  snapshot: () => RawClickDispatchEvidence;
+  finish: () => RawClickDispatchEvidence;
+}
+
 type VirtualizedClickResolution =
   | { kind: 'ambiguous' | 'missing' }
   | {
@@ -238,6 +247,8 @@ const CLICK_REF_REBIND_SETTLE_MS = 500;
 const CLICK_REF_ARTICLE_TEXT_CHARACTERS = 20_000;
 const CLICK_REF_ARTICLE_CANDIDATES = 100;
 const CLICK_REF_ELEMENT_CANDIDATES = 5_000;
+const CLICK_REF_NORMAL_DISPATCH_TIMEOUT_MS = 750;
+const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
@@ -910,6 +921,7 @@ export class BrowserController {
     const startedAt = Date.now();
     const actionStartedAt = new Date(startedAt).toISOString();
     let preparedTarget: PreparedObservedClickTarget | null = null;
+    let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
     this.pageDiagnostics.beginAction(page, actionStartedAt);
     try {
       let count: number;
@@ -948,21 +960,12 @@ export class BrowserController {
         actionStartedAt,
         input.timeoutMs,
       );
-      try {
-        await preparedTarget.handle.click({
-          timeout: Math.max(1, input.timeoutMs - (Date.now() - startedAt)),
-        });
-      } catch (error) {
-        const diagnostic = actionDiagnosticForFailure(
-          'click_by_ref',
-          page,
-          error,
-          await inspectTargetState(preparedTarget.handle) ?? preparedTarget.targetState,
-          actionStartedAt,
-        );
-        this.pageDiagnostics.recordAction(page, diagnostic);
-        throw this.clickFailureError(diagnostic, error);
-      }
+      dispatchEvidence = await this.dispatchPreparedObservedClick(
+        page,
+        preparedTarget,
+        actionStartedAt,
+        Math.max(1, input.timeoutMs - (Date.now() - startedAt)),
+      );
       try {
         const postcondition = await this.verifyClickPostcondition(
           page,
@@ -978,6 +981,7 @@ export class BrowserController {
             page,
             preparedTarget.targetState,
             actionStartedAt,
+            dispatchEvidence,
           ),
         );
         this.lastKnownUrl = page.url();
@@ -995,6 +999,7 @@ export class BrowserController {
               page,
               preparedTarget.targetState,
               actionStartedAt,
+              dispatchEvidence,
             ),
           );
         }
@@ -4182,6 +4187,326 @@ export class BrowserController {
     return { locator: preparedLocator, handle, targetState };
   }
 
+  private async dispatchPreparedObservedClick(
+    page: Page,
+    preparedTarget: PreparedObservedClickTarget,
+    startedAt: string,
+    timeoutMs: number,
+  ): Promise<SanitizedClickDispatchEvidence | null> {
+    const dispatchStartedAt = Date.now();
+    const probe = await this.installExactClickDispatchProbe(
+      preparedTarget.handle,
+      timeoutMs + CLICK_REF_DISPATCH_PROBE_GRACE_MS,
+    );
+    if (probe === null) {
+      this.failClickBeforeDispatch(
+        page,
+        startedAt,
+        await inspectTargetState(preparedTarget.handle) ?? preparedTarget.targetState,
+        'unknown',
+        'dispatch_probe_install_failed',
+        'Stage5 Browser could not install the exact-target dispatch guard before clicking.',
+        'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+      );
+    }
+
+    let probeFinished = false;
+    let finalEvidence: SanitizedClickDispatchEvidence | null = null;
+    let forcedFallbackUsed = false;
+    const readProbe = async (finish: boolean): Promise<SanitizedClickDispatchEvidence | null> => {
+      if (finish && probeFinished) {
+        return finalEvidence;
+      }
+      try {
+        const raw = await probe.evaluate((controller, shouldFinish) =>
+          shouldFinish ? controller.finish() : controller.snapshot(), finish);
+        const evidence: SanitizedClickDispatchEvidence = {
+          ...raw,
+          forcedFallbackUsed,
+        };
+        if (finish) {
+          probeFinished = true;
+          finalEvidence = evidence;
+        }
+        return evidence;
+      } catch {
+        if (finish) {
+          probeFinished = true;
+          finalEvidence = null;
+        }
+        return null;
+      } finally {
+        if (finish) {
+          await probe.dispose().catch(() => undefined);
+        }
+      }
+    };
+
+    try {
+      const normalAttemptTimeoutMs = Math.max(
+        1,
+        Math.min(
+          CLICK_REF_NORMAL_DISPATCH_TIMEOUT_MS,
+          Math.max(1, Math.floor(timeoutMs * 0.35)),
+        ),
+      );
+      let normalError: unknown = null;
+      try {
+        await preparedTarget.handle.click({
+          noWaitAfter: true,
+          timeout: normalAttemptTimeoutMs,
+        });
+      } catch (error) {
+        normalError = error;
+      }
+
+      let evidence = await readProbe(false);
+      if (normalError === null) {
+        evidence = await readProbe(true);
+        return evidence;
+      }
+      if (evidence?.clickOnTarget === true) {
+        return await readProbe(true);
+      }
+
+      const targetState = await inspectTargetState(preparedTarget.handle);
+      if (!this.canUseForcedClickFallback(evidence, targetState, normalError)) {
+        evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          normalError,
+          targetState ?? preparedTarget.targetState,
+          startedAt,
+          evidence,
+        );
+      }
+
+      forcedFallbackUsed = true;
+      const remainingTimeoutMs = Math.max(1, timeoutMs - (Date.now() - dispatchStartedAt));
+      let forcedError: unknown = null;
+      try {
+        await preparedTarget.handle.click({
+          force: true,
+          noWaitAfter: true,
+          timeout: remainingTimeoutMs,
+        });
+      } catch (error) {
+        forcedError = error;
+      }
+
+      evidence = await readProbe(true);
+      if (evidence?.clickOnTarget === true) {
+        return evidence;
+      }
+      if (forcedError === null && evidence === null) {
+        return null;
+      }
+      return this.throwObservedClickDispatchFailure(
+        page,
+        forcedError ?? new Error('The guarded exact-handle fallback did not emit a target click event.'),
+        await inspectTargetState(preparedTarget.handle) ?? targetState ?? preparedTarget.targetState,
+        startedAt,
+        evidence,
+      );
+    } finally {
+      if (!probeFinished) {
+        await readProbe(true);
+      }
+    }
+  }
+
+  private async installExactClickDispatchProbe(
+    handle: ElementHandle<HTMLElement | SVGElement>,
+    lifetimeMs: number,
+  ): Promise<JSHandle<ClickDispatchProbeController> | null> {
+    try {
+      return await handle.evaluateHandle((element, boundedLifetimeMs) => {
+        const initialRect = element.getBoundingClientRect();
+        const state: RawClickDispatchEvidence = {
+          strategy: 'guarded_exact_handle',
+          guardExpired: false,
+          targetConnectedBefore: element.isConnected,
+          targetConnectedAtFirstEvent: null,
+          targetConnectedAfter: element.isConnected,
+          geometryChangedBeforeFirstEvent: null,
+          trustedEventObserved: false,
+          pointerDownOnTarget: false,
+          mouseDownOnTarget: false,
+          pointerUpOnTarget: false,
+          mouseUpOnTarget: false,
+          clickOnTarget: false,
+          misdirectedEventBlocked: false,
+          targetStateChangeBlocked: false,
+        };
+        const eventTypes = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'] as const;
+        let cleaned = false;
+        let expirationTimer: number | null = null;
+
+        const targetIsActionable = (): boolean => {
+          if (!element.isConnected) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none'
+            && style.visibility !== 'hidden' && style.opacity !== '0';
+          const enabled = !('disabled' in element && Boolean((element as HTMLButtonElement).disabled))
+            && element.getAttribute('aria-disabled') !== 'true';
+          return visible && enabled && rect.bottom > 0 && rect.right > 0
+            && rect.top < window.innerHeight && rect.left < window.innerWidth;
+        };
+        const block = (event: Event): void => {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          event.stopPropagation();
+        };
+        const recordExactEvent = (eventType: typeof eventTypes[number]): void => {
+          if (eventType === 'pointerdown') state.pointerDownOnTarget = true;
+          if (eventType === 'mousedown') state.mouseDownOnTarget = true;
+          if (eventType === 'pointerup') state.pointerUpOnTarget = true;
+          if (eventType === 'mouseup') state.mouseUpOnTarget = true;
+          if (eventType === 'click') state.clickOnTarget = true;
+        };
+        const listener = (event: Event): void => {
+          if (!event.isTrusted) return;
+          const eventType = event.type as typeof eventTypes[number];
+          state.trustedEventObserved = true;
+          if (state.targetConnectedAtFirstEvent === null) {
+            state.targetConnectedAtFirstEvent = element.isConnected;
+            const currentRect = element.getBoundingClientRect();
+            state.geometryChangedBeforeFirstEvent =
+              Math.abs(currentRect.top - initialRect.top) > 1 ||
+              Math.abs(currentRect.left - initialRect.left) > 1 ||
+              Math.abs(currentRect.width - initialRect.width) > 1 ||
+              Math.abs(currentRect.height - initialRect.height) > 1;
+          }
+          const exactTarget = event.composedPath().includes(element);
+          if (!exactTarget) {
+            state.misdirectedEventBlocked = true;
+            block(event);
+            return;
+          }
+          if (!targetIsActionable()) {
+            state.targetStateChangeBlocked = true;
+            block(event);
+            return;
+          }
+          recordExactEvent(eventType);
+          if (eventType === 'click') {
+            cleanup();
+          }
+        };
+        const cleanup = (): void => {
+          if (cleaned) return;
+          cleaned = true;
+          if (expirationTimer !== null) window.clearTimeout(expirationTimer);
+          eventTypes.forEach((eventType) => window.removeEventListener(eventType, listener, true));
+        };
+        const snapshot = (): RawClickDispatchEvidence => ({
+          ...state,
+          targetConnectedAfter: element.isConnected,
+        });
+        eventTypes.forEach((eventType) => window.addEventListener(eventType, listener, true));
+        expirationTimer = window.setTimeout(() => {
+          state.guardExpired = true;
+          cleanup();
+        }, Math.max(1, boundedLifetimeMs));
+        return {
+          snapshot,
+          finish: (): RawClickDispatchEvidence => {
+            cleanup();
+            return snapshot();
+          },
+        };
+      }, lifetimeMs);
+    } catch {
+      return null;
+    }
+  }
+
+  private canUseForcedClickFallback(
+    evidence: SanitizedClickDispatchEvidence | null,
+    targetState: SafeTargetState | null,
+    normalError: unknown,
+  ): boolean {
+    const errorDescriptor = normalError instanceof Error
+      ? `${normalError.name} ${normalError.message}`.toLocaleLowerCase()
+      : '';
+    const stabilityAttemptTimedOut = errorDescriptor.includes('timeout') || errorDescriptor.includes('timed out');
+    return stabilityAttemptTimedOut &&
+      evidence !== null &&
+      !evidence.guardExpired &&
+      !evidence.trustedEventObserved &&
+      !evidence.pointerDownOnTarget &&
+      !evidence.mouseDownOnTarget &&
+      !evidence.pointerUpOnTarget &&
+      !evidence.mouseUpOnTarget &&
+      !evidence.clickOnTarget &&
+      !evidence.misdirectedEventBlocked &&
+      !evidence.targetStateChangeBlocked &&
+      targetState !== null &&
+      targetState.visible &&
+      targetState.enabled &&
+      targetState.inViewport &&
+      targetState.receivesPointerEvents === true;
+  }
+
+  private throwObservedClickDispatchFailure(
+    page: Page,
+    error: unknown,
+    targetState: SafeTargetState | null,
+    startedAt: string,
+    evidence: SanitizedClickDispatchEvidence | null,
+  ): never {
+    const diagnostic = this.observedClickDispatchFailureDiagnostic(
+      page,
+      error,
+      targetState,
+      startedAt,
+      evidence,
+    );
+    this.pageDiagnostics.recordAction(page, diagnostic);
+    throw this.clickFailureError(diagnostic, error);
+  }
+
+  private observedClickDispatchFailureDiagnostic(
+    page: Page,
+    error: unknown,
+    targetState: SafeTargetState | null,
+    startedAt: string,
+    evidence: SanitizedClickDispatchEvidence | null,
+  ): SanitizedActionDiagnostic {
+    const fallback = actionDiagnosticForFailure(
+      'click_by_ref',
+      page,
+      error,
+      targetState,
+      startedAt,
+    );
+    if (evidence === null) {
+      return fallback;
+    }
+    const exactTargetActivity = evidence.pointerDownOnTarget ||
+      evidence.mouseDownOnTarget ||
+      evidence.pointerUpOnTarget ||
+      evidence.mouseUpOnTarget ||
+      evidence.clickOnTarget;
+    const dispatchUnknown = evidence.guardExpired && !evidence.trustedEventObserved;
+    const actionDispatched = dispatchUnknown ? 'unknown' : exactTargetActivity;
+    const clickDispatched = dispatchUnknown ? 'unknown' : evidence.clickOnTarget;
+    const reason = evidence.misdirectedEventBlocked
+      ? 'pointer_intercepted'
+      : !evidence.targetConnectedAfter || (evidence.targetStateChangeBlocked && targetState === null)
+        ? 'detached'
+        : fallback.reason;
+    return {
+      ...fallback,
+      outcome: actionDispatched === false ? 'blocked' : 'failed',
+      reason,
+      actionDispatched,
+      clickDispatched,
+      dispatchEvidence: evidence,
+    };
+  }
+
   private async observeClickTargetIdentity(
     handle: ElementHandle<HTMLElement | SVGElement>,
   ): Promise<ClickTargetSemanticIdentity | null> {
@@ -4642,6 +4967,7 @@ export class BrowserController {
     page: Page,
     targetState: SafeTargetState | null,
     startedAt: string,
+    dispatchEvidence: SanitizedClickDispatchEvidence | null = null,
   ): SanitizedActionDiagnostic {
     return {
       action,
@@ -4650,6 +4976,7 @@ export class BrowserController {
       actionDispatched: true,
       clickDispatched: true,
       targetState,
+      ...(dispatchEvidence === null ? {} : { dispatchEvidence }),
       pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
       startedAt,
       occurredAt: new Date().toISOString(),
@@ -4661,6 +4988,7 @@ export class BrowserController {
     page: Page,
     targetState: SafeTargetState | null,
     startedAt: string,
+    dispatchEvidence: SanitizedClickDispatchEvidence | null = null,
   ): SanitizedActionDiagnostic {
     return {
       action,
@@ -4669,6 +4997,7 @@ export class BrowserController {
       actionDispatched: true,
       clickDispatched: true,
       targetState,
+      ...(dispatchEvidence === null ? {} : { dispatchEvidence }),
       pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
       startedAt,
       occurredAt: new Date().toISOString(),
@@ -4705,11 +5034,13 @@ export class BrowserController {
         recoverable: true,
         details: {
           reason: diagnostic.reason,
+          actionDispatched: diagnostic.actionDispatched,
           clickDispatched: diagnostic.clickDispatched,
           actionOutcome: diagnostic.outcome,
           targetState: diagnostic.targetState,
+          dispatchEvidence: diagnostic.dispatchEvidence ?? null,
           suggestedAction: diagnostic.clickDispatched === false
-            ? 'Correct the reported visibility, enabled-state, or pointer-interception condition before retrying.'
+            ? 'Take a fresh snapshot before another attempt; the dispatch probe confirmed that no target click completed.'
             : 'Inspect authoritative page state before retrying because dispatch could not be ruled out.',
         },
         cause,
