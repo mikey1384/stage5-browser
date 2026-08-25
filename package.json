@@ -1,11 +1,11 @@
 {
   "name": "@stage5/browser",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Reliability-first local browser control for AI agents.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "bin": {
     "stage5-browser": "./dist/launcher.js"
@@ -14,8 +14,8 @@
     "build": "tsc -p tsconfig.json && node scripts/write-build-stamp.mjs",
     "dev": "tsx src/launcher.ts",
     "start": "node dist/launcher.js",
-    "test": "npm run build && PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest run",
-    "test:watch": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest",
+    "test": "npm run build && STAGE5_BROWSER_HEADLESS=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest run",
+    "test:watch": "STAGE5_BROWSER_HEADLESS=1 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers vitest",
     "check": "npm run test",
     "browser:install": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers playwright install chromium firefox webkit",
     "smoke": "npm run build && PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers node dist/smoke.js"
@@ -37,7 +37,7 @@
   },
   "stage5Browser": {
     "workerProtocolVersion": 6,
-    "toolCatalogVersion": 6,
-    "toolCount": 24
+    "toolCatalogVersion": 7,
+    "toolCount": 29
   }
 }

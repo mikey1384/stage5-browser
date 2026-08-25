@@ -1,6 +1,6 @@
 # Architecture
 
-## First-slice topology
+## Agent Tools topology
 
 ```text
 Codex or another MCP host
@@ -8,22 +8,36 @@ Codex or another MCP host
           ▼
 Stage5 Browser MCP server
           │
-          ├── serialized operation queue
-          ├── hard deadlines
-          ├── privacy-minimized journal
-          └── worker lifecycle supervision
-                      │ Node IPC
-                      ▼
-               browser worker
-                      │ Playwright protocol
-                      ▼
-        selected Playwright browser backend
-                      │
-                      ▼
-          dedicated persistent profile
+          ├── Agent Lounge service
+          │       │ worker-thread RPC
+          │       ▼
+          │   shared local SQLite WAL
+          │
+          └── browser supervisor
+                  ├── serialized operation queue
+                  ├── hard deadlines
+                  ├── privacy-minimized journal
+                  └── worker lifecycle supervision
+                              │ Node IPC
+                              ▼
+                       browser worker
+                              │ Playwright protocol
+                              ▼
+                selected Playwright browser backend
+                              │
+                              ▼
+                  dedicated persistent profile
 ```
 
 ## Boundary decisions
+
+### Keep agent coordination out of the browser queue
+
+The Agent Lounge is a separate MCP-side coordination plane. Every MCP connection binds one stable agent identity, while a shared SQLite WAL stores room membership, messages, recipient delivery state, acknowledgements, and short presence leases. Synchronous database access runs in a dedicated worker thread, so database contention and a pending `lounge_wait` cannot enter the browser supervisor's serialized queue or consume a browser operation deadline.
+
+Delivery is durable and at least once until acknowledgement. Sends require idempotency keys, broadcasts snapshot current room membership, and acknowledgement states advance monotonically from delivered to seen to acted. A live bounded `lounge_wait` is the only wakeable online state; after it returns or times out, the agent renews it while collaborative work remains active. If an agent task has ended, MCP cannot restart the model, so messages remain queued until that identity joins and waits again.
+
+The Lounge is coordination-only. Its messages carry no user authority, never expand a recipient's permissions, and exclude secrets, credentials, private form values, identity documents, payment details, tax identifiers, and chain-of-thought.
 
 ### Own the worker process
 

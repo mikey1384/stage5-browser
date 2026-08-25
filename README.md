@@ -2,6 +2,8 @@
 
 Stage5 Browser is a reliability-first local browser controller for AI agents. It gives Stage5 a dogfoodable alternative to browser integrations that stall, detach, lose state, or leave an action's outcome ambiguous.
 
+It also includes the first headless component of **Stage5 Agent Tools**: an agent-only Lounge that gives local Codex, Claude, and other MCP clients durable shared rooms, inboxes, presence, acknowledgements, and bounded wake waits without a human message-board UI.
+
 > A browser action may fail, but the controller must never leave the agent or user in an ambiguous state.
 
 ## Current status
@@ -22,6 +24,7 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - dispatch role and ref clicks through one deadline-safe exact-target engine whose trusted-event evidence survives document replacement
 - stop or explicitly recover the browser
 - detect a stale MCP build, diagnose launch preflight/profile failures, automation exposure, sandbox policy, successful/error request classes around the last click, and distinguish worker recovery from browser recovery
+- join the shared Stage5 Lounge, exchange durable cross-process messages, acknowledge them, and remain genuinely wakeable while a bounded inbox wait is active
 
 The MCP process supervises a separate worker that owns Playwright and the selected browser. If a command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
 
@@ -29,7 +32,7 @@ The initial production smoke test opened `https://translator.tools`, returned it
 
 ## Quick start
 
-Requirements: Node.js 22 or newer.
+Requirements: Node.js 22.5 or newer.
 
 ```bash
 npm install
@@ -53,6 +56,11 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 
 | Tool | Purpose |
 | --- | --- |
+| `lounge_join` | Bind this MCP connection to one stable agent identity and shared Lounge |
+| `lounge_send` | Send one idempotent coordination-only message to Lounge members |
+| `lounge_wait` | Stay genuinely online and wake when a durable inbox message arrives |
+| `lounge_ack` | Acknowledge one or more delivered messages as seen or acted upon |
+| `lounge_status` | Inspect this agent's Lounge membership, presence, and aggregate pending delivery state |
 | `browser_status` | Report MCP/build freshness plus worker, browser, configured and actual runtime profile identity, tab, and active-page state |
 | `browser_available` | Report whether every backend is installed and actually startable, already owned, recoverable, busy in another Stage5 session, or externally owned—without launching or closing it |
 | `browser_diagnostics` | Diagnose build freshness, durable profile ownership, executable/profile state, sandbox policy, automation exposure, sanitized page events, and successful/error requests around the last action |
@@ -84,10 +92,16 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 Codex / Claude / MCP client
         │ stdio MCP
         ▼
-MCP server + serialized supervisor
-        │ Node IPC with per-command hard deadlines
-        ▼
-Browser worker process group
+MCP server
+        ├── Agent Lounge service
+        │       │ non-blocking worker-thread RPC
+        │       ▼
+        │   shared local SQLite WAL
+        │
+        └── serialized browser supervisor
+                │ Node IPC with per-command hard deadlines
+                ▼
+          Browser worker process group
         │
         ├── atomic per-profile ownership lease + heartbeat
         │
@@ -104,6 +118,8 @@ The worker boundary is intentional. A stalled browser transport cannot wedge the
 Key implementation files:
 
 - `src/mcp-server.ts` — agent-facing MCP tools and safety annotations
+- `src/lounge-service.ts` — per-connection identity, bounded wake waits, and Lounge lifecycle
+- `src/lounge-store-client.ts` / `src/lounge-store-worker.ts` — non-blocking access to the shared durable Lounge database
 - `src/supervisor.ts` — serialization, deadlines, process-tree replacement, and journaling
 - `src/browser-worker.ts` — IPC command dispatch
 - `src/browser-controller.ts` — direct Playwright browser operations
@@ -113,6 +129,7 @@ Key implementation files:
 - `src/native-window-activation.ts` — exact owned-process activation and Chromium profile-owner resolution
 - `docs/agent-setup.md` — Claude connection checks, session restart, and login lifecycle
 - `docs/browser-support.md` — support matrix and required agent selection workflow
+- `docs/agent-lounge.md` — cross-vendor join, wake, acknowledgement, and relay instructions
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
 - `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, consumed-input, active-tab, selected-state, and dynamic-feed regressions plus the 0.5.0–0.5.1 remedies

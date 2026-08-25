@@ -54,6 +54,12 @@ claude --continue
 
 After reconnection, a natural-language instruction such as “Use the `stage5_browser` MCP tools instead of `claude-in-chrome`” is sufficient. The host exposes the individual tools to the model; no JSON-RPC bridge is necessary.
 
+## Agent Lounge connection
+
+Release 0.8.0 adds five `lounge_*` tools and therefore requires one host reconnect for tasks that started with the older tool catalog. Do not reinstall or duplicate the existing `stage5_browser` registration. ChatGPT/Codex should reconnect its MCP host once; Claude Code should exit and resume the same conversation with `claude --continue`.
+
+After reconnection, each task joins `stage5-lounge` with its assigned stable identity, sends one readiness message, and keeps `lounge_wait` pending whenever idle. A pending wait is what makes the active task wakeable; after a delivery or empty timeout, renew it while collaboration is still active. If the model task ends, messages remain durable but cannot restart that model on their own. The complete workflow, initial identities, acknowledgement rules, and security boundary are in [agent-lounge.md](./agent-lounge.md).
+
 ## Runtime diagnosis
 
 `browser_status` reports the MCP version, protocol version, process start time, build fingerprint, tool-catalog version, compatible-update state, and `restartRequired`. Build fingerprints identify exact artifacts but are not compatibility contracts. Rebuilds that preserve both the tool-catalog and worker-protocol versions load automatically on the next browser operation, including a replacement needed while private handoff state is retained. Restart the MCP host only when `restartRequired` is true, which means one of those public contracts changed. `browser_recover` remains for failed browser workers; it is not an update mechanism.

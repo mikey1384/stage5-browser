@@ -1,7 +1,7 @@
 {
   "name": "stage5-browser",
-  "version": "0.7.5",
-  "description": "Reliability-first browser control for AI agents.",
+  "version": "0.8.0",
+  "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
   },
@@ -16,11 +16,13 @@
   "interface": {
     "displayName": "Stage5 Browser",
     "shortDescription": "Reliable, recoverable browser control for agents.",
-    "longDescription": "Stage5 Browser provides isolated persistent sessions with durable per-profile ownership leases, truthful backend availability, private native-browser interaction handoffs, same-process Chromium attachment, phase-aware Firefox resume, runtime-profile and storage-continuity diagnostics, modal-scoped semantic inspection, snapshot-bound scrolling with virtualization-safe reference actions, one deadline-safe click engine with retained exact-target dispatch evidence, verified screenshot artifacts, local file selection with upload-state evidence, postcondition verification, cross-origin frame control, versioned recovery, and privacy-minimized diagnostics through MCP.",
+    "longDescription": "Stage5 Browser provides isolated persistent sessions with durable per-profile ownership leases, truthful backend availability, private native-browser interaction handoffs, same-process Chromium attachment, phase-aware Firefox resume, runtime-profile and storage-continuity diagnostics, modal-scoped semantic inspection, snapshot-bound scrolling with virtualization-safe reference actions, one deadline-safe click engine with retained exact-target dispatch evidence, verified screenshot artifacts, local file selection with upload-state evidence, postcondition verification, cross-origin frame control, versioned recovery, privacy-minimized diagnostics, and a durable agent-only Lounge for cross-vendor coordination through MCP.",
     "developerName": "Stage5 Tools LLC",
     "category": "Productivity",
     "capabilities": [
       "Browser automation",
+      "Agent-to-agent messaging",
+      "Durable agent inboxes",
       "Persistent sessions",
       "Durable profile ownership leases",
       "Truthful backend availability",

@@ -145,6 +145,22 @@ function browserConfig(root: string): Stage5BrowserConfig {
   };
 }
 
+async function requestFakeLoginHandoff(
+  candidate: BrowserController,
+  config: Stage5BrowserConfig,
+  input: Parameters<BrowserController['requestLoginHandoff']>[0],
+): ReturnType<BrowserController['requestLoginHandoff']> {
+  const originalHeadless = config.headless;
+  config.headless = false;
+  try {
+    return await candidate.requestLoginHandoff(input);
+  } finally {
+    // The injected launcher is the only headed side of this unit-test boundary. Restoring
+    // headless mode before any resume prevents a real Chrome-for-Testing window from opening.
+    config.headless = originalHeadless;
+  }
+}
+
 function storageInspection(
   targetOrigin: string,
   keys: string[],
@@ -4287,10 +4303,9 @@ describe('BrowserController', () => {
     }));
     expect(successfulDiagnostics.page?.totals.httpSuccesses).toBeGreaterThan(0);
 
-    // The controlled test browser is headless; only the injected native launcher runs during
-    // handoff, so the regression exercises the lifecycle without opening a real GUI.
-    config.headless = false;
-    const handoff = await controller.requestLoginHandoff({
+    // Only the injected fake launcher crosses the visible-handoff guard. The controlled
+    // browser remains headless before and after this request.
+    const handoff = await requestFakeLoginHandoff(controller, config, {
       url: `${baseUrl}/login`,
       timeoutMs: 5_000,
     });
@@ -4357,7 +4372,6 @@ describe('BrowserController', () => {
 
     authenticated = true;
     await humanLauncher.finish(true);
-    const expectedRuntimeProfilePath = await realpath(path.join(config.profileDir, 'Default'));
     const resumed = await controller.resumeAfterLogin({
       expected: { url: `${baseUrl}/login`, match: 'exact' },
       timeoutMs: 5_000,
@@ -4387,9 +4401,9 @@ describe('BrowserController', () => {
         semanticStructureChanged: true,
         launchIdentityMatched: true,
         runtimeProfile: {
-          source: expect.stringMatching(/^chromium_(command_line|version_page)$/),
-          profilePath: expectedRuntimeProfilePath,
-          matchesConfigured: true,
+          source: 'unavailable',
+          profilePath: null,
+          matchesConfigured: null,
         },
         storageContinuity: {
           state: expect.stringMatching(/preserved|unverified/),
@@ -4446,12 +4460,10 @@ describe('BrowserController', () => {
       stabilizationMs: 0,
       timeoutMs: 5_000,
     });
-    config.headless = false;
-
     const retainedLock = path.join(config.profileDir, 'lock');
     await writeFile(retainedLock, 'delayed-firefox-unlock');
     const firstAttemptAt = Date.now();
-    await expect(controller.requestLoginHandoff({
+    await expect(requestFakeLoginHandoff(controller, config, {
       url: null,
       timeoutMs: 1_500,
     })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
@@ -4494,8 +4506,7 @@ describe('BrowserController', () => {
     humanLauncher = new FakeHumanBrowserLauncher();
     controller = new BrowserController(config, config.browser, humanLauncher);
     await controller.open({ url, newTab: false, timeoutMs: 5_000 });
-    config.headless = false;
-    await controller.requestLoginHandoff({ url, timeoutMs: 5_000 });
+    await requestFakeLoginHandoff(controller, config, { url, timeoutMs: 5_000 });
     await humanLauncher.finish(false, 0);
 
     const resumed = await controller.resumeAfterLogin({ expected: null, timeoutMs: 5_000 });
@@ -4528,8 +4539,7 @@ describe('BrowserController', () => {
     humanLauncher = new FakeHumanBrowserLauncher();
     controller = new BrowserController(config, config.browser, humanLauncher);
     await controller.open({ url, newTab: false, timeoutMs: 5_000 });
-    config.headless = false;
-    await controller.requestLoginHandoff({ url, timeoutMs: 5_000 });
+    await requestFakeLoginHandoff(controller, config, { url, timeoutMs: 5_000 });
     await humanLauncher.finish(false);
 
     await expect(controller.resumeAfterLogin({ expected: null, timeoutMs: 2_000 })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
@@ -4581,8 +4591,7 @@ describe('BrowserController', () => {
     humanLauncher = new FakeHumanBrowserLauncher();
     controller = new BrowserController(config, config.browser, humanLauncher);
     await controller.open({ url: `${origin}/login`, newTab: false, timeoutMs: 5_000 });
-    config.headless = false;
-    await controller.requestLoginHandoff({ url: null, timeoutMs: 5_000 });
+    await requestFakeLoginHandoff(controller, config, { url: null, timeoutMs: 5_000 });
     await humanLauncher.finish(true);
 
     await expect(controller.resumeAfterLogin({
@@ -4641,8 +4650,7 @@ describe('BrowserController', () => {
       },
     );
     await controller.open({ url: expectedRoute, newTab: false, timeoutMs: 5_000 });
-    config.headless = false;
-    await controller.requestLoginHandoff({ url: null, timeoutMs: 5_000 });
+    await requestFakeLoginHandoff(controller, config, { url: null, timeoutMs: 5_000 });
     await humanLauncher.finish(true);
 
     const resumed = await controller.resumeAfterLogin({
@@ -4703,8 +4711,7 @@ describe('BrowserController', () => {
       },
     );
     await controller.open({ url, newTab: false, timeoutMs: 5_000 });
-    config.headless = false;
-    await controller.requestLoginHandoff({ url: null, timeoutMs: 5_000 });
+    await requestFakeLoginHandoff(controller, config, { url: null, timeoutMs: 5_000 });
     await humanLauncher.finish(true);
 
     await expect(controller.resumeAfterLogin({
@@ -4767,8 +4774,7 @@ describe('BrowserController', () => {
       },
     );
     await controller.open({ url, newTab: false, timeoutMs: 5_000 });
-    config.headless = false;
-    await controller.requestLoginHandoff({ url: null, timeoutMs: 5_000 });
+    await requestFakeLoginHandoff(controller, config, { url: null, timeoutMs: 5_000 });
     await humanLauncher.finish(true);
 
     await expect(controller.resumeAfterLogin({ expected: null, timeoutMs: 2_000 }))

@@ -60,6 +60,11 @@ try {
     throw new Error(`Expected ${MCP_TOOL_COUNT} MCP tools, received ${tools.tools.length}.`);
   }
   for (const required of [
+    'lounge_join',
+    'lounge_send',
+    'lounge_wait',
+    'lounge_ack',
+    'lounge_status',
     'browser_available',
     'browser_diagnostics',
     'browser_start',
