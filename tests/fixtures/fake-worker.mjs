@@ -4,12 +4,13 @@ import { existsSync, unlinkSync } from 'node:fs';
 let initialized = false;
 let browser = 'chromium';
 let humanAuthenticationInProgress = false;
+let browserRunning = false;
 const startedAt = new Date().toISOString();
 const buildFingerprint = process.env.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT ?? 'fake-worker';
 const runtime = {
   component: 'worker',
   version: '0.6.5',
-  protocolVersion: 5,
+  protocolVersion: 6,
   processId: process.pid,
   startedAt,
   buildModifiedAt: startedAt,
@@ -61,6 +62,7 @@ process.on('message', (message) => {
 
   if (message.command === 'requestLoginHandoff') {
     humanAuthenticationInProgress = true;
+    browserRunning = false;
     respond(message.id, {
       browser,
       browserConnected: false,
@@ -84,6 +86,7 @@ process.on('message', (message) => {
       return;
     }
     humanAuthenticationInProgress = false;
+    browserRunning = true;
     respond(message.id, {
       browser,
       browserConnected: true,
@@ -108,6 +111,7 @@ process.on('message', (message) => {
 
   if (message.command === 'switchBrowser') {
     browser = message.payload.browser;
+    browserRunning = true;
     respond(message.id, {
       browser,
       state: 'running',
@@ -121,6 +125,7 @@ process.on('message', (message) => {
   }
 
   if (message.command === 'start') {
+    browserRunning = true;
     respond(message.id, {
       browser,
       state: 'running',
@@ -136,9 +141,9 @@ process.on('message', (message) => {
   if (message.command === 'status') {
     respond(message.id, {
       browser,
-      state: 'stopped',
+      state: browserRunning ? 'running' : 'stopped',
       workerPid: process.pid,
-      browserConnected: false,
+      browserConnected: browserRunning,
       pages: [],
       activePageIndex: null,
       lastKnownUrl: null,
@@ -173,6 +178,7 @@ process.on('message', (message) => {
   }
 
   if (message.command === 'stop') {
+    browserRunning = false;
     respond(message.id, {
       browser,
       state: 'stopped',

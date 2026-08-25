@@ -357,14 +357,25 @@ export async function inspectTargetState(
       style.display !== 'none' &&
       style.visibility !== 'hidden' &&
       style.opacity !== '0';
-    const inViewport =
-      visible &&
-      rect.bottom > 0 &&
-      rect.right > 0 &&
-      rect.top < window.innerHeight &&
-      rect.left < window.innerWidth;
-    const centerX = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2));
-    const centerY = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2));
+    let visibleLeft = Math.max(0, rect.left);
+    let visibleRight = Math.min(window.innerWidth, rect.right);
+    let visibleTop = Math.max(0, rect.top);
+    let visibleBottom = Math.min(window.innerHeight, rect.bottom);
+    for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+      const ancestorStyle = getComputedStyle(ancestor);
+      const ancestorRect = ancestor.getBoundingClientRect();
+      if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowX)) {
+        visibleLeft = Math.max(visibleLeft, ancestorRect.left);
+        visibleRight = Math.min(visibleRight, ancestorRect.right);
+      }
+      if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowY)) {
+        visibleTop = Math.max(visibleTop, ancestorRect.top);
+        visibleBottom = Math.min(visibleBottom, ancestorRect.bottom);
+      }
+    }
+    const inViewport = visible && visibleRight > visibleLeft && visibleBottom > visibleTop;
+    const centerX = visibleLeft + (visibleRight - visibleLeft) / 2;
+    const centerY = visibleTop + (visibleBottom - visibleTop) / 2;
     const hit = inViewport ? document.elementFromPoint(centerX, centerY) : null;
     const receivesPointerEvents = hit === null
       ? null

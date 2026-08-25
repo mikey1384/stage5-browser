@@ -4,12 +4,14 @@ import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
+import type { Locator, Page } from 'playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { BrowserController } from '../src/browser-controller.js';
 import { playwrightBrowserType, resolveBrowserLaunchTarget } from '../src/browser-provider.js';
 import type { Stage5BrowserConfig } from '../src/config.js';
 import { Stage5BrowserError } from '../src/errors.js';
+import { inspectTargetState } from '../src/page-diagnostics.js';
 import type {
   HumanBrowserLaunchInput,
   HumanBrowserLauncher,
@@ -245,7 +247,8 @@ describe('BrowserController', () => {
       retryUsed: false,
       pageActivation: {
         controllerSelected: true,
-        bringToFrontSucceeded: true,
+        bringToFrontAttempted: false,
+        bringToFrontSucceeded: false,
         visibilityAfter: 'visible',
       },
     });
@@ -294,6 +297,62 @@ describe('BrowserController', () => {
       expect(reopened.responseStatus).toBe(200);
       expect(reopened.page.title).toBe('Stage5 Browser fixture');
     }
+  });
+
+  it('fills an unnamed snapshot-bound contenteditable with privacy-safe evidence', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Unnamed composer</title></head><body>
+        <div role="dialog" aria-modal="true" aria-label="Create post">
+          <span>What's on your mind?</span>
+          <div id="editor" role="textbox" contenteditable="true" tabindex="0" autofocus></div>
+          <button type="button">Post</button>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-fill-ref-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/compose`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    expect(observed.scope).toBe('modal');
+    const editorRef = observed.snapshot.match(/textbox[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(editorRef).toBeDefined();
+    if (editorRef === undefined) throw new Error('Unnamed composer fixture did not expose a textbox ref.');
+
+    const filled = await controller.fillRef({
+      snapshotId: observed.snapshotId,
+      ref: editorRef,
+      frameId: null,
+      value: 'Stage5 post draft',
+      timeoutMs: 3_000,
+    });
+    expect(filled.input).toMatchObject({
+      actionDispatched: true,
+      inputEventObserved: true,
+      valueMatchedBefore: false,
+      valueMatches: true,
+      targetConnectedAfter: true,
+      targetKind: 'contenteditable',
+    });
+    expect(JSON.stringify(filled)).not.toContain('Stage5 post draft');
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator('#editor').textContent()).resolves.toBe('Stage5 post draft');
+    await expect(controller.fillRef({
+      snapshotId: observed.snapshotId,
+      ref: editorRef,
+      frameId: null,
+      value: 'must not replay',
+      timeoutMs: 1_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'TARGET_NOT_FOUND',
+      details: { reason: 'stale_or_unknown_snapshot', actionDispatched: false },
+    });
   });
 
   it('reports an externally locked stopped profile and waits for a bounded owned release', async () => {
@@ -616,13 +675,8 @@ describe('BrowserController', () => {
       await controller.open({ url, newTab: false, stabilizationMs: 0, timeoutMs: 5_000 });
       const postcondition = {
         expectedUrl: null,
-        expectedSelected: null,
-        expectedVisible: {
-          role: 'option',
-          name: 'Business revenue',
-          exact: true,
-          frameId: null,
-        },
+        expectedSelected: true,
+        expectedVisible: null,
         timeoutMs: 1_000,
       } as const;
       if (target === 'role') {
@@ -955,6 +1009,155 @@ describe('BrowserController', () => {
       .toContain('replacements:1 replacement-clicks:0');
   });
 
+  it('accepts an observed postcondition as the terminal result after partial exact-target input', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Partial effect reconciliation</title></head><body>
+        <button id="validate" type="button">Check description</button>
+        <a href="#validated" id="result" hidden>Looks good</a>
+        <output id="counters">downs:0 clicks:0 replacement-clicks:0</output>
+        <script>
+          let downs = 0;
+          let clicks = 0;
+          let replacementClicks = 0;
+          const wire = (button, replacement) => {
+            button.addEventListener('mousedown', () => {
+              downs += 1;
+              document.querySelector('#result').hidden = false;
+              if (!replacement) {
+                const next = button.cloneNode(true);
+                wire(next, true);
+                button.replaceWith(next);
+              }
+              document.querySelector('#counters').textContent =
+                'downs:' + downs + ' clicks:' + clicks + ' replacement-clicks:' + replacementClicks;
+            });
+            button.addEventListener('click', () => {
+              clicks += 1;
+              if (replacement) replacementClicks += 1;
+            });
+          };
+          wire(document.querySelector('#validate'), false);
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-partial-effect-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/validate`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Check description',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: { role: 'link', name: 'Looks good', exact: true, frameId: null },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_role',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: false,
+      dispatchEvidence: {
+        pointerDownOnTarget: true,
+        mouseDownOnTarget: true,
+        clickOnTarget: false,
+      },
+    });
+    expect((await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 })).snapshot)
+      .toContain('downs:1 clicks:0 replacement-clicks:0');
+  });
+
+  it('does not foreground a controller-selected page whose renderer is already visible', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Background-safe input</title></head><body>
+        <button type="button" aria-selected="false" onclick="this.setAttribute('aria-selected', 'true')">
+          Inspect locally
+        </button>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-background-safe-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const bringToFront = vi.spyOn(page, 'bringToFront');
+
+    await controller.clickByRole({
+      role: 'button',
+      name: 'Inspect locally',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: true,
+        expectedVisible: null,
+        timeoutMs: 500,
+      },
+      timeoutMs: 3_000,
+    });
+
+    expect(bringToFront).not.toHaveBeenCalled();
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      dispatchEvidence: {
+        pageActivation: {
+          bringToFrontAttempted: false,
+          visibilityBefore: 'visible',
+          visibilityAfter: 'visible',
+        },
+      },
+    });
+  });
+
+  it('hit-tests the visible clipped portion of a target inside an overflow container', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Clipped actionability</title><style>
+        #dialog { position: relative; width: 320px; height: 80px; overflow: hidden; }
+        #target { position: absolute; top: 60px; left: 10px; width: 180px; height: 100px; }
+      </style></head><body>
+        <div id="dialog" role="dialog" aria-label="Business details">
+          <button id="target" type="button">Visible clipped control</button>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-clipped-target-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const state = await inspectTargetState(page.locator('#target') as Locator);
+    expect(state).toMatchObject({
+      visible: true,
+      enabled: true,
+      inViewport: true,
+      receivesPointerEvents: true,
+      coveredBy: null,
+    });
+  });
+
   it('recaptures a suspiciously uniform screenshot when semantic content exists', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -1035,6 +1238,50 @@ describe('BrowserController', () => {
     expect(tabs.pages).toHaveLength(1);
     expect(tabs.pages[0]?.url).toBe(postUrl);
     expect(tabs.activePageIndex).toBe(0);
+  });
+
+  it('restores the exact opaque Chromium target instead of choosing among duplicate tabs', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><head><title>Duplicate application</title></head><body>Application</body></html>');
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-target-continuity-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/application`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const firstPage = (controller as unknown as { activePage: Page }).activePage;
+    await controller.open({
+      url: `http://127.0.0.1:${port}/application`,
+      newTab: true,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const internals = controller as unknown as {
+      activePage: Page;
+      nativeControlRecord: NativeControlRecord | null;
+      chromiumTargetId: (page: Page) => Promise<string | null>;
+      restoreNativeSelectedPage: (pages: Page[]) => Promise<Page | null>;
+    };
+    const secondPage = internals.activePage;
+    const selectedTargetId = await internals.chromiumTargetId(firstPage);
+    expect(selectedTargetId).not.toBeNull();
+    internals.nativeControlRecord = {
+      version: 1,
+      kind: 'chromium_cdp',
+      browser: 'chromium',
+      state: 'controlled',
+      processId: process.pid,
+      port: 29_123,
+      createdAt: '2026-08-25T00:00:00.000Z',
+      selectedTargetId,
+    };
+
+    await expect(internals.restoreNativeSelectedPage([secondPage, firstPage])).resolves.toBe(firstPage);
   });
 
   it('returns bounded unique rendered-line context around text matches', async () => {
@@ -1420,8 +1667,8 @@ describe('BrowserController', () => {
         pageActivation: {
           attemptCount: 3,
           controllerSelected: true,
-          bringToFrontAttempted: true,
-          bringToFrontSucceeded: true,
+          bringToFrontAttempted: false,
+          bringToFrontSucceeded: false,
           visibilityAfter: 'visible',
           documentFocusedAfter: true,
         },

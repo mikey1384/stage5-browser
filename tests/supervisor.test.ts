@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -8,6 +8,7 @@ import type { Stage5BrowserConfig } from '../src/config.js';
 import type { BrowserStatus } from '../src/protocol.js';
 import type { RuntimeProcessInfo } from '../src/runtime-info.js';
 import { BrowserSupervisor, SupervisedOperationError } from '../src/supervisor.js';
+import { writeNativeControlRecord } from '../src/native-control-channel.js';
 
 const supervisors: BrowserSupervisor[] = [];
 const temporaryRoots: string[] = [];
@@ -53,7 +54,7 @@ afterEach(async () => {
 });
 
 describe('BrowserSupervisor', () => {
-  it('rolls a compatible runtime forward without restarting the MCP host', async () => {
+  it('defers a compatible runtime update while a non-reattachable browser is connected', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-compatible-reload-'));
     temporaryRoots.push(root);
     const environment = {
@@ -65,15 +66,15 @@ describe('BrowserSupervisor', () => {
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
       version: '0.6.2',
-      protocolVersion: 5,
+      protocolVersion: 6,
       processId: 123,
       startedAt: '2026-08-24T01:00:00.000Z',
       buildModifiedAt: '2026-08-24T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
       currentVersion: '0.6.2',
-      currentProtocolVersion: 5,
-      currentToolCatalogVersion: 5,
+      currentProtocolVersion: 6,
+      currentToolCatalogVersion: 6,
       compatibleUpdateAvailable: false,
       restartRequired: false,
       restartReason: null,
@@ -98,11 +99,17 @@ describe('BrowserSupervisor', () => {
       compatibleUpdateAvailable: true,
       suggestedAction: 'No host restart is needed.',
     };
-    const reloadStartedAt = Date.now();
-    const after = await supervisor.execute('status', {});
+    const deferred = await supervisor.execute('status', {});
 
+    expect(deferred.result.workerPid).toBe(before.result.workerPid);
+    expect(supervisor.workerRuntimeInfo).toMatchObject({
+      version: '0.6.5',
+      artifactFingerprint: 'build-1',
+    });
+
+    await supervisor.execute('stop', {});
+    const after = await supervisor.execute('status', {});
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
-    expect(Date.now() - reloadStartedAt).toBeGreaterThanOrEqual(250);
     expect(supervisor.workerRuntimeInfo).toMatchObject({
       version: '0.6.5',
       artifactFingerprint: 'build-2',
@@ -128,7 +135,7 @@ describe('BrowserSupervisor', () => {
 
     expect(second.result.workerPid).toBe(first.result.workerPid);
     expect(supervisor.workerRuntimeInfo).toMatchObject({
-      protocolVersion: 5,
+      protocolVersion: 6,
       artifactFingerprint: 'worker-build-2',
     });
   });
@@ -146,15 +153,15 @@ describe('BrowserSupervisor', () => {
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
       version: '0.6.7',
-      protocolVersion: 5,
+      protocolVersion: 6,
       processId: 123,
       startedAt: '2026-08-25T01:00:00.000Z',
       buildModifiedAt: '2026-08-25T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
       currentVersion: '0.6.7',
-      currentProtocolVersion: 5,
-      currentToolCatalogVersion: 5,
+      currentProtocolVersion: 6,
+      currentToolCatalogVersion: 6,
       compatibleUpdateAvailable: false,
       restartRequired: false,
       restartReason: null,
@@ -209,15 +216,15 @@ describe('BrowserSupervisor', () => {
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
       version: '0.6.2',
-      protocolVersion: 5,
+      protocolVersion: 6,
       processId: 123,
       startedAt: '2026-08-24T01:00:00.000Z',
       buildModifiedAt: '2026-08-24T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
       currentVersion: '0.6.2',
-      currentProtocolVersion: 5,
-      currentToolCatalogVersion: 5,
+      currentProtocolVersion: 6,
+      currentToolCatalogVersion: 6,
       compatibleUpdateAvailable: false,
       restartRequired: false,
       restartReason: null,
@@ -247,6 +254,16 @@ describe('BrowserSupervisor', () => {
     expect(during.result).toMatchObject({ state: 'awaiting_user', controlMode: 'human_bootstrap' });
 
     await supervisor.execute('resumeAfterLogin', { expected: null, timeoutMs: 500 });
+    await mkdir(path.join(root, 'profile'), { recursive: true });
+    await writeNativeControlRecord(path.join(root, 'profile'), {
+      version: 1,
+      kind: 'chromium_cdp',
+      browser: 'chromium',
+      state: 'controlled',
+      processId: before.result.workerPid,
+      port: 29_123,
+      createdAt: '2026-08-25T00:00:00.000Z',
+    });
     const after = await supervisor.execute('status', {});
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
     expect(supervisor.workerRuntimeInfo).toMatchObject({ artifactFingerprint: 'build-2' });

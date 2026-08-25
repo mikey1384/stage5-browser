@@ -115,6 +115,7 @@ import type {
   AuthenticationStatus,
   ClickPostcondition,
   FileInputObservation,
+  FillRefEvidence,
   FileProcessingExpectation,
   FileSelectionWarning,
   FrameSummary,
@@ -158,6 +159,7 @@ async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback:
 interface ObservedSnapshot {
   id: string;
   documentVersion: number;
+  scope: 'document' | 'modal';
   refs: Set<string>;
   fileInputs: Map<string, ObservedFileInput>;
   scrollContainers: Map<string, ObservedScrollContainer>;
@@ -1478,6 +1480,7 @@ export class BrowserController {
     warnings.push(...this.httpWarnings(responseStatus));
     const redirectChain = await this.redirectChain(response);
     const finalUrl = this.safeObservedUrl(page.url());
+    await this.persistNativeSelectedPage(page);
 
     return {
       page: await this.pageSummary(page),
@@ -1539,6 +1542,7 @@ export class BrowserController {
     this.observedSnapshots.set(frame, {
       id: snapshotId,
       documentVersion,
+      scope: root.scope,
       refs,
       fileInputs: observedFileInputs.inputs,
       scrollContainers: observedScrollContainers.containers,
@@ -1680,6 +1684,7 @@ export class BrowserController {
       this.authenticationHandoff.targetOrigin = this.urlOrigin(page.url());
     }
     await page.bringToFront();
+    await this.persistNativeSelectedPage(page);
     this.lastKnownUrl = page.url();
     return { page: await this.pageSummary(page, input.index), authenticationTargetUpdated };
   }
@@ -1713,14 +1718,43 @@ export class BrowserController {
         input.role,
         input.name,
       );
-      dispatchEvidence = await this.dispatchPreparedObservedClick(
-        page,
-        preparedTarget,
-        actionStartedAt,
-        actionDeadlineAt,
-        deadlineAt,
-        'click_by_role',
-      );
+      try {
+        dispatchEvidence = await this.dispatchPreparedObservedClick(
+          page,
+          preparedTarget,
+          actionStartedAt,
+          actionDeadlineAt,
+          deadlineAt,
+          'click_by_role',
+        );
+      } catch (error) {
+        const reconciled = await this.reconcilePartialClickEffect(
+          page,
+          frame,
+          locator,
+          input.postcondition,
+          error,
+          deadlineAt,
+        );
+        if (reconciled === null) throw error;
+        dispatchEvidence = reconciled.dispatchEvidence;
+        this.pageDiagnostics.recordAction(
+          page,
+          this.reconciledPartialEffectDiagnostic(
+            'click_by_role',
+            page,
+            preparedTarget.targetState,
+            actionStartedAt,
+            reconciled,
+          ),
+        );
+        this.lastKnownUrl = page.url();
+        return {
+          page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
+          frame: this.frameSummary(frame, page),
+          postcondition: reconciled.postcondition,
+        };
+      }
       const postcondition = await this.verifyClickPostcondition(
         page,
         frame,
@@ -1852,14 +1886,43 @@ export class BrowserController {
         actionStartedAt,
         actionDeadlineAt,
       );
-      dispatchEvidence = await this.dispatchPreparedObservedClick(
-        page,
-        preparedTarget,
-        actionStartedAt,
-        actionDeadlineAt,
-        deadlineAt,
-        'click_by_ref',
-      );
+      try {
+        dispatchEvidence = await this.dispatchPreparedObservedClick(
+          page,
+          preparedTarget,
+          actionStartedAt,
+          actionDeadlineAt,
+          deadlineAt,
+          'click_by_ref',
+        );
+      } catch (error) {
+        const reconciled = await this.reconcilePartialClickEffect(
+          page,
+          frame,
+          preparedTarget.locator,
+          input.postcondition,
+          error,
+          deadlineAt,
+        );
+        if (reconciled === null) throw error;
+        dispatchEvidence = reconciled.dispatchEvidence;
+        this.pageDiagnostics.recordAction(
+          page,
+          this.reconciledPartialEffectDiagnostic(
+            'click_by_ref',
+            page,
+            preparedTarget.targetState,
+            actionStartedAt,
+            reconciled,
+          ),
+        );
+        this.lastKnownUrl = page.url();
+        return {
+          page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
+          frame: this.frameSummary(frame, page),
+          postcondition: reconciled.postcondition,
+        };
+      }
       try {
         const postcondition = await this.verifyClickPostcondition(
           page,
@@ -2113,6 +2176,249 @@ export class BrowserController {
     this.lastKnownUrl = page.url();
     this.discardObservedSnapshot(frame);
     return { page: await this.pageSummary(page), frame: this.frameSummary(frame, page) };
+  }
+
+  async fillRef(input: BrowserCommandInput<'fillRef'>): Promise<BrowserCommandOutput<'fillRef'>> {
+    const page = await this.ensureActivePage(await this.ensureContext());
+    const frame = this.resolveFrame(page, input.frameId);
+    const observed = this.observedSnapshots.get(frame);
+    if (
+      observed === undefined ||
+      observed.id !== input.snapshotId ||
+      observed.documentVersion !== this.documentVersion(frame)
+    ) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The textbox reference does not belong to the latest snapshot of the current document.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'stale_or_unknown_snapshot',
+            actionDispatched: false,
+            suggestedAction: 'Take one fresh semantic snapshot and use only its textbox ref.',
+          },
+        },
+      );
+    }
+    if (!observed.refs.has(input.ref)) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The requested textbox reference was not present in that snapshot.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'reference_not_observed',
+            actionDispatched: false,
+            suggestedAction: 'Take one fresh semantic snapshot and use only an observed textbox ref.',
+          },
+        },
+      );
+    }
+
+    const locator = frame.locator(`aria-ref=${input.ref}`);
+    let handle: ElementHandle<HTMLElement> | null = null;
+    try {
+      const count = await locator.count();
+      if (count !== 1) {
+        throw new Stage5BrowserError(
+          count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
+          count === 0
+            ? 'The observed textbox reference no longer resolves in the current document.'
+            : 'The observed textbox reference resolves to multiple elements.',
+          {
+            recoverable: true,
+            details: {
+              reason: count === 0 ? 'reference_no_longer_available' : 'reference_resolution_ambiguous',
+              actionDispatched: false,
+              suggestedAction: 'Take one fresh semantic snapshot; Stage5 Browser did not enter any text.',
+            },
+          },
+        );
+      }
+      handle = await locator.elementHandle() as ElementHandle<HTMLElement> | null;
+      if (handle === null) {
+        throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The observed textbox detached before filling.', {
+          recoverable: true,
+          details: {
+            reason: 'target_detached_before_input',
+            actionDispatched: false,
+            suggestedAction: 'Take one fresh semantic snapshot; Stage5 Browser did not enter any text.',
+          },
+        });
+      }
+
+      const currentRoot = await this.snapshotRoot(frame);
+      const insideSameScope = currentRoot.scope === observed.scope && await currentRoot.locator.evaluate(
+        (root, target) => target instanceof Element && (root === target || root.contains(target)),
+        handle,
+      ).catch(() => false);
+      if (!insideSameScope) {
+        throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The snapshot scope changed before filling.', {
+          recoverable: true,
+          details: {
+            reason: 'snapshot_scope_changed',
+            actionDispatched: false,
+            suggestedAction: 'Take one fresh modal or document snapshot; Stage5 Browser did not enter any text.',
+          },
+        });
+      }
+
+      const target = await handle.evaluate((element) => {
+        const input = element instanceof HTMLInputElement;
+        const type = input ? element.type.toLocaleLowerCase() : '';
+        const supportedInput = input && ![
+          'button', 'checkbox', 'file', 'hidden', 'image', 'password', 'radio', 'range', 'reset', 'submit',
+        ].includes(type);
+        const targetKind = supportedInput
+          ? 'input'
+          : element instanceof HTMLTextAreaElement
+            ? 'textarea'
+            : element instanceof HTMLElement && element.isContentEditable
+              ? 'contenteditable'
+              : null;
+        return {
+          targetKind,
+          enabled: !('disabled' in element && Boolean((element as HTMLInputElement).disabled))
+            && element.getAttribute('aria-disabled') !== 'true',
+        };
+      });
+      if (target.targetKind === null || !target.enabled) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The observed reference is not an enabled text editor.', {
+          recoverable: true,
+          details: {
+            reason: target.targetKind === null ? 'target_not_text_editable' : 'target_not_enabled',
+            actionDispatched: false,
+            suggestedAction: 'Take a fresh snapshot and choose an enabled textbox, textarea, or contenteditable ref.',
+          },
+        });
+      }
+
+      await locator.scrollIntoViewIfNeeded({ timeout: input.timeoutMs });
+      const targetState = await inspectTargetState(handle);
+      if (targetState === null || !targetState.visible || !targetState.inViewport || !targetState.enabled) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The observed text editor is not safely actionable.', {
+          recoverable: true,
+          details: {
+            reason: targetState === null ? 'target_detached_before_input' : 'target_not_actionable',
+            actionDispatched: false,
+            targetState,
+            suggestedAction: 'Take a fresh snapshot after the editor is visible and enabled; Stage5 Browser did not enter any text.',
+          },
+        });
+      }
+
+      const pageActivation = await this.activateSelectedPageForInput(page, 1);
+      if (!this.pageIsActivatedForInput(pageActivation)) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The selected page could not become a visible input target.', {
+          recoverable: true,
+          details: {
+            reason: 'page_not_active',
+            actionDispatched: false,
+            pageActivation,
+            suggestedAction: 'Inspect the selected tab and renderer visibility; Stage5 Browser did not enter any text.',
+          },
+        });
+      }
+
+      const observer = await handle.evaluateHandle((element) => {
+        const currentValue = (): string => element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+          ? element.value
+          : element.textContent ?? '';
+        const initialValue = currentValue();
+        let inputEventObserved = false;
+        let changeEventObserved = false;
+        const onInput = (event: Event): void => {
+          if (event.composedPath().includes(element)) inputEventObserved = true;
+        };
+        const onChange = (event: Event): void => {
+          if (event.composedPath().includes(element)) changeEventObserved = true;
+        };
+        document.addEventListener('input', onInput, true);
+        document.addEventListener('change', onChange, true);
+        return {
+          finish: (expected: string) => {
+            document.removeEventListener('input', onInput, true);
+            document.removeEventListener('change', onChange, true);
+            return {
+              inputEventObserved,
+              changeEventObserved,
+              valueMatchedBefore: initialValue === expected,
+              valueMatches: currentValue() === expected,
+              targetConnectedAfter: element.isConnected,
+            };
+          },
+          cancel: () => {
+            document.removeEventListener('input', onInput, true);
+            document.removeEventListener('change', onChange, true);
+          },
+        };
+      });
+
+      let fillError: unknown = null;
+      try {
+        await locator.fill(input.value, { timeout: input.timeoutMs });
+      } catch (error) {
+        fillError = error;
+      }
+      const observedInput = await observer.evaluate((controller, expected) => controller.finish(expected), input.value)
+        .catch(() => null);
+      if (observedInput === null) {
+        await observer.evaluate((controller) => controller.cancel()).catch(() => undefined);
+      }
+      await observer.dispose().catch(() => undefined);
+      if (observedInput === null) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'Text input evidence could not be retained.', {
+          recoverable: true,
+          details: {
+            reason: 'input_evidence_unavailable',
+            actionDispatched: fillError === null ? 'unknown' : false,
+            suggestedAction: 'Inspect the editor with a fresh snapshot. Do not repeat the fill unless its current state proves that retrying is safe.',
+          },
+          cause: fillError,
+        });
+      }
+      const actionDispatched: FillRefEvidence['actionDispatched'] =
+        observedInput.inputEventObserved || observedInput.changeEventObserved
+          ? true
+          : observedInput.valueMatchedBefore
+            ? false
+            : fillError === null
+              ? true
+              : 'unknown';
+      const evidence: FillRefEvidence = {
+        actionDispatched,
+        inputEventObserved: observedInput.inputEventObserved,
+        changeEventObserved: observedInput.changeEventObserved,
+        valueMatchedBefore: observedInput.valueMatchedBefore,
+        valueMatches: observedInput.valueMatches,
+        targetConnectedAfter: observedInput.targetConnectedAfter,
+        targetKind: target.targetKind as FillRefEvidence['targetKind'],
+      };
+      if (!evidence.valueMatches) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The observed editor did not retain the requested value.', {
+          recoverable: true,
+          details: {
+            reason: 'input_value_not_confirmed',
+            actionDispatched: evidence.actionDispatched,
+            inputEvidence: evidence,
+            suggestedAction: evidence.actionDispatched === false
+              ? 'Take one fresh snapshot before another attempt; Stage5 Browser confirmed that no input event occurred.'
+              : 'Inspect the editor with a fresh snapshot. Do not replay because partial text input may already be present.',
+          },
+          cause: fillError,
+        });
+      }
+
+      this.lastKnownUrl = page.url();
+      return {
+        page: await this.pageSummary(page),
+        frame: this.frameSummary(frame, page),
+        input: evidence,
+      };
+    } finally {
+      await handle?.dispose().catch(() => undefined);
+      this.discardObservedSnapshot(frame);
+    }
   }
 
   async scroll(input: BrowserCommandInput<'scroll'>): Promise<BrowserCommandOutput<'scroll'>> {
@@ -3725,7 +4031,10 @@ export class BrowserController {
           },
         );
       }
-      const durableRecord = { ...record, state: 'controlled' as const };
+      const durableRecord = {
+        ...(this.nativeControlRecord ?? record),
+        state: 'controlled' as const,
+      };
       const profileRoot = launchIdentity.profile.userDataDir;
       if (profileRoot === null) {
         throw new Stage5BrowserError(
@@ -3797,7 +4106,9 @@ export class BrowserController {
     this.bindContext(context);
 
     const pages = context.pages();
-    this.activePage = pages.at(-1) ?? (await context.newPage());
+    this.activePage = await this.restoreNativeSelectedPage(pages)
+      ?? pages.at(-1)
+      ?? (await context.newPage());
     const activePageBeforeRuntimeInspection = this.activePage;
     const initialPages = context.pages().filter((page) => !page.isClosed());
     const [runtimeProfile, controlledStartStorage, navigatorWebdriver] = await Promise.all([
@@ -3819,6 +4130,7 @@ export class BrowserController {
         : boundedValue(this.activePage.evaluate(() => navigator.webdriver), 500, null),
     ]);
     this.activePage = activePageBeforeRuntimeInspection;
+    await this.persistNativeSelectedPage(this.activePage);
     this.runtimeProfileObservation = runtimeProfile;
     const targetOriginLoadedAtControlledStart = authenticationProbeTargetOrigin !== null
       && (
@@ -3842,6 +4154,51 @@ export class BrowserController {
     this.lastLaunchFailure = null;
     this.state = 'running';
     return this.status();
+  }
+
+  private async restoreNativeSelectedPage(pages: Page[]): Promise<Page | null> {
+    const targetId = this.nativeControlRecord?.selectedTargetId;
+    if (targetId === undefined || targetId === null) return null;
+    for (const page of pages) {
+      if (await this.chromiumTargetId(page) === targetId) return page;
+    }
+    return null;
+  }
+
+  private async persistNativeSelectedPage(page: Page): Promise<void> {
+    const record = this.nativeControlRecord;
+    if (record === null || page.isClosed()) return;
+    const selectedTargetId = await this.chromiumTargetId(page);
+    if (selectedTargetId === null || record.selectedTargetId === selectedTargetId) return;
+    const updated: NativeControlRecord = { ...record, selectedTargetId };
+    try {
+      await writeNativeControlRecord(
+        profileDirForBrowser(this.config, this.selectedBrowser),
+        updated,
+      );
+      this.nativeControlRecord = updated;
+    } catch {
+      // The current in-memory selection remains authoritative. A later explicit
+      // tab selection/open will retry persistence without exposing the target ID.
+    }
+  }
+
+  private async chromiumTargetId(page: Page): Promise<string | null> {
+    let session: Awaited<ReturnType<BrowserContext['newCDPSession']>> | null = null;
+    try {
+      session = await page.context().newCDPSession(page);
+      const response = await session.send('Target.getTargetInfo') as {
+        targetInfo?: { targetId?: unknown };
+      };
+      const targetId = response.targetInfo?.targetId;
+      return typeof targetId === 'string' && targetId.length > 0 && targetId.length <= 256
+        ? targetId
+        : null;
+    } catch {
+      return null;
+    } finally {
+      await session?.detach().catch(() => undefined);
+    }
   }
 
   private async closeOwnedNativeBrowser(
@@ -3991,6 +4348,7 @@ export class BrowserController {
     const page = context.pages().findLast((candidate) => !candidate.isClosed()) ?? (await context.newPage());
     this.bindPage(page);
     this.activePage = page;
+    await this.persistNativeSelectedPage(page);
     return page;
   }
 
@@ -4028,6 +4386,7 @@ export class BrowserController {
     }
     if (pages.length === 1 && pages[0] !== undefined) {
       this.activePage = pages[0];
+      await this.persistNativeSelectedPage(pages[0]);
       if (handoff !== null) {
         handoff.page = pages[0];
         handoff.targetOrigin = this.urlOrigin(pages[0].url());
@@ -4053,6 +4412,7 @@ export class BrowserController {
       return;
     }
     this.activePage = visiblePages[0];
+    await this.persistNativeSelectedPage(visiblePages[0]);
     if (handoff !== null && visiblePages[0] !== handoff.page) {
       handoff.page = visiblePages[0];
       handoff.targetOrigin = this.urlOrigin(visiblePages[0].url());
@@ -4717,6 +5077,61 @@ export class BrowserController {
     );
   }
 
+  private async reconcilePartialClickEffect(
+    page: Page,
+    clickedFrame: Frame,
+    clickedLocator: Locator,
+    postcondition: ClickPostcondition | null,
+    dispatchError: unknown,
+    deadlineAt: number,
+  ): Promise<{
+    postcondition: PostconditionResult;
+    dispatchEvidence: SanitizedClickDispatchEvidence | null;
+    actionDispatched: boolean | 'unknown';
+    clickDispatched: boolean | 'unknown';
+  } | null> {
+    if (!(dispatchError instanceof Stage5BrowserError) || postcondition === null) return null;
+    const actionDispatched = dispatchError.details?.actionDispatched;
+    const clickDispatched = dispatchError.details?.clickDispatched;
+    if (
+      (actionDispatched !== true && actionDispatched !== 'unknown') ||
+      (clickDispatched !== false && clickDispatched !== 'unknown')
+    ) {
+      return null;
+    }
+    const dispatchEvidence = (dispatchError.details?.dispatchEvidence ?? null) as
+      SanitizedClickDispatchEvidence | null;
+    try {
+      const observed = await this.verifyClickPostcondition(
+        page,
+        clickedFrame,
+        clickedLocator,
+        postcondition,
+        remainingUntil(deadlineAt),
+      );
+      if (observed === null) return null;
+      return { postcondition: observed, dispatchEvidence, actionDispatched, clickDispatched };
+    } catch (postconditionError) {
+      if (!(postconditionError instanceof Stage5BrowserError) || postconditionError.code !== 'POSTCONDITION_FAILED') {
+        throw postconditionError;
+      }
+      throw new Stage5BrowserError(
+        dispatchError.code,
+        dispatchError.message,
+        {
+          recoverable: dispatchError.recoverable,
+          details: {
+            ...dispatchError.details,
+            effectPostconditionObserved: false,
+            effectPostconditionChecks: postconditionError.details?.checks ?? [],
+            suggestedAction: 'Inspect authoritative state with a fresh snapshot. Partial or ambiguous input occurred and the requested effect was not confirmed; do not retry or replay the action.',
+          },
+          cause: dispatchError,
+        },
+      );
+    }
+  }
+
   private async postconditionChecks(
     page: Page,
     clickedFrame: Frame,
@@ -4799,6 +5214,10 @@ export class BrowserController {
           const ariaPressed = candidate.getAttribute('aria-pressed');
           if (ariaPressed !== null) {
             return ariaPressed === 'true';
+          }
+          const ariaExpanded = candidate.getAttribute('aria-expanded');
+          if (ariaExpanded !== null) {
+            return ariaExpanded === 'true';
           }
           const ariaCurrent = candidate.getAttribute('aria-current');
           if (ariaCurrent !== null) {
@@ -6487,6 +6906,21 @@ export class BrowserController {
   ): Promise<SanitizedPageActivationEvidence> {
     const before = await this.observePageActivation(page);
     const controllerSelected = this.preferredPage() === page;
+    if (controllerSelected && before.visibility === 'visible') {
+      return {
+        attemptCount,
+        controllerSelected,
+        bringToFrontAttempted: false,
+        bringToFrontSucceeded: false,
+        visibilityBefore: before.visibility,
+        visibilityAfter: before.visibility,
+        documentFocusedBefore: before.documentFocused,
+        documentFocusedAfter: before.documentFocused,
+        nativeWindow: priorNativeWindow?.attempted === true
+          ? priorNativeWindow
+          : this.nativeWindowActivationNotRequired(),
+      };
+    }
     let bringToFrontSucceeded = false;
     try {
       await page.bringToFront();
@@ -6766,7 +7200,7 @@ export class BrowserController {
 
   private pageIsActivatedForInput(evidence: SanitizedPageActivationEvidence): boolean {
     return evidence.controllerSelected &&
-      evidence.bringToFrontSucceeded &&
+      (!evidence.bringToFrontAttempted || evidence.bringToFrontSucceeded) &&
       evidence.visibilityAfter === 'visible';
   }
 
@@ -6790,10 +7224,22 @@ export class BrowserController {
           rect.top >= window.innerHeight || rect.left >= window.innerWidth) {
           return null;
         }
-        const left = Math.max(0, rect.left);
-        const right = Math.min(window.innerWidth - 1, rect.right);
-        const top = Math.max(0, rect.top);
-        const bottom = Math.min(window.innerHeight - 1, rect.bottom);
+        let left = Math.max(0, rect.left);
+        let right = Math.min(window.innerWidth, rect.right);
+        let top = Math.max(0, rect.top);
+        let bottom = Math.min(window.innerHeight, rect.bottom);
+        for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+          const ancestorStyle = getComputedStyle(ancestor);
+          const ancestorRect = ancestor.getBoundingClientRect();
+          if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowX)) {
+            left = Math.max(left, ancestorRect.left);
+            right = Math.min(right, ancestorRect.right);
+          }
+          if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowY)) {
+            top = Math.max(top, ancestorRect.top);
+            bottom = Math.min(bottom, ancestorRect.bottom);
+          }
+        }
         if (right <= left || bottom <= top) return null;
         const x = left + (right - left) / 2;
         const y = top + (bottom - top) / 2;
@@ -7542,6 +7988,31 @@ export class BrowserController {
       clickDispatched: true,
       targetState,
       ...(dispatchEvidence === null ? {} : { dispatchEvidence }),
+      pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
+      startedAt,
+      occurredAt: new Date().toISOString(),
+    };
+  }
+
+  private reconciledPartialEffectDiagnostic(
+    action: SanitizedActionDiagnostic['action'],
+    page: Page,
+    targetState: SafeTargetState | null,
+    startedAt: string,
+    reconciled: {
+      dispatchEvidence: SanitizedClickDispatchEvidence | null;
+      actionDispatched: boolean | 'unknown';
+      clickDispatched: boolean | 'unknown';
+    },
+  ): SanitizedActionDiagnostic {
+    return {
+      action,
+      outcome: 'succeeded',
+      reason: null,
+      actionDispatched: reconciled.actionDispatched,
+      clickDispatched: reconciled.clickDispatched,
+      targetState,
+      ...(reconciled.dispatchEvidence === null ? {} : { dispatchEvidence: reconciled.dispatchEvidence }),
       pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
       startedAt,
       occurredAt: new Date().toISOString(),

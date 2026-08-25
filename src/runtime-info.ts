@@ -5,10 +5,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Stage5BrowserError } from './errors.js';
 
-export const STAGE5_BROWSER_VERSION = '0.6.12';
-export const WORKER_PROTOCOL_VERSION = 5;
-export const TOOL_CATALOG_VERSION = 5;
-export const MCP_TOOL_COUNT = 23;
+export const STAGE5_BROWSER_VERSION = '0.7.0';
+export const WORKER_PROTOCOL_VERSION = 6;
+export const TOOL_CATALOG_VERSION = 6;
+export const MCP_TOOL_COUNT = 24;
 
 export type RuntimeComponent = 'mcp' | 'worker';
 export type RuntimeRestartReason =
@@ -97,7 +97,7 @@ export function negotiateWorkerInitialization(
     artifactFingerprint: legacyFingerprint,
     compatibleUpdateAvailable: true,
     suggestedAction:
-      'No MCP reconnect is needed. Finish the current operation; the next operation will adopt the completed worker identity.',
+      'No MCP reconnect is needed. Finish the current operation; the next safe worker boundary will adopt the completed identity without discarding connected page state.',
     initializationCompatibility: {
       mode: 'legacy_fingerprint_gate',
       loadedArtifactFingerprint: workerRuntime.artifactFingerprint,

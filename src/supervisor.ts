@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { SUPPORTED_BROWSER_PRODUCTS, type BrowserProduct } from './browser-provider.js';
-import type { Stage5BrowserConfig } from './config.js';
+import { profileDirForBrowser, type Stage5BrowserConfig } from './config.js';
 import { isLaunchFailureReason } from './diagnostics.js';
 import {
   Stage5BrowserError,
@@ -11,6 +11,7 @@ import {
   type SerializedStage5BrowserError,
 } from './errors.js';
 import { OperationJournal, type OperationOutcome } from './operation-journal.js';
+import { readNativeControlRecord } from './native-control-channel.js';
 import type {
   BrowserCommandInput,
   BrowserCommandName,
@@ -369,28 +370,27 @@ export class BrowserSupervisor {
       return;
     }
 
-    const reopenUrl = this.browserWasConnected ? this.lastKnownUrl : null;
-    const restartBrowser = this.browserWasConnected;
+    // A normal Playwright context cannot be reattached after shutdown. Reopening
+    // only its last URL loses unsaved DOM/form state and exact tab identity, so a
+    // compatible update is deferred until explicit stop. A proven native-CDP
+    // browser is the sole safe exception: the browser process stays alive while
+    // the worker reconnects to its exact persistent context.
+    const nativeControl = this.browserWasConnected
+      ? await readNativeControlRecord(
+        profileDirForBrowser(this.config, this.selectedBrowser),
+        this.selectedBrowser,
+      )
+      : null;
+    if (this.browserWasConnected && nativeControl?.state !== 'controlled') return;
+
     await this.terminateWorker(undefined, 'graceful');
     this.expectedBuildFingerprint = runtime.currentArtifactFingerprint;
     await this.ensureWorker();
-
-    if (!restartBrowser) {
-      return;
+    if (nativeControl !== null) {
+      const status = await this.request('start', {}, this.config.workerStartupTimeoutMs);
+      this.captureLastKnownUrl(status);
+      this.captureBrowserConnection(status);
     }
-    if (reopenUrl !== null && reopenUrl !== 'about:blank') {
-      const opened = await this.request(
-        'open',
-        { url: reopenUrl, newTab: false, timeoutMs: this.config.navigationTimeoutMs },
-        this.config.navigationTimeoutMs + 2_000,
-      );
-      this.captureLastKnownUrl(opened);
-      this.browserWasConnected = true;
-      return;
-    }
-    const status = await this.request('start', {}, this.config.workerStartupTimeoutMs);
-    this.captureLastKnownUrl(status);
-    this.browserWasConnected = status.browserConnected;
   }
 
   private request<Name extends BrowserCommandName>(

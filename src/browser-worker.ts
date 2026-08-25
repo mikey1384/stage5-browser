@@ -81,6 +81,8 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
       return controller.setInputFiles(request.payload);
     case 'fillByRole':
       return controller.fillByRole(request.payload);
+    case 'fillRef':
+      return controller.fillRef(request.payload);
     case 'scroll':
       return controller.scroll(request.payload);
     case 'findText':

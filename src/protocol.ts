@@ -90,6 +90,16 @@ export interface PostconditionResult {
   checks: PostconditionCheck[];
 }
 
+export interface FillRefEvidence {
+  actionDispatched: boolean | 'unknown';
+  inputEventObserved: boolean;
+  changeEventObserved: boolean;
+  valueMatchedBefore: boolean;
+  valueMatches: boolean;
+  targetConnectedAfter: boolean;
+  targetKind: 'contenteditable' | 'input' | 'textarea';
+}
+
 export type NavigationWarningCode =
   | 'dom_readiness_timeout'
   | 'http_authentication_required'
@@ -480,6 +490,20 @@ export interface BrowserCommandMap {
       timeoutMs: number;
     };
     output: { page: PageSummary; frame: FrameSummary };
+  };
+  fillRef: {
+    input: {
+      snapshotId: string;
+      ref: string;
+      frameId: string | null;
+      value: string;
+      timeoutMs: number;
+    };
+    output: {
+      page: PageSummary;
+      frame: FrameSummary;
+      input: FillRefEvidence;
+    };
   };
   scroll: {
     input: {

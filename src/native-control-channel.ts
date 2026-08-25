@@ -17,6 +17,8 @@ export interface NativeControlRecord {
   processId: number;
   port: number;
   createdAt: string;
+  /** Opaque CDP target identity used only to preserve exact tab selection across worker replacement. */
+  selectedTargetId?: string | null;
 }
 
 export function nativeControlEndpoint(record: NativeControlRecord): string {
@@ -42,7 +44,12 @@ function isNativeControlRecord(value: unknown): value is NativeControlRecord {
     && Number.isSafeInteger(candidate.port)
     && (candidate.port ?? 0) >= 1_024
     && (candidate.port ?? 0) <= 65_535
-    && typeof candidate.createdAt === 'string';
+    && typeof candidate.createdAt === 'string'
+    && (
+      candidate.selectedTargetId === undefined ||
+      candidate.selectedTargetId === null ||
+      (typeof candidate.selectedTargetId === 'string' && candidate.selectedTargetId.length > 0 && candidate.selectedTargetId.length <= 256)
+    );
 }
 
 export async function writeNativeControlRecord(

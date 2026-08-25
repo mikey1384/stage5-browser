@@ -32,6 +32,7 @@ describe('native browser control record', () => {
       processId: process.pid,
       port: 29_123,
       createdAt: '2026-08-24T12:00:00.000Z',
+      selectedTargetId: 'opaque-target-1',
     };
 
     await writeNativeControlRecord(root, record);
