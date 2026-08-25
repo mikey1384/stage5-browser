@@ -162,9 +162,15 @@ interface ObservedSnapshot {
   scope: 'document' | 'modal';
   scopeHandle: ElementHandle<HTMLElement>;
   refs: Set<string>;
+  refSemantics: Map<string, ObservedReferenceSemantic>;
   textEditors: Map<string, ObservedTextEditor>;
   fileInputs: Map<string, ObservedFileInput>;
   scrollContainers: Map<string, ObservedScrollContainer>;
+}
+
+interface ObservedReferenceSemantic {
+  role: string;
+  name: string;
 }
 
 interface ObservedTextEditor {
@@ -289,6 +295,14 @@ interface PreparedObservedClickTarget {
   activation: 'keyboard_enter' | 'pointer';
   pageActivation: SanitizedPageActivationEvidence | null;
 }
+
+type ObservedReferenceResolution =
+  | {
+      kind: 'resolved';
+      locator: Locator;
+      handle: ElementHandle<HTMLElement | SVGElement>;
+    }
+  | { kind: 'ambiguous' | 'missing' | 'scope_changed' | 'timeout' };
 
 interface ClickDispatchConclusion {
   actionDispatched: boolean | 'unknown';
@@ -1575,6 +1589,7 @@ export class BrowserController {
         scope: root.scope,
         scopeHandle,
         refs,
+        refSemantics: this.snapshotReferenceSemantics(snapshot, refs),
         textEditors: observedTextEditors.editors,
         fileInputs: observedFileInputs.inputs,
         scrollContainers: observedScrollContainers.containers,
@@ -1699,6 +1714,30 @@ export class BrowserController {
         retryUsed,
       },
     };
+  }
+
+  private snapshotReferenceSemantics(
+    snapshot: string,
+    refs: Set<string>,
+  ): Map<string, ObservedReferenceSemantic> {
+    const semantics = new Map<string, ObservedReferenceSemantic>();
+    for (const line of snapshot.split('\n')) {
+      const ref = line.match(/\[ref=([^\]]+)\]/u)?.[1];
+      if (ref === undefined || !refs.has(ref)) continue;
+      const semantic = line.match(/^\s*-\s+([a-z][a-z0-9_-]*)(?:\s+"((?:\\.|[^"\\])*)")?/iu);
+      const role = semantic?.[1]?.toLocaleLowerCase();
+      if (role === undefined) continue;
+      let name = '';
+      if (semantic?.[2] !== undefined) {
+        try {
+          name = JSON.parse(`"${semantic[2]}"`) as string;
+        } catch {
+          name = semantic[2];
+        }
+      }
+      semantics.set(ref, { role, name });
+    }
+    return semantics;
   }
 
   async tabs(): Promise<BrowserCommandOutput<'tabs'>> {
@@ -1872,7 +1911,6 @@ export class BrowserController {
       });
     }
 
-    const locator = frame.locator(`aria-ref=${input.ref}`);
     const startedAt = Date.now();
     const deadlineAt = startedAt + input.timeoutMs;
     const actionDeadlineAt = deadlineAt - clickFinalizationReserve(input.timeoutMs);
@@ -1881,57 +1919,53 @@ export class BrowserController {
     let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
     this.pageDiagnostics.beginAction(page, actionStartedAt);
     try {
-      let count: number;
-      try {
-        count = await boundedValue(
-          locator.count(),
-          Math.max(1, remainingUntil(actionDeadlineAt)),
-          -1,
-        );
-      } catch {
+      const pageActivation = await this.primeSelectedPageForTargetPreparation(
+        page,
+        actionDeadlineAt,
+        actionStartedAt,
+        'click_by_ref',
+      );
+      const resolution = await this.resolveObservedReferenceAfterActivation(
+        frame,
+        observed,
+        input.ref,
+        actionDeadlineAt,
+      );
+      if (resolution.kind !== 'resolved') {
+        const ambiguous = resolution.kind === 'ambiguous';
+        const timedOut = resolution.kind === 'timeout';
+        const scopeChanged = resolution.kind === 'scope_changed';
         this.failClickBeforeDispatch(
           page,
           actionStartedAt,
           null,
-          'target_missing',
-          'reference_resolution_failed',
-          'The observed reference could not be resolved before click preparation.',
-          'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
-          'TARGET_NOT_FOUND',
-        );
-      }
-      if (count === -1) {
-        this.failClickBeforeDispatch(
-          page,
-          actionStartedAt,
-          null,
-          'timeout',
-          'reference_resolution_deadline_expired',
-          'The observed reference could not be resolved before the shared click deadline.',
-          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no click was dispatched.',
-          'OPERATION_FAILED',
-        );
-      }
-      if (count !== 1) {
-        this.failClickBeforeDispatch(
-          page,
-          actionStartedAt,
-          null,
-          count === 0 ? 'target_missing' : 'ambiguous_target',
-          'reference_resolution_changed',
-          count === 0
-            ? 'The observed reference no longer resolves in the current document.'
-            : 'The observed reference resolved to multiple elements; Stage5 Browser will not choose one.',
-          'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
-          count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
+          ambiguous ? 'ambiguous_target' : timedOut ? 'timeout' : 'target_missing',
+          ambiguous
+            ? 'reference_semantic_rebind_ambiguous'
+            : timedOut
+              ? 'reference_resolution_deadline_expired'
+              : scopeChanged
+                ? 'snapshot_scope_changed'
+                : 'reference_resolution_changed',
+          ambiguous
+            ? 'More than one live element matched the fresh reference semantic inside its retained snapshot scope.'
+            : timedOut
+              ? 'The fresh reference could not be resolved before the shared click deadline.'
+              : scopeChanged
+                ? 'The retained snapshot scope changed before the fresh reference could be resolved.'
+                : 'The fresh reference no longer resolves and no unique semantic replacement exists inside its retained snapshot scope.',
+          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
+          ambiguous ? 'AMBIGUOUS_TARGET' : timedOut ? 'OPERATION_FAILED' : 'TARGET_NOT_FOUND',
         );
       }
       preparedTarget = await this.prepareObservedClickTarget(
         page,
         frame,
-        locator,
+        resolution.locator,
         actionStartedAt,
         actionDeadlineAt,
+        pageActivation,
+        resolution.handle,
       );
       try {
         dispatchEvidence = await this.dispatchPreparedObservedClick(
@@ -6720,15 +6754,159 @@ export class BrowserController {
     return useKeyboard ? 'keyboard_enter' : 'pointer';
   }
 
+  private async resolveObservedReferenceAfterActivation(
+    frame: Frame,
+    observed: ObservedSnapshot,
+    ref: string,
+    actionDeadlineAt: number,
+  ): Promise<ObservedReferenceResolution> {
+    const scopeConnected = await boundedValue(
+      observed.scopeHandle.evaluate((root) => root.isConnected),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      null,
+    );
+    if (scopeConnected === null) return { kind: 'timeout' };
+    if (!scopeConnected) return { kind: 'scope_changed' };
+
+    const exactLocator = frame.locator(`aria-ref=${ref}`);
+    const exactCount = await boundedValue(
+      exactLocator.count(),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      -1,
+    );
+    if (exactCount < 0) return { kind: 'timeout' };
+    if (exactCount > 1) return { kind: 'ambiguous' };
+
+    const semantic = observed.refSemantics.get(ref);
+    if (exactCount === 1) {
+      const exactHandle = await boundedValue(
+        exactLocator.elementHandle(),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      );
+      if (exactHandle !== null) {
+        const insideScope = await boundedValue(
+          observed.scopeHandle.evaluate(
+            (root, target) => root.isConnected && target.isConnected && (root === target || root.contains(target)),
+            exactHandle,
+          ),
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+          null,
+        );
+        if (insideScope === null) {
+          await exactHandle.dispose().catch(() => undefined);
+          return { kind: 'timeout' };
+        }
+        if (insideScope) {
+          if (semantic === undefined) {
+            return { kind: 'resolved', locator: exactLocator, handle: exactHandle };
+          }
+          const identity = await boundedValue(
+            this.observeClickTargetIdentity(exactHandle),
+            Math.max(1, remainingUntil(actionDeadlineAt)),
+            null,
+          );
+          if (identity !== null && identity.role === semantic.role && identity.name === semantic.name) {
+            return { kind: 'resolved', locator: exactLocator, handle: exactHandle };
+          }
+        }
+        await exactHandle.dispose().catch(() => undefined);
+      }
+    }
+
+    if (semantic === undefined) return { kind: 'missing' };
+    const transitionDeadline = Math.min(
+      actionDeadlineAt,
+      Date.now() + CLICK_REF_REBIND_SETTLE_MS,
+    );
+    do {
+      const resolved = await this.resolveUniqueSemanticReferenceInScope(
+        frame,
+        observed.scopeHandle,
+        semantic,
+        transitionDeadline,
+      );
+      if (resolved.kind !== 'missing' || Date.now() >= transitionDeadline) {
+        return resolved;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, transitionDeadline - Date.now())));
+    } while (Date.now() < transitionDeadline);
+    return { kind: 'missing' };
+  }
+
+  private async resolveUniqueSemanticReferenceInScope(
+    frame: Frame,
+    scopeHandle: ElementHandle<HTMLElement>,
+    semantic: ObservedReferenceSemantic,
+    deadlineAt: number,
+  ): Promise<ObservedReferenceResolution> {
+    try {
+      const locator = frame.getByRole(
+        semantic.role as Parameters<Frame['getByRole']>[0],
+        { name: semantic.name, exact: true },
+      );
+      const count = await boundedValue(
+        locator.count(),
+        Math.max(1, remainingUntil(deadlineAt)),
+        -1,
+      );
+      if (count < 0) return { kind: 'timeout' };
+      if (count > CLICK_REF_ELEMENT_CANDIDATES) return { kind: 'ambiguous' };
+
+      let match: { locator: Locator; handle: ElementHandle<HTMLElement | SVGElement> } | null = null;
+      for (let index = 0; index < count; index += 1) {
+        if (remainingUntil(deadlineAt) <= 0) {
+          await match?.handle.dispose().catch(() => undefined);
+          return { kind: 'timeout' };
+        }
+        const candidateLocator = locator.nth(index);
+        const handle = await boundedValue(
+          candidateLocator.elementHandle(),
+          Math.max(1, remainingUntil(deadlineAt)),
+          null,
+        );
+        if (handle === null) continue;
+        const insideScope = await boundedValue(
+          scopeHandle.evaluate(
+            (root, target) => root.isConnected && target.isConnected && (root === target || root.contains(target)),
+            handle,
+          ),
+          Math.max(1, remainingUntil(deadlineAt)),
+          null,
+        );
+        if (insideScope === null) {
+          await handle.dispose().catch(() => undefined);
+          await match?.handle.dispose().catch(() => undefined);
+          return { kind: 'timeout' };
+        }
+        if (!insideScope) {
+          await handle.dispose().catch(() => undefined);
+          continue;
+        }
+        if (match !== null) {
+          await handle.dispose().catch(() => undefined);
+          await match.handle.dispose().catch(() => undefined);
+          return { kind: 'ambiguous' };
+        }
+        match = { locator: candidateLocator, handle };
+      }
+      return match === null ? { kind: 'missing' } : { kind: 'resolved', ...match };
+    } catch {
+      return { kind: 'missing' };
+    }
+  }
+
   private async prepareObservedClickTarget(
     page: Page,
     frame: Frame,
     locator: Locator,
     startedAt: string,
     actionDeadlineAt: number,
+    pageActivation: SanitizedPageActivationEvidence | null = null,
+    retainedHandle: ElementHandle<HTMLElement | SVGElement> | null = null,
   ): Promise<PreparedObservedClickTarget> {
     let preparedLocator = locator;
-    let handle = await boundedValue(
+    let handle = retainedHandle ?? await boundedValue(
       locator.elementHandle(),
       Math.max(1, remainingUntil(actionDeadlineAt)),
       null,
@@ -6894,7 +7072,7 @@ export class BrowserController {
       handle,
       targetState,
       activation: await this.preferredObservedClickActivation(handle, actionDeadlineAt),
-      pageActivation: null,
+      pageActivation,
     };
   }
 

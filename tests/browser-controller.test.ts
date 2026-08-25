@@ -1540,6 +1540,205 @@ describe('BrowserController', () => {
     });
   });
 
+  it('rebinds a fresh ref to one semantically identical in-scope replacement after page activation', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Reference activation replacement</title></head><body>
+        <button id="outside" type="button">Funding source</button>
+        <div role="dialog" aria-modal="true" aria-label="Business details">
+          <button id="opener" type="button" aria-selected="false"
+            onclick="this.setAttribute('aria-selected', 'true'); document.querySelector('#counter').textContent = 'clicks:1'">
+            Funding source
+          </button>
+          <output id="counter">clicks:0</output>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-ref-activation-rebind-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    expect(observed.scope).toBe('modal');
+    const openerRef = observed.snapshot.match(/button "Funding source"[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(openerRef).toBeDefined();
+    if (openerRef === undefined) throw new Error('Activation replacement fixture did not expose its opener ref.');
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    let activationCount = 0;
+    const activation = vi.spyOn(
+      controller as unknown as {
+        activateSelectedPageForInput: (...args: unknown[]) => Promise<SanitizedPageActivationEvidence>;
+      },
+      'activateSelectedPageForInput',
+    ).mockImplementation(async () => {
+      activationCount += 1;
+      if (activationCount === 1) {
+        await page.locator('#opener').evaluate((opener) => opener.replaceWith(opener.cloneNode(true)));
+      }
+      return {
+        attemptCount: activationCount,
+        controllerSelected: true,
+        bringToFrontAttempted: activationCount === 1,
+        bringToFrontSucceeded: true,
+        visibilityBefore: activationCount === 1 ? 'hidden' : 'visible',
+        visibilityAfter: 'visible',
+        documentFocusedBefore: false,
+        documentFocusedAfter: true,
+        nativeWindow: {
+          required: activationCount === 1,
+          attempted: activationCount === 1,
+          supported: true,
+          ownedProcessAvailable: true,
+          ownedProcessRunning: true,
+          targetWindowResolved: true,
+          windowStateBefore: 'normal',
+          normalizationAttempted: false,
+          normalizationSucceeded: null,
+          applicationActivationAttempted: activationCount === 1,
+          applicationActivationSucceeded: true,
+          applicationHiddenBefore: false,
+          unhideAttempted: false,
+          unhideSucceeded: null,
+          activationRequestAccepted: true,
+          frontProcessFallbackAttempted: false,
+          frontProcessFallbackProcessResolved: null,
+          frontProcessFallbackRequestSucceeded: null,
+          applicationFrontmostAfter: true,
+          applicationHiddenAfter: false,
+          result: activationCount === 1 ? 'activated' : 'not_required',
+        },
+      };
+    });
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: openerRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: true,
+        expectedVisible: null,
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect(activation).toHaveBeenCalledTimes(2);
+    await expect(page.locator('#counter').textContent()).resolves.toBe('clicks:1');
+    await expect(page.locator('#outside').getAttribute('aria-selected')).resolves.toBeNull();
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
+    });
+  });
+
+  it('fails closed when activation creates multiple in-scope semantic replacements for a fresh ref', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Ambiguous reference replacement</title></head><body>
+        <div role="dialog" aria-modal="true" aria-label="Business details">
+          <button id="opener" type="button" onclick="document.querySelector('#counter').textContent = 'clicks:1'">
+            Funding source
+          </button>
+          <output id="counter">clicks:0</output>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-ref-activation-ambiguous-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    const openerRef = observed.snapshot.match(/button "Funding source"[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(openerRef).toBeDefined();
+    if (openerRef === undefined) throw new Error('Ambiguous replacement fixture did not expose its opener ref.');
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    vi.spyOn(
+      controller as unknown as {
+        activateSelectedPageForInput: (...args: unknown[]) => Promise<SanitizedPageActivationEvidence>;
+      },
+      'activateSelectedPageForInput',
+    ).mockImplementation(async (...args) => {
+      const attemptCount = typeof args[1] === 'number' ? args[1] : 1;
+      if (attemptCount === 1) {
+        await page.locator('#opener').evaluate((opener) => {
+          const first = opener.cloneNode(true);
+          const second = opener.cloneNode(true);
+          opener.replaceWith(first, second);
+        });
+      }
+      return {
+        attemptCount,
+        controllerSelected: true,
+        bringToFrontAttempted: attemptCount === 1,
+        bringToFrontSucceeded: true,
+        visibilityBefore: attemptCount === 1 ? 'hidden' : 'visible',
+        visibilityAfter: 'visible',
+        documentFocusedBefore: false,
+        documentFocusedAfter: true,
+        nativeWindow: {
+          required: attemptCount === 1,
+          attempted: attemptCount === 1,
+          supported: true,
+          ownedProcessAvailable: true,
+          ownedProcessRunning: true,
+          targetWindowResolved: true,
+          windowStateBefore: 'normal',
+          normalizationAttempted: false,
+          normalizationSucceeded: null,
+          applicationActivationAttempted: attemptCount === 1,
+          applicationActivationSucceeded: true,
+          applicationHiddenBefore: false,
+          unhideAttempted: false,
+          unhideSucceeded: null,
+          activationRequestAccepted: true,
+          frontProcessFallbackAttempted: false,
+          frontProcessFallbackProcessResolved: null,
+          frontProcessFallbackRequestSucceeded: null,
+          applicationFrontmostAfter: true,
+          applicationHiddenAfter: false,
+          result: attemptCount === 1 ? 'activated' : 'not_required',
+        },
+      };
+    });
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: openerRef,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 3_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'AMBIGUOUS_TARGET',
+      details: {
+        reason: 'reference_semantic_rebind_ambiguous',
+        actionDispatched: false,
+        clickDispatched: false,
+      },
+    });
+    await expect(page.locator('#counter').textContent()).resolves.toBe('clicks:0');
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'blocked',
+      reason: 'ambiguous_target',
+      actionDispatched: false,
+      clickDispatched: false,
+    });
+  });
+
   it('hit-tests the visible clipped portion of a target inside an overflow container', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -2079,7 +2278,7 @@ describe('BrowserController', () => {
         forcedFallbackUsed: true,
         pageMouseFallbackUsed: true,
         pageActivation: {
-          attemptCount: 3,
+          attemptCount: 4,
           controllerSelected: true,
           bringToFrontAttempted: false,
           bringToFrontSucceeded: false,
@@ -2327,14 +2526,12 @@ describe('BrowserController', () => {
         reason: 'page_not_active',
         actionDispatched: false,
         clickDispatched: false,
-        dispatchEvidence: {
-          pageActivation: {
-            visibilityAfter: 'hidden',
-            nativeWindow: {
-              applicationActivationSucceeded: true,
-              frontProcessFallbackAttempted: false,
-              result: 'visibility_unchanged',
-            },
+        pageActivation: {
+          visibilityAfter: 'hidden',
+          nativeWindow: {
+            applicationActivationSucceeded: true,
+            frontProcessFallbackAttempted: false,
+            result: 'visibility_unchanged',
           },
         },
       },
