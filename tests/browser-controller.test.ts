@@ -1171,17 +1171,24 @@ describe('BrowserController', () => {
         <div id="choices" role="dialog" aria-label="Customer locations" hidden>
           <div role="option">United States</div>
         </div>
-        <output id="counters">pointerdowns:0 mousedowns:0 clicks:0 replacements:0</output>
+        <output id="counters">enterdowns:0 spacedowns:0 pointerdowns:0 mousedowns:0 clicks:0 replacements:0</output>
         <script>
-          const counters = { pointerdowns: 0, mousedowns: 0, clicks: 0, replacements: 0 };
+          const counters = { enterdowns: 0, spacedowns: 0, pointerdowns: 0, mousedowns: 0, clicks: 0, replacements: 0 };
           const renderCounters = () => {
             document.querySelector('#counters').textContent =
-              'pointerdowns:' + counters.pointerdowns +
+              'enterdowns:' + counters.enterdowns +
+              ' spacedowns:' + counters.spacedowns +
+              ' pointerdowns:' + counters.pointerdowns +
               ' mousedowns:' + counters.mousedowns +
               ' clicks:' + counters.clicks +
               ' replacements:' + counters.replacements;
           };
           const wire = (button) => {
+            button.addEventListener('keydown', (event) => {
+              if (event.key === 'Enter') counters.enterdowns += 1;
+              if (event.key === ' ') counters.spacedowns += 1;
+              renderCounters();
+            });
             button.addEventListener('pointerdown', () => { counters.pointerdowns += 1; renderCounters(); });
             button.addEventListener('mousedown', () => {
               counters.mousedowns += 1;
@@ -1234,7 +1241,193 @@ describe('BrowserController', () => {
     })).resolves.toMatchObject({ postcondition: { passed: true } });
     const page = (controller as unknown as { activePage: Page }).activePage;
     await expect(page.locator('#counters').textContent()).resolves
-      .toBe('pointerdowns:0 mousedowns:0 clicks:1 replacements:0');
+      .toBe('enterdowns:0 spacedowns:1 pointerdowns:0 mousedowns:0 clicks:1 replacements:0');
+  });
+
+  it('uses one Space activation for a native popup when Enter would detach the opener', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Selection-intent keyboard activation</title></head><body>
+        <button id="opener" type="button" aria-haspopup="menu">Account type</button>
+        <div id="choices" role="menu" hidden>
+          <div role="menuitem">Business operations</div>
+        </div>
+        <output id="counters">enterdowns:0 spacedowns:0 pointerdowns:0 clicks:0 replacements:0</output>
+        <script>
+          const counters = { enterdowns: 0, spacedowns: 0, pointerdowns: 0, clicks: 0, replacements: 0 };
+          const renderCounters = () => {
+            document.querySelector('#counters').textContent =
+              'enterdowns:' + counters.enterdowns +
+              ' spacedowns:' + counters.spacedowns +
+              ' pointerdowns:' + counters.pointerdowns +
+              ' clicks:' + counters.clicks +
+              ' replacements:' + counters.replacements;
+          };
+          const wire = (button) => {
+            button.addEventListener('keydown', (event) => {
+              if (event.key === 'Enter') {
+                counters.enterdowns += 1;
+                counters.replacements += 1;
+                const next = button.cloneNode(true);
+                wire(next);
+                button.replaceWith(next);
+              }
+              if (event.key === ' ') counters.spacedowns += 1;
+              renderCounters();
+            });
+            button.addEventListener('pointerdown', () => { counters.pointerdowns += 1; renderCounters(); });
+            button.addEventListener('click', () => {
+              counters.clicks += 1;
+              document.querySelector('#choices').hidden = false;
+              renderCounters();
+            });
+          };
+          wire(document.querySelector('#opener'));
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-selection-space-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/popup`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Account type',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'menuitem',
+          name: 'Business operations',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator('#counters').textContent()).resolves
+      .toBe('enterdowns:0 spacedowns:1 pointerdowns:0 clicks:1 replacements:0');
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_role',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
+      dispatchEvidence: {
+        keyDownOnTarget: true,
+        keyUpOnTarget: true,
+        pointerDownOnTarget: false,
+        clickOnTarget: true,
+        targetConnectedAfter: true,
+      },
+    });
+  });
+
+  it('does not fall back when a selection-intent Space keydown detaches without opening options', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Selection-intent detachment</title></head><body>
+        <button id="opener" type="button" aria-haspopup="menu">Account type</button>
+        <output id="counters">enterdowns:0 spacedowns:0 pointerdowns:0 clicks:0 replacements:0 replacement-clicks:0</output>
+        <script>
+          const counters = {
+            enterdowns: 0,
+            spacedowns: 0,
+            pointerdowns: 0,
+            clicks: 0,
+            replacements: 0,
+            replacementClicks: 0,
+          };
+          const renderCounters = () => {
+            document.querySelector('#counters').textContent =
+              'enterdowns:' + counters.enterdowns +
+              ' spacedowns:' + counters.spacedowns +
+              ' pointerdowns:' + counters.pointerdowns +
+              ' clicks:' + counters.clicks +
+              ' replacements:' + counters.replacements +
+              ' replacement-clicks:' + counters.replacementClicks;
+          };
+          const wire = (button, replacement) => {
+            button.addEventListener('keydown', (event) => {
+              if (event.key === 'Enter') counters.enterdowns += 1;
+              if (event.key === ' ' && !replacement) {
+                counters.spacedowns += 1;
+                counters.replacements += 1;
+                const next = button.cloneNode(true);
+                wire(next, true);
+                button.replaceWith(next);
+              }
+              renderCounters();
+            });
+            button.addEventListener('pointerdown', () => { counters.pointerdowns += 1; renderCounters(); });
+            button.addEventListener('click', () => {
+              counters.clicks += 1;
+              if (replacement) counters.replacementClicks += 1;
+              renderCounters();
+            });
+          };
+          wire(document.querySelector('#opener'), false);
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-selection-space-detach-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/popup`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Account type',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'menuitem',
+          name: 'Business operations',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 500,
+      },
+      timeoutMs: 3_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'detached',
+        actionDispatched: true,
+        clickDispatched: false,
+        suggestedAction: expect.stringMatching(/do not retry/i),
+        dispatchEvidence: {
+          keyDownOnTarget: true,
+          keyUpOnTarget: false,
+          pointerDownOnTarget: false,
+          clickOnTarget: false,
+          targetConnectedAfter: false,
+        },
+      },
+    });
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator('#counters').textContent()).resolves.toBe(
+      'enterdowns:0 spacedowns:1 pointerdowns:0 clicks:0 replacements:1 replacement-clicks:0',
+    );
   });
 
   it('never falls back or replays when a popup opener detaches during keyboard activation', async () => {

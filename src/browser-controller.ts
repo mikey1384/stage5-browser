@@ -292,7 +292,7 @@ interface PreparedObservedClickTarget {
   locator: Locator;
   handle: ElementHandle<HTMLElement | SVGElement>;
   targetState: SafeTargetState;
-  activation: 'keyboard_enter' | 'pointer';
+  activation: 'keyboard_enter' | 'keyboard_space' | 'pointer';
   pageActivation: SanitizedPageActivationEvidence | null;
 }
 
@@ -366,6 +366,13 @@ const CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
 const CLICK_ROLE_RESOLUTION_TIMEOUT_MS = 1_000;
 const CLICK_RESULT_FINALIZATION_RESERVE_MS = 500;
+const POPUP_OPTION_ROLES = new Set([
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'treeitem',
+]);
 const FILL_RESULT_FINALIZATION_RESERVE_MS = 750;
 const FILL_REF_VIEWPORT_PREPARATION_TIMEOUT_MS = 500;
 const SCROLL_RESULT_FINALIZATION_RESERVE_MS = 750;
@@ -1836,6 +1843,7 @@ export class BrowserController {
         actionDeadlineAt,
         input.role,
         input.name,
+        input.postcondition,
       );
       try {
         dispatchEvidence = await this.dispatchPreparedObservedClick(
@@ -1997,6 +2005,7 @@ export class BrowserController {
         resolution.locator,
         actionStartedAt,
         actionDeadlineAt,
+        input.postcondition,
         pageActivation,
         resolution.handle,
       );
@@ -6699,6 +6708,7 @@ export class BrowserController {
     actionDeadlineAt: number,
     role: string,
     name: string,
+    postcondition: ClickPostcondition | null,
   ): Promise<PreparedObservedClickTarget> {
     let lastTargetState = await this.requireUniqueClickTarget(
       page,
@@ -6811,7 +6821,11 @@ export class BrowserController {
         locator,
         handle,
         targetState,
-        activation: await this.preferredObservedClickActivation(handle, actionDeadlineAt),
+        activation: await this.preferredObservedClickActivation(
+          handle,
+          actionDeadlineAt,
+          postcondition,
+        ),
         pageActivation,
       };
     }
@@ -6880,13 +6894,17 @@ export class BrowserController {
   private async preferredObservedClickActivation(
     handle: ElementHandle<HTMLElement | SVGElement>,
     actionDeadlineAt: number,
+    postcondition: ClickPostcondition | null,
   ): Promise<PreparedObservedClickTarget['activation']> {
     const useKeyboard = await boundedValue(
       handle.evaluate((element) => element instanceof HTMLButtonElement),
       Math.max(1, remainingUntil(actionDeadlineAt)),
       false,
     );
-    return useKeyboard ? 'keyboard_enter' : 'pointer';
+    if (!useKeyboard) return 'pointer';
+    const expectedRole = postcondition?.expectedVisible?.role.toLocaleLowerCase() ?? null;
+    const optionExpected = expectedRole !== null && POPUP_OPTION_ROLES.has(expectedRole);
+    return optionExpected ? 'keyboard_space' : 'keyboard_enter';
   }
 
   private async resolveObservedReferenceAfterActivation(
@@ -7037,6 +7055,7 @@ export class BrowserController {
     locator: Locator,
     startedAt: string,
     actionDeadlineAt: number,
+    postcondition: ClickPostcondition | null,
     pageActivation: SanitizedPageActivationEvidence | null = null,
     retainedHandle: ElementHandle<HTMLElement | SVGElement> | null = null,
   ): Promise<PreparedObservedClickTarget> {
@@ -7206,7 +7225,11 @@ export class BrowserController {
       locator: preparedLocator,
       handle,
       targetState,
-      activation: await this.preferredObservedClickActivation(handle, actionDeadlineAt),
+      activation: await this.preferredObservedClickActivation(
+        handle,
+        actionDeadlineAt,
+        postcondition,
+      ),
       pageActivation,
     };
   }
@@ -7371,13 +7394,16 @@ export class BrowserController {
           Math.max(1, Math.floor(remainingUntil(actionDeadlineAt) * 0.35)),
         ),
       );
-      if (preparedTarget.activation === 'keyboard_enter') {
+      if (preparedTarget.activation !== 'pointer') {
         let keyboardError: unknown = null;
         try {
-          await preparedTarget.handle.press('Enter', {
-            noWaitAfter: true,
-            timeout: normalAttemptTimeoutMs,
-          });
+          await preparedTarget.handle.press(
+            preparedTarget.activation === 'keyboard_space' ? 'Space' : 'Enter',
+            {
+              noWaitAfter: true,
+              timeout: normalAttemptTimeoutMs,
+            },
+          );
         } catch (error) {
           keyboardError = error;
         }
