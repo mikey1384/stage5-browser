@@ -278,6 +278,12 @@ interface PreparedObservedClickTarget {
   locator: Locator;
   handle: ElementHandle<HTMLElement | SVGElement>;
   targetState: SafeTargetState;
+  activation: 'keyboard_enter' | 'pointer';
+}
+
+interface ClickDispatchConclusion {
+  actionDispatched: boolean | 'unknown';
+  clickDispatched: boolean | 'unknown';
 }
 
 type RawClickDispatchEvidence = Omit<
@@ -1699,68 +1705,14 @@ export class BrowserController {
     let preparedTarget: PreparedObservedClickTarget | null = null;
     let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
     try {
-      const initialTargetState = await this.requireUniqueClickTarget(
+      preparedTarget = await this.prepareRoleClickTarget(
         page,
         locator,
-        'click_by_role',
+        actionStartedAt,
+        actionDeadlineAt,
         input.role,
         input.name,
-        remainingUntil(actionDeadlineAt),
       );
-      const handle = await boundedValue(
-        locator.elementHandle(),
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        null,
-      );
-      if (handle === null) {
-        this.failClickBeforeDispatch(
-          page,
-          actionStartedAt,
-          initialTargetState,
-          'detached',
-          'detached',
-          'The uniquely matched role target detached before exact-target dispatch began.',
-          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no click was dispatched.',
-          'TARGET_NOT_FOUND',
-          'click_by_role',
-        );
-      }
-      try {
-        await locator.scrollIntoViewIfNeeded({
-          timeout: Math.max(1, remainingUntil(actionDeadlineAt)),
-        });
-      } catch {
-        // The exact handle is inspected below; failure remains pre-dispatch.
-      }
-      const targetState = await boundedValue(
-        inspectTargetState(handle),
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        null,
-      );
-      const failure = targetState === null
-        ? { diagnostic: 'detached' as const, reason: 'role_target_detached_before_dispatch' }
-        : !targetState.visible || !targetState.inViewport
-          ? { diagnostic: 'not_visible' as const, reason: 'role_target_not_actionable_in_viewport' }
-          : !targetState.enabled
-            ? { diagnostic: 'not_enabled' as const, reason: 'role_target_not_enabled' }
-            : targetState.receivesPointerEvents === false
-              ? { diagnostic: 'pointer_intercepted' as const, reason: 'role_target_covered' }
-              : null;
-      if (failure !== null || targetState === null) {
-        await handle.dispose().catch(() => undefined);
-        this.failClickBeforeDispatch(
-          page,
-          actionStartedAt,
-          targetState,
-          failure?.diagnostic ?? 'detached',
-          failure?.diagnostic ?? 'detached',
-          'The uniquely matched role target was not safely actionable before exact-target dispatch.',
-          'Take a fresh semantic snapshot and resolve the reported target state before another click.',
-          targetState === null ? 'TARGET_NOT_FOUND' : 'OPERATION_FAILED',
-          'click_by_role',
-        );
-      }
-      preparedTarget = { locator, handle, targetState };
       dispatchEvidence = await this.dispatchPreparedObservedClick(
         page,
         preparedTarget,
@@ -5797,6 +5749,146 @@ export class BrowserController {
       : 'possibly_uniform';
   }
 
+  private async prepareRoleClickTarget(
+    page: Page,
+    locator: Locator,
+    startedAt: string,
+    actionDeadlineAt: number,
+    role: string,
+    name: string,
+  ): Promise<PreparedObservedClickTarget> {
+    let lastTargetState: SafeTargetState | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      lastTargetState = await this.requireUniqueClickTarget(
+        page,
+        locator,
+        'click_by_role',
+        role,
+        name,
+        remainingUntil(actionDeadlineAt),
+      );
+      const handle = await boundedValue(
+        locator.elementHandle(),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      );
+      if (handle === null) {
+        if (attempt === 0 && remainingUntil(actionDeadlineAt) > 0) {
+          continue;
+        }
+        this.failClickBeforeDispatch(
+          page,
+          startedAt,
+          lastTargetState,
+          'detached',
+          'role_target_detached_before_dispatch',
+          'The uniquely matched role target detached before exact-target dispatch began.',
+          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
+          'TARGET_NOT_FOUND',
+          'click_by_role',
+        );
+      }
+
+      try {
+        await locator.scrollIntoViewIfNeeded({
+          timeout: Math.max(1, remainingUntil(actionDeadlineAt)),
+        });
+      } catch {
+        // The exact handle is inspected below; failure remains pre-dispatch.
+      }
+      const postScrollSettleMs = Math.min(
+        CLICK_REF_INCREMENTAL_SETTLE_MS,
+        remainingUntil(actionDeadlineAt),
+      );
+      if (postScrollSettleMs > 0) {
+        await page.waitForTimeout(postScrollSettleMs);
+      }
+      const targetState = await boundedValue(
+        inspectTargetState(handle),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      );
+      if (targetState === null) {
+        await handle.dispose().catch(() => undefined);
+        if (attempt === 0 && remainingUntil(actionDeadlineAt) > 0) {
+          const settleMs = Math.min(CLICK_REF_INCREMENTAL_SETTLE_MS, remainingUntil(actionDeadlineAt));
+          if (settleMs > 0) await page.waitForTimeout(settleMs);
+          continue;
+        }
+        this.failClickBeforeDispatch(
+          page,
+          startedAt,
+          lastTargetState,
+          'detached',
+          'role_target_detached_before_dispatch',
+          'The uniquely matched role target detached during pre-input viewport preparation.',
+          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
+          'TARGET_NOT_FOUND',
+          'click_by_role',
+        );
+      }
+
+      const failure = !targetState.visible || !targetState.inViewport
+        ? { diagnostic: 'not_visible' as const }
+        : !targetState.enabled
+          ? { diagnostic: 'not_enabled' as const }
+          : targetState.receivesPointerEvents === false
+            ? { diagnostic: 'pointer_intercepted' as const }
+            : null;
+      if (failure !== null) {
+        await handle.dispose().catch(() => undefined);
+        this.failClickBeforeDispatch(
+          page,
+          startedAt,
+          targetState,
+          failure.diagnostic,
+          failure.diagnostic,
+          'The uniquely matched role target was not safely actionable before exact-target dispatch.',
+          'Take a fresh semantic snapshot and resolve the reported target state before another click.',
+          'OPERATION_FAILED',
+          'click_by_role',
+        );
+      }
+
+      return {
+        locator,
+        handle,
+        targetState,
+        activation: await this.preferredObservedClickActivation(handle, actionDeadlineAt),
+      };
+    }
+
+    this.failClickBeforeDispatch(
+      page,
+      startedAt,
+      lastTargetState,
+      'detached',
+      'role_target_detached_before_dispatch',
+      'The uniquely matched role target could not be retained through pre-input preparation.',
+      'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
+      'TARGET_NOT_FOUND',
+      'click_by_role',
+    );
+  }
+
+  private async preferredObservedClickActivation(
+    handle: ElementHandle<HTMLElement | SVGElement>,
+    actionDeadlineAt: number,
+  ): Promise<PreparedObservedClickTarget['activation']> {
+    const useKeyboard = await boundedValue(
+      handle.evaluate((element) => {
+        if (!(element instanceof HTMLButtonElement)) return false;
+        const hasPopup = element.getAttribute('aria-haspopup');
+        return (hasPopup !== null && hasPopup.toLocaleLowerCase() !== 'false')
+          || element.hasAttribute('aria-expanded');
+      }),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      false,
+    );
+    return useKeyboard ? 'keyboard_enter' : 'pointer';
+  }
+
   private async prepareObservedClickTarget(
     page: Page,
     frame: Frame,
@@ -5966,7 +6058,12 @@ export class BrowserController {
         'Take a fresh snapshot and resolve the reported visibility, enabled-state, or covering element before another click.',
       );
     }
-    return { locator: preparedLocator, handle, targetState };
+    return {
+      locator: preparedLocator,
+      handle,
+      targetState,
+      activation: await this.preferredObservedClickActivation(handle, actionDeadlineAt),
+    };
   }
 
   private async dispatchPreparedObservedClick(
@@ -6112,6 +6209,38 @@ export class BrowserController {
           Math.max(1, Math.floor(remainingUntil(actionDeadlineAt) * 0.35)),
         ),
       );
+      if (preparedTarget.activation === 'keyboard_enter') {
+        let keyboardError: unknown = null;
+        let keyboardCompleted = false;
+        try {
+          await preparedTarget.handle.press('Enter', {
+            noWaitAfter: true,
+            timeout: normalAttemptTimeoutMs,
+          });
+          keyboardCompleted = true;
+        } catch (error) {
+          keyboardError = error;
+        }
+
+        const evidence = await readProbe(true);
+        if (evidence?.clickOnTarget === true) {
+          return evidence;
+        }
+        const conclusion: ClickDispatchConclusion = {
+          actionDispatched: keyboardCompleted ? true : 'unknown',
+          clickDispatched: evidence === null ? 'unknown' : false,
+        };
+        return this.throwObservedClickDispatchFailure(
+          page,
+          keyboardError ?? new Error('The exact popup activation returned without a confirmed trusted target click event.'),
+          await targetStateWithinDeadline(preparedTarget.targetState),
+          startedAt,
+          evidence,
+          action,
+          conclusion,
+        );
+      }
+
       let normalError: unknown = null;
       try {
         await this.dispatchExactHandleClick(preparedTarget.handle, {
@@ -6874,6 +7003,7 @@ export class BrowserController {
     startedAt: string,
     evidence: SanitizedClickDispatchEvidence | null,
     action: SanitizedActionDiagnostic['action'],
+    conclusion: ClickDispatchConclusion | null = null,
   ): never {
     const diagnostic = this.observedClickDispatchFailureDiagnostic(
       page,
@@ -6882,6 +7012,7 @@ export class BrowserController {
       startedAt,
       evidence,
       action,
+      conclusion,
     );
     this.pageDiagnostics.recordAction(page, diagnostic);
     throw this.clickFailureError(diagnostic, error);
@@ -6894,6 +7025,7 @@ export class BrowserController {
     startedAt: string,
     evidence: SanitizedClickDispatchEvidence | null,
     action: SanitizedActionDiagnostic['action'],
+    conclusion: ClickDispatchConclusion | null = null,
   ): SanitizedActionDiagnostic {
     const fallback = actionDiagnosticForFailure(
       action,
@@ -6903,7 +7035,13 @@ export class BrowserController {
       startedAt,
     );
     if (evidence === null) {
-      return fallback;
+      if (conclusion === null) return fallback;
+      return {
+        ...fallback,
+        outcome: conclusion.actionDispatched === false ? 'blocked' : 'failed',
+        actionDispatched: conclusion.actionDispatched,
+        clickDispatched: conclusion.clickDispatched,
+      };
     }
     const exactTargetActivity = evidence.pointerDownOnTarget ||
       evidence.mouseDownOnTarget ||
@@ -6911,15 +7049,17 @@ export class BrowserController {
       evidence.mouseUpOnTarget ||
       evidence.clickOnTarget;
     const dispatchUnknown = evidence.guardExpired && !evidence.trustedEventObserved;
-    const actionDispatched = dispatchUnknown ? 'unknown' : exactTargetActivity;
-    const clickDispatched = dispatchUnknown ? 'unknown' : evidence.clickOnTarget;
+    const actionDispatched = conclusion?.actionDispatched
+      ?? (dispatchUnknown ? 'unknown' : exactTargetActivity);
+    const clickDispatched = conclusion?.clickDispatched
+      ?? (dispatchUnknown ? 'unknown' : evidence.clickOnTarget);
     const reason = !this.pageIsActivatedForInput(evidence.pageActivation)
       ? 'page_not_active'
-      : evidence.misdirectedEventBlocked
-      ? 'pointer_intercepted'
       : !evidence.targetConnectedAfter || (evidence.targetStateChangeBlocked && targetState === null)
         ? 'detached'
-        : fallback.reason;
+        : evidence.misdirectedEventBlocked
+          ? 'pointer_intercepted'
+          : fallback.reason;
     return {
       ...fallback,
       outcome: actionDispatched === false ? 'blocked' : 'failed',
@@ -7465,9 +7605,10 @@ export class BrowserController {
           actionOutcome: diagnostic.outcome,
           targetState: diagnostic.targetState,
           dispatchEvidence: diagnostic.dispatchEvidence ?? null,
-          suggestedAction: diagnostic.clickDispatched === false
-            ? 'Take a fresh snapshot before another attempt; the dispatch probe confirmed that no target click completed.'
-            : 'Inspect authoritative page state before retrying because dispatch could not be ruled out.',
+          suggestedAction:
+            diagnostic.actionDispatched === false && diagnostic.clickDispatched === false
+              ? 'Take a fresh snapshot before another attempt; Stage5 Browser confirmed that no input was dispatched.'
+              : 'Inspect authoritative state with a fresh snapshot. Do not retry or replay the opener because partial or ambiguous input may already have changed the page.',
         },
         cause,
       },

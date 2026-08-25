@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "Reliability-first browser control for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -32,6 +32,7 @@
       "Virtualization-safe reference actions",
       "Exact-target dispatch evidence",
       "Deadline-safe shared click engine",
+      "React-safe popup activation",
       "Foreground-verified guarded input",
       "Owned native-window activation",
       "Profile-lock ownership evidence",
