@@ -305,9 +305,14 @@ describe('BrowserController', () => {
       response.end(`<!doctype html><html><head><title>Unnamed composer</title></head><body>
         <div role="dialog" aria-modal="true" aria-label="Create post">
           <span>What's on your mind?</span>
-          <div id="editor" role="textbox" contenteditable="true" tabindex="0" autofocus></div>
+          <div id="editor" role="textbox" contenteditable="true" tabindex="0" autofocus><p><br></p></div>
           <button type="button">Post</button>
         </div>
+        <script>
+          document.querySelector('#editor').addEventListener('focus', () => {
+            document.querySelector('span').setAttribute('data-editor-focused', 'true');
+          });
+        </script>
       </body></html>`);
     });
     const port = await listen(server);
@@ -325,11 +330,12 @@ describe('BrowserController', () => {
     expect(editorRef).toBeDefined();
     if (editorRef === undefined) throw new Error('Unnamed composer fixture did not expose a textbox ref.');
 
+    const draft = '새로운 영상의 핵심 내용을 정리했습니다.\n\nhttps://example.com/watch?v=stage5';
     const filled = await controller.fillRef({
       snapshotId: observed.snapshotId,
       ref: editorRef,
       frameId: null,
-      value: 'Stage5 post draft',
+      value: draft,
       timeoutMs: 3_000,
     });
     expect(filled.input).toMatchObject({
@@ -340,9 +346,26 @@ describe('BrowserController', () => {
       targetConnectedAfter: true,
       targetKind: 'contenteditable',
     });
-    expect(JSON.stringify(filled)).not.toContain('Stage5 post draft');
+    expect(JSON.stringify(filled)).not.toContain(draft);
     const page = (controller as unknown as { activePage: Page }).activePage;
-    await expect(page.locator('#editor').textContent()).resolves.toBe('Stage5 post draft');
+    await expect(page.locator('#editor p').allTextContents()).resolves.toEqual([
+      '새로운 영상의 핵심 내용을 정리했습니다.',
+      '',
+      'https://example.com/watch?v=stage5',
+    ]);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'fill_ref',
+      outcome: 'succeeded',
+      reason: null,
+      actionDispatched: true,
+      clickDispatched: null,
+      fillPhase: 'completed',
+      inputEvidence: {
+        inputEventObserved: true,
+        valueMatches: true,
+        targetKind: 'contenteditable',
+      },
+    });
     await expect(controller.fillRef({
       snapshotId: observed.snapshotId,
       ref: editorRef,
@@ -352,6 +375,93 @@ describe('BrowserController', () => {
     })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
       code: 'TARGET_NOT_FOUND',
       details: { reason: 'stale_or_unknown_snapshot', actionDispatched: false },
+    });
+  });
+
+  it('returns structured no-input evidence before a Facebook-style contenteditable fill deadline', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Bounded unnamed composer</title></head><body>
+        <div role="dialog" aria-modal="true" aria-label="Create post">
+          <span>What's on your mind?</span>
+          <div id="editor" role="textbox" contenteditable="true" tabindex="0"><p><br></p></div>
+          <button type="button" disabled>Next</button>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-fill-ref-timeout-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/compose`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    const editorRef = observed.snapshot.match(/textbox[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(editorRef).toBeDefined();
+    if (editorRef === undefined) throw new Error('Bounded composer fixture did not expose a textbox ref.');
+    const dispatch = vi.spyOn(
+      controller as unknown as {
+        dispatchExactHandleFill: (
+          handle: unknown,
+          value: string,
+          timeoutMs: number,
+        ) => Promise<void>;
+      },
+      'dispatchExactHandleFill',
+    ).mockImplementation(async (_handle, _value, timeoutMs) => {
+      await new Promise((resolve) => setTimeout(resolve, timeoutMs));
+      const error = new Error('Simulated exact-handle fill timeout.');
+      error.name = 'TimeoutError';
+      throw error;
+    });
+    const draft = '멀티라인 테스트입니다.\n\nhttps://example.com/video';
+    const startedAt = Date.now();
+    let failure: Stage5BrowserError | null = null;
+    try {
+      await controller.fillRef({
+        snapshotId: observed.snapshotId,
+        ref: editorRef,
+        frameId: null,
+        value: draft,
+        timeoutMs: 1_000,
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(Stage5BrowserError);
+      failure = error as Stage5BrowserError;
+    }
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    expect(failure).toMatchObject({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'fill_dispatch_failed',
+        fillPhase: 'fill_dispatch',
+        actionDispatched: false,
+        inputEvidence: {
+          inputEventObserved: false,
+          changeEventObserved: false,
+          valueMatchedBefore: false,
+          valueMatches: false,
+          targetConnectedAfter: true,
+          targetKind: 'contenteditable',
+        },
+      },
+    });
+    expect(JSON.stringify(failure?.serialize())).not.toContain(draft);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator('#editor').textContent()).resolves.toBe('');
+    await expect(page.getByRole('button', { name: 'Next' }).isDisabled()).resolves.toBe(true);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'fill_ref',
+      outcome: 'blocked',
+      reason: 'timeout',
+      actionDispatched: false,
+      clickDispatched: null,
+      fillPhase: 'fill_dispatch',
+      inputEvidence: { valueMatches: false },
     });
   });
 
@@ -727,6 +837,80 @@ describe('BrowserController', () => {
     }
   });
 
+  it('activates a native React-style custom dropdown without splitting its pointer sequence', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Plain custom dropdown</title></head><body>
+        <button id="opener" type="button">Customer location</button>
+        <div id="choices" role="dialog" aria-label="Customer locations" hidden>
+          <div role="option">United States</div>
+        </div>
+        <output id="counters">pointerdowns:0 mousedowns:0 clicks:0 replacements:0</output>
+        <script>
+          const counters = { pointerdowns: 0, mousedowns: 0, clicks: 0, replacements: 0 };
+          const renderCounters = () => {
+            document.querySelector('#counters').textContent =
+              'pointerdowns:' + counters.pointerdowns +
+              ' mousedowns:' + counters.mousedowns +
+              ' clicks:' + counters.clicks +
+              ' replacements:' + counters.replacements;
+          };
+          const wire = (button) => {
+            button.addEventListener('pointerdown', () => { counters.pointerdowns += 1; renderCounters(); });
+            button.addEventListener('mousedown', () => {
+              counters.mousedowns += 1;
+              const next = button.cloneNode(true);
+              counters.replacements += 1;
+              wire(next);
+              button.replaceWith(next);
+              renderCounters();
+            });
+            button.addEventListener('click', () => {
+              counters.clicks += 1;
+              document.querySelector('#choices').hidden = false;
+              renderCounters();
+            });
+          };
+          wire(document.querySelector('#opener'));
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-plain-popup-keyboard-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/popup`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    const openerRef = observed.snapshot.match(/button "Customer location"[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(openerRef).toBeDefined();
+    if (openerRef === undefined) throw new Error('Plain custom dropdown fixture did not expose its opener ref.');
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: openerRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'option',
+          name: 'United States',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator('#counters').textContent()).resolves
+      .toBe('pointerdowns:0 mousedowns:0 clicks:1 replacements:0');
+  });
+
   it('never falls back or replays when a popup opener detaches during keyboard activation', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -893,7 +1077,7 @@ describe('BrowserController', () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(`<!doctype html><html><head><title>Partial pointer replacement</title></head><body>
-        <button id="opener" type="button">Account purpose</button>
+        <div id="opener" role="button" tabindex="0">Account purpose</div>
         <output id="counters">pointerdowns:0 mousedowns:0 pointerups:0 mouseups:0 clicks:0 replacements:0 replacement-clicks:0</output>
         <script>
           const counters = {
@@ -1013,7 +1197,7 @@ describe('BrowserController', () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(`<!doctype html><html><head><title>Partial effect reconciliation</title></head><body>
-        <button id="validate" type="button">Check description</button>
+        <div id="validate" role="button" tabindex="0">Check description</div>
         <a href="#validated" id="result" hidden>Looks good</a>
         <output id="counters">downs:0 clicks:0 replacement-clicks:0</output>
         <script>
@@ -1525,8 +1709,8 @@ describe('BrowserController', () => {
           height: 48px;
         }
       </style></head><body>
-        <button id="moving-target" type="button"
-          onclick="document.querySelector('#expanded').hidden = false">See more</button>
+        <div id="moving-target" role="button" tabindex="0"
+          onclick="document.querySelector('#expanded').hidden = false">See more</div>
         <a id="expanded" href="#expanded" hidden>Expanded moving caption</a>
       </body></html>`);
     });
@@ -1598,8 +1782,8 @@ describe('BrowserController', () => {
       }
       response.end(`<!doctype html><html><head><title>Foreground dispatch target</title></head><body>
         <button type="button" onclick="window.open('/auxiliary', 'auxiliary')">Open auxiliary</button>
-        <button id="target" type="button"
-          onclick="document.querySelector('#expanded').hidden = false">See more</button>
+        <div id="target" role="button" tabindex="0"
+          onclick="document.querySelector('#expanded').hidden = false">See more</div>
         <a id="expanded" href="#expanded" hidden>Expanded foreground caption</a>
       </body></html>`);
     });
@@ -1952,7 +2136,7 @@ describe('BrowserController', () => {
           height: 48px;
         }
       </style></head><body>
-        <button id="unstable-target" type="button">See more</button>
+        <div id="unstable-target" role="button" tabindex="0">See more</div>
         <p id="danger" hidden>Replacement was clicked</p>
         <script>
           const nativeAddEventListener = window.addEventListener.bind(window);

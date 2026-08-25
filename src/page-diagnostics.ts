@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 
 import type { ConsoleMessage, ElementHandle, Locator, Page, Request, Response } from 'playwright';
 
+import type { FillRefEvidence } from './protocol.js';
 import { sanitizeUrlForJournal } from './url-policy.js';
 
 export type ConsoleDiagnosticCategory =
@@ -129,13 +130,15 @@ export interface SanitizedClickDispatchEvidence {
 }
 
 export interface SanitizedActionDiagnostic {
-  action: 'click_by_ref' | 'click_by_role' | 'scroll';
+  action: 'click_by_ref' | 'click_by_role' | 'fill_ref' | 'scroll';
   outcome: 'blocked' | 'failed' | 'postcondition_failed' | 'succeeded';
   reason: ActionFailureReason | 'postcondition_not_met' | null;
   actionDispatched: boolean | 'unknown';
   clickDispatched: boolean | 'unknown' | null;
   targetState: SafeTargetState | null;
   dispatchEvidence?: SanitizedClickDispatchEvidence;
+  fillPhase?: 'completed' | 'event_verification' | 'fill_dispatch' | 'page_activation' | 'target_preparation' | 'value_matching';
+  inputEvidence?: FillRefEvidence;
   pageUrl: string | null;
   startedAt: string;
   occurredAt: string;

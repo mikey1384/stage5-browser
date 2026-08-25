@@ -497,7 +497,7 @@ function createServer(): McpServer {
     {
       title: 'Fill observed textbox reference',
       description:
-        'Fill one textbox, textarea, or contenteditable through a ref from the latest semantic snapshot of the same document, frame, and modal scope. This supports active unnamed editors without inventing an accessible name. The one-use capability is consumed on every attempted fill. Stage5 revalidates the exact target, keeps the value out of journals and evidence, and returns only definite input/change and exact value-match booleans. A matching value is the privacy-safe postcondition; partial input is never replayed.',
+        'Fill one textbox, textarea, or contenteditable through a ref from the latest semantic snapshot of the same document, frame, and modal scope. This supports active unnamed editors without inventing an accessible name. The one-use capability is consumed on every attempted fill. Stage5 revalidates and pins the exact target through one bounded preparation/activation/dispatch/evidence deadline, keeps the value out of journals and evidence, and returns only definite input/change and exact logical value-match booleans. Failures report the sanitized fill phase and target/input evidence before the supervisor deadline. A matching value is the privacy-safe postcondition; partial input is never replayed.',
       inputSchema: z.object({
         snapshotId: z.string().min(1).max(100),
         ref: z.string().regex(/^[A-Za-z0-9_-]+$/).max(100),

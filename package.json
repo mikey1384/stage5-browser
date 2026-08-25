@@ -1,6 +1,6 @@
 {
   "name": "@stage5/browser",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "type": "module",
   "description": "Reliability-first local browser control for AI agents.",
