@@ -287,6 +287,7 @@ interface PreparedObservedClickTarget {
   handle: ElementHandle<HTMLElement | SVGElement>;
   targetState: SafeTargetState;
   activation: 'keyboard_enter' | 'pointer';
+  pageActivation: SanitizedPageActivationEvidence | null;
 }
 
 interface ClickDispatchConclusion {
@@ -6530,7 +6531,20 @@ export class BrowserController {
     role: string,
     name: string,
   ): Promise<PreparedObservedClickTarget> {
-    let lastTargetState: SafeTargetState | null = null;
+    let lastTargetState = await this.requireUniqueClickTarget(
+      page,
+      locator,
+      'click_by_role',
+      role,
+      name,
+      remainingUntil(actionDeadlineAt),
+    );
+    const pageActivation = await this.primeSelectedPageForTargetPreparation(
+      page,
+      actionDeadlineAt,
+      startedAt,
+      'click_by_role',
+    );
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       lastTargetState = await this.requireUniqueClickTarget(
@@ -6629,6 +6643,7 @@ export class BrowserController {
         handle,
         targetState,
         activation: await this.preferredObservedClickActivation(handle, actionDeadlineAt),
+        pageActivation,
       };
     }
 
@@ -6643,6 +6658,54 @@ export class BrowserController {
       'TARGET_NOT_FOUND',
       'click_by_role',
     );
+  }
+
+  private async primeSelectedPageForTargetPreparation(
+    page: Page,
+    actionDeadlineAt: number,
+    startedAt: string,
+    action: SanitizedActionDiagnostic['action'],
+  ): Promise<SanitizedPageActivationEvidence> {
+    const pageActivation = await boundedValue(
+      this.activateSelectedPageForInput(page, 1),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      {
+        attemptCount: 1,
+        controllerSelected: this.preferredPage() === page,
+        bringToFrontAttempted: false,
+        bringToFrontSucceeded: false,
+        visibilityBefore: 'unknown',
+        visibilityAfter: 'unknown',
+        documentFocusedBefore: null,
+        documentFocusedAfter: null,
+        nativeWindow: this.nativeWindowActivationNotRequired(),
+      },
+    );
+    if (this.pageIsActivatedForInput(pageActivation)) {
+      return pageActivation;
+    }
+    const diagnostic: SanitizedActionDiagnostic = {
+      action,
+      outcome: 'blocked',
+      reason: 'page_not_active',
+      actionDispatched: false,
+      clickDispatched: false,
+      targetState: null,
+      pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
+      startedAt,
+      occurredAt: new Date().toISOString(),
+    };
+    this.pageDiagnostics.recordAction(page, diagnostic);
+    throw new Stage5BrowserError('OPERATION_FAILED', 'The selected page could not become visible before target preparation.', {
+      recoverable: true,
+      details: {
+        reason: 'page_not_active',
+        actionDispatched: false,
+        clickDispatched: false,
+        pageActivation,
+        suggestedAction: 'Inspect the selected tab and renderer visibility; Stage5 Browser did not resolve or dispatch the target action.',
+      },
+    });
   }
 
   private async preferredObservedClickActivation(
@@ -6831,6 +6894,7 @@ export class BrowserController {
       handle,
       targetState,
       activation: await this.preferredObservedClickActivation(handle, actionDeadlineAt),
+      pageActivation: null,
     };
   }
 
@@ -6875,7 +6939,7 @@ export class BrowserController {
     let finalEvidence: SanitizedClickDispatchEvidence | null = null;
     let forcedFallbackUsed = false;
     let pageMouseFallbackUsed = false;
-    let pageActivation: SanitizedPageActivationEvidence = {
+    let pageActivation: SanitizedPageActivationEvidence = preparedTarget.pageActivation ?? {
       attemptCount: 0,
       controllerSelected: this.preferredPage() === page,
       bringToFrontAttempted: false,
@@ -6886,6 +6950,22 @@ export class BrowserController {
       documentFocusedAfter: null,
       nativeWindow: this.nativeWindowActivationNotRequired(),
     };
+    const retainActivationBoundary = (
+      next: SanitizedPageActivationEvidence,
+    ): SanitizedPageActivationEvidence => pageActivation.attemptCount === 0
+      ? next
+      : {
+          ...next,
+          bringToFrontAttempted: pageActivation.bringToFrontAttempted || next.bringToFrontAttempted,
+          bringToFrontSucceeded: pageActivation.bringToFrontSucceeded || next.bringToFrontSucceeded,
+          visibilityBefore: pageActivation.visibilityBefore,
+          documentFocusedBefore: pageActivation.documentFocusedBefore,
+          nativeWindow: next.nativeWindow.attempted
+            ? next.nativeWindow
+            : pageActivation.nativeWindow.attempted
+              ? pageActivation.nativeWindow
+              : next.nativeWindow,
+        };
     const readProbe = async (finish: boolean): Promise<SanitizedClickDispatchEvidence | null> => {
       if (finish && probeFinished) {
         return finalEvidence;
@@ -6935,7 +7015,7 @@ export class BrowserController {
     };
 
     try {
-      pageActivation = await boundedValue(
+      const preparedPageActivation = await boundedValue(
         this.activateSelectedPageForInput(
           page,
           pageActivation.attemptCount + 1,
@@ -6948,6 +7028,7 @@ export class BrowserController {
           bringToFrontAttempted: true,
         },
       );
+      pageActivation = retainActivationBoundary(preparedPageActivation);
       if (!this.pageIsActivatedForInput(pageActivation)) {
         const evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
@@ -7072,7 +7153,7 @@ export class BrowserController {
         );
       }
 
-      pageActivation = await boundedValue(
+      const fallbackPageActivation = await boundedValue(
         this.activateSelectedPageForInput(
           page,
           pageActivation.attemptCount + 1,
@@ -7085,6 +7166,7 @@ export class BrowserController {
           bringToFrontAttempted: true,
         },
       );
+      pageActivation = retainActivationBoundary(fallbackPageActivation);
       if (!this.pageIsActivatedForInput(pageActivation)) {
         evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
@@ -7164,7 +7246,7 @@ export class BrowserController {
         );
       }
 
-      pageActivation = await boundedValue(
+      const directPageActivation = await boundedValue(
         this.activateSelectedPageForInput(
           page,
           pageActivation.attemptCount + 1,
@@ -7177,6 +7259,7 @@ export class BrowserController {
           bringToFrontAttempted: true,
         },
       );
+      pageActivation = retainActivationBoundary(directPageActivation);
       const point = this.pageIsActivatedForInput(pageActivation)
         ? await boundedValue(
           this.freshMainFrameTargetPoint(page, preparedTarget.handle),

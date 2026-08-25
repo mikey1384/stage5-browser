@@ -11,7 +11,7 @@ import { BrowserController } from '../src/browser-controller.js';
 import { playwrightBrowserType, resolveBrowserLaunchTarget } from '../src/browser-provider.js';
 import type { Stage5BrowserConfig } from '../src/config.js';
 import { Stage5BrowserError } from '../src/errors.js';
-import { inspectTargetState } from '../src/page-diagnostics.js';
+import { inspectTargetState, type SanitizedPageActivationEvidence } from '../src/page-diagnostics.js';
 import type {
   HumanBrowserLaunchInput,
   HumanBrowserLauncher,
@@ -1447,6 +1447,96 @@ describe('BrowserController', () => {
           visibilityAfter: 'visible',
         },
       },
+    });
+  });
+
+  it('re-resolves a unique role target after page activation replaces it before input', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Activation replacement</title></head><body>
+        <button id="opener" type="button" aria-selected="false"
+          onclick="this.setAttribute('aria-selected', 'true'); document.querySelector('#counter').textContent = 'clicks:1'">
+          Funding source
+        </button>
+        <output id="counter">clicks:0</output>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-activation-rebind-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    let activationCount = 0;
+    const activation = vi.spyOn(
+      controller as unknown as {
+        activateSelectedPageForInput: (...args: unknown[]) => Promise<SanitizedPageActivationEvidence>;
+      },
+      'activateSelectedPageForInput',
+    ).mockImplementation(async () => {
+      activationCount += 1;
+      if (activationCount === 1) {
+        await page.locator('#opener').evaluate((opener) => opener.replaceWith(opener.cloneNode(true)));
+      }
+      return {
+        attemptCount: activationCount,
+        controllerSelected: true,
+        bringToFrontAttempted: activationCount === 1,
+        bringToFrontSucceeded: true,
+        visibilityBefore: activationCount === 1 ? 'hidden' : 'visible',
+        visibilityAfter: 'visible',
+        documentFocusedBefore: false,
+        documentFocusedAfter: true,
+        nativeWindow: {
+          required: activationCount === 1,
+          attempted: activationCount === 1,
+          supported: true,
+          ownedProcessAvailable: true,
+          ownedProcessRunning: true,
+          targetWindowResolved: true,
+          windowStateBefore: 'normal',
+          normalizationAttempted: false,
+          normalizationSucceeded: null,
+          applicationActivationAttempted: activationCount === 1,
+          applicationActivationSucceeded: true,
+          applicationHiddenBefore: false,
+          unhideAttempted: false,
+          unhideSucceeded: null,
+          activationRequestAccepted: true,
+          frontProcessFallbackAttempted: false,
+          frontProcessFallbackProcessResolved: null,
+          frontProcessFallbackRequestSucceeded: null,
+          applicationFrontmostAfter: true,
+          applicationHiddenAfter: false,
+          result: activationCount === 1 ? 'activated' : 'not_required',
+        },
+      };
+    });
+
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Funding source',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: true,
+        expectedVisible: null,
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect(activation).toHaveBeenCalledTimes(2);
+    await expect(page.locator('#counter').textContent()).resolves.toBe('clicks:1');
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_role',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
     });
   });
 

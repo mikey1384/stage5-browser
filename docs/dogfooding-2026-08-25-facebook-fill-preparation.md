@@ -1,7 +1,7 @@
 # Facebook fill preparation and pre-keyboard detachment
 
 Date: 2026-08-25
-Release: 0.7.2 (tool catalog 6, worker protocol 6)
+Release: 0.7.3 (tool catalog 6, worker protocol 6)
 
 ## Dogfooding evidence
 
@@ -21,6 +21,7 @@ Native-button Enter activation observed pointer, mouse, and click events but not
 - `browser_fill_ref` uses only those one-use handles. It validates the same document and retained scope containment, then editability, viewport preparation, and target state without a live ARIA-ref resolution or modal rescan.
 - Fill diagnostics now include `fillPreparationStep`: `reference_validation`, `editor_capability`, `scope_validation`, `editor_validation`, `viewport_preparation`, `target_state`, or `completed`.
 - Exact click probes now retain trusted keydown and keyup evidence in addition to pointer, mouse, and click evidence.
+- Click preparation verifies that the selected page is visible before binding the final live control. If necessary foreground recovery replaces a unique role target, Stage5 resolves that role once afterward and only then installs the dispatch guard; already-visible renderers remain background-safe.
 - A native-button target that detaches before an exact-target keyboard event is definite no-dispatch. A keydown that reaches the exact target before React replaces it remains partial input and non-retriable.
 
 ## Regression coverage
@@ -29,7 +30,8 @@ Headless fixtures prove that:
 
 - a multiline Korean draft plus URL fills an unnamed modal contenteditable without calling `snapshotRoot` or resolving an `aria-ref` during the action;
 - replacing the retained modal after the snapshot fails promptly at `scope_validation` with null target/input evidence and no text entry;
-- a keydown-triggered native-button replacement remains `actionDispatched: true`, `clickDispatched: false`, and non-retriable; and
+- a keydown-triggered native-button replacement remains `actionDispatched: true`, `clickDispatched: false`, and non-retriable;
+- a unique role target replaced during necessary page activation is resolved after activation and clicked exactly once; and
 - a native button replaced while the press is focusing it reports `actionDispatched: false`, `clickDispatched: false` when no key event reached the exact target, even when a misdirected event was intercepted.
 
-The complete headless suite passes with 127 tests and 3 opt-in native tests skipped. No signed-in browser, Facebook state, Coinbase state, private field, save, or submission was touched.
+The complete headless suite passes with 128 tests and 3 opt-in native tests skipped. No signed-in browser, Facebook state, Coinbase state, private field, save, or submission was touched.
