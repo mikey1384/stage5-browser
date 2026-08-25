@@ -221,6 +221,8 @@ Supported values are `chromium`, `chrome`, `brave`, `edge`, `firefox`, and `webk
 
 Agents do not need an MCP restart to choose browsers after the Stage5 Browser tools are already connected. After `browser_available`, an agent uses `browser_start({ browser })`. If another backend is already running, it uses the explicitly destructive `browser_switch` instead; the target is preflighted before current tabs are closed. The supervisor preserves the selected backend across worker recovery. Each backend has an independent Stage5 profile and does not inherit cookies from a person's everyday browser profile.
 
+A stopped browser is never launched implicitly by snapshots, screenshots, tab or frame inspection, clicks, fills, attachments, scrolling, text search, or URL waits. Those operations fail with `BROWSER_NOT_READY`, `reason: browser_stopped`, and definite `actionDispatched: false`; the caller must inspect availability and explicitly start the intended profile.
+
 For a nonstandard installation, a trusted operator can set an absolute executable path:
 
 ```bash

@@ -204,6 +204,36 @@ afterEach(async () => {
 });
 
 describe('BrowserController', () => {
+  it('does not implicitly launch a stopped browser while taking a semantic snapshot', async () => {
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-stopped-snapshot-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+
+    await expect(controller.status()).resolves.toMatchObject({
+      browser: 'chromium',
+      state: 'stopped',
+      browserConnected: false,
+      pages: [],
+      launchIdentity: null,
+    });
+    await expect(
+      controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 2_000 }),
+    ).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'BROWSER_NOT_READY',
+      details: {
+        reason: 'browser_stopped',
+        browser: 'chromium',
+        actionDispatched: false,
+      },
+    });
+    await expect(controller.status()).resolves.toMatchObject({
+      browser: 'chromium',
+      state: 'stopped',
+      browserConnected: false,
+      pages: [],
+      launchIdentity: null,
+    });
+  });
+
   it('navigates, snapshots, fills unique targets, and rejects ambiguous targets', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });

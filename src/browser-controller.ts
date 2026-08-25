@@ -1585,7 +1585,7 @@ export class BrowserController {
   }
 
   async snapshot(input: BrowserCommandInput<'snapshot'>): Promise<BrowserCommandOutput<'snapshot'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const documentVersion = this.documentVersion(frame);
     const deadlineAt = Date.now() + input.timeoutMs;
@@ -1703,7 +1703,7 @@ export class BrowserController {
   }
 
   async screenshot(input: BrowserCommandInput<'screenshot'>): Promise<BrowserCommandOutput<'screenshot'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const pageActivation = await this.activateSelectedPageForInput(page, 1);
     if (!this.pageIsActivatedForInput(pageActivation)) {
       throw new Stage5BrowserError(
@@ -1948,7 +1948,7 @@ export class BrowserController {
   }
 
   async tabs(): Promise<BrowserCommandOutput<'tabs'>> {
-    const context = await this.ensureContext();
+    const context = this.requireContext();
     await this.reconcileVisiblePage(context);
     const pages = context.pages().filter((page) => !page.isClosed());
     const summaries = await Promise.all(pages.map((page, index) => this.pageSummary(page, index)));
@@ -1961,7 +1961,7 @@ export class BrowserController {
   }
 
   async selectTab(input: BrowserCommandInput<'selectTab'>): Promise<BrowserCommandOutput<'selectTab'>> {
-    const context = await this.ensureContext();
+    const context = this.requireContext();
     const pages = context.pages().filter((page) => !page.isClosed());
     const page = pages[input.index];
     if (page === undefined) {
@@ -1983,7 +1983,7 @@ export class BrowserController {
   }
 
   async frames(): Promise<BrowserCommandOutput<'frames'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frames = page.frames().filter((frame) => !frame.isDetached());
     return {
       page: await this.pageSummary(page),
@@ -1992,7 +1992,7 @@ export class BrowserController {
   }
 
   async clickByRole(input: BrowserCommandInput<'clickByRole'>): Promise<BrowserCommandOutput<'clickByRole'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const locator = frame.getByRole(input.role, { name: input.name, exact: input.exact });
     const startedAt = Date.now();
@@ -2093,7 +2093,7 @@ export class BrowserController {
   }
 
   async clickRef(input: BrowserCommandInput<'clickRef'>): Promise<BrowserCommandOutput<'clickRef'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const observed = this.observedSnapshots.get(frame);
     if (
@@ -2261,7 +2261,7 @@ export class BrowserController {
   async setInputFiles(
     input: BrowserCommandInput<'setInputFiles'>,
   ): Promise<BrowserCommandOutput<'setInputFiles'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const observed = this.observedSnapshots.get(frame);
     if (
@@ -2458,7 +2458,7 @@ export class BrowserController {
   }
 
   async fillByRole(input: BrowserCommandInput<'fillByRole'>): Promise<BrowserCommandOutput<'fillByRole'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const locator = frame.getByRole(input.role, { name: input.name, exact: input.exact });
     await this.requireUniqueTarget(locator.count(), input.role, input.name);
@@ -2469,7 +2469,7 @@ export class BrowserController {
   }
 
   async fillRef(input: BrowserCommandInput<'fillRef'>): Promise<BrowserCommandOutput<'fillRef'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const startedAtMs = Date.now();
     const deadlineAt = startedAtMs + input.timeoutMs;
@@ -2953,7 +2953,7 @@ export class BrowserController {
   }
 
   async scroll(input: BrowserCommandInput<'scroll'>): Promise<BrowserCommandOutput<'scroll'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const observedTarget = this.resolveObservedScrollContainer(frame, input.target);
     const targetHandle = observedTarget?.handle ?? null;
@@ -3285,7 +3285,7 @@ export class BrowserController {
   }
 
   async findText(input: BrowserCommandInput<'findText'>): Promise<BrowserCommandOutput<'findText'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const body = frame.locator('body');
     const rawText = await body.innerText({ timeout: input.timeoutMs });
@@ -3401,7 +3401,7 @@ export class BrowserController {
   }
 
   async waitForUrl(input: BrowserCommandInput<'waitForUrl'>): Promise<BrowserCommandOutput<'waitForUrl'>> {
-    const page = await this.ensureActivePage(await this.ensureContext());
+    const page = await this.ensureActivePage(this.requireContext());
     await this.waitForUrlExpectation(page, input.expected, input.timeoutMs, 'URL wait');
     this.lastKnownUrl = page.url();
     return { page: await this.pageSummary(page), matched: true, expected: input.expected };
@@ -4892,6 +4892,29 @@ export class BrowserController {
       });
     }
     return startedContext;
+  }
+
+  private requireContext(): BrowserContext {
+    if (this.pendingHandoffRelease !== null || this.authenticationHandoff?.state === 'awaiting_user') {
+      throw this.humanBootstrapInProgressError();
+    }
+    const context = this.usableContext();
+    if (context === undefined) {
+      throw new Stage5BrowserError(
+        'BROWSER_NOT_READY',
+        'The dedicated browser is stopped. This operation will not launch a browser implicitly.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'browser_stopped',
+            browser: this.selectedBrowser,
+            actionDispatched: false,
+            suggestedAction: 'Call browser_available, then explicitly call browser_start with the intended browser profile before continuing.',
+          },
+        },
+      );
+    }
+    return context;
   }
 
   private async ensureActivePage(context: BrowserContext): Promise<Page> {
