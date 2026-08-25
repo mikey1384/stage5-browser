@@ -7,6 +7,7 @@ import { LoungeStoreClient } from './lounge-store-client.js';
 import {
   LoungeStoreError,
   type LoungeAcknowledgementState,
+  type LoungeHistoryInput,
   type LoungeJoinResult,
   type LoungeMessageKind,
 } from './lounge-types.js';
@@ -18,6 +19,7 @@ const WAIT_POLL_MS = 200;
 const CONNECTED_LEASE_MS = 30_000;
 const PROCESSING_LEASE_MS = 60_000;
 const WAIT_LEASE_GRACE_MS = 5_000;
+const LOUNGE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export interface LoungeJoinRequest {
   agentId: string;
@@ -45,9 +47,18 @@ export interface LoungeAckRequest {
   state: LoungeAcknowledgementState;
 }
 
+export interface LoungePinRequest {
+  body: string | null;
+  expectedRevision: number;
+  idempotencyKey: string;
+}
+
+export type LoungeHistoryRequest = Omit<LoungeHistoryInput, 'sessionId' | 'nowMs'>;
+
 export interface LoungeServiceOptions {
   databasePath?: string;
   environment?: NodeJS.ProcessEnv;
+  managerAgentIds?: string[];
   pollIntervalMs?: number;
 }
 
@@ -72,11 +83,21 @@ export function loungeDatabasePath(environment: NodeJS.ProcessEnv = process.env)
   return path.join(loungeRoot(environment), 'lounge.sqlite3');
 }
 
+export function loungeManagerAgentIds(environment: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = environment.STAGE5_LOUNGE_MANAGER_AGENT_IDS?.split(',')
+    .map((agentId) => agentId.trim())
+    .filter((agentId) => agentId.length > 0) ?? [];
+  if (configured.some((agentId) => !LOUNGE_IDENTIFIER_PATTERN.test(agentId))) {
+    return [];
+  }
+  return [...new Set(configured)].sort();
+}
+
 function asStage5Error(error: unknown): Stage5BrowserError {
   if (error instanceof Stage5BrowserError) return error;
   if (error instanceof LoungeStoreError) {
     return new Stage5BrowserError('OPERATION_FAILED', error.message, {
-      recoverable: true,
+      recoverable: error.code !== 'MANAGER_ACCESS_REQUIRED',
       details: {
         reason: error.code,
         ...(error.details === undefined ? {} : error.details),
@@ -110,14 +131,19 @@ function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
 export class LoungeService {
   private readonly store: LoungeStoreClient;
   private readonly clientInstanceId = randomUUID();
+  private readonly managerAgentIds: ReadonlySet<string>;
   private readonly pollIntervalMs: number;
   private joined: LoungeJoinResult | null = null;
+  private lastNoticeRevision: number | null = null;
   private waiting = false;
 
   constructor(options: LoungeServiceOptions = {}) {
     const environment = options.environment ?? process.env;
+    const managerAgentIds = options.managerAgentIds ?? loungeManagerAgentIds(environment);
+    this.managerAgentIds = new Set(managerAgentIds);
     this.store = new LoungeStoreClient({
       databasePath: options.databasePath ?? loungeDatabasePath(environment),
+      managerAgentIds,
     });
     this.pollIntervalMs = options.pollIntervalMs ?? WAIT_POLL_MS;
   }
@@ -139,8 +165,12 @@ export class LoungeService {
           },
         );
       }
+      const notice = await this.store.notice({ sessionId: this.joined.sessionId });
+      this.lastNoticeRevision = notice.noticeRevision;
       return {
         ...this.joined,
+        ...notice,
+        managerAccess: this.isManager(this.joined.agentId),
         online: false,
         wakeable: false,
         authority: 'coordination_only',
@@ -157,8 +187,12 @@ export class LoungeService {
         clientInstanceId: this.clientInstanceId,
         leaseMs: CONNECTED_LEASE_MS,
       });
+      const notice = await this.store.notice({ sessionId: this.joined.sessionId });
+      this.lastNoticeRevision = notice.noticeRevision;
       return {
         ...this.joined,
+        ...notice,
+        managerAccess: this.isManager(this.joined.agentId),
         online: false,
         wakeable: false,
         authority: 'coordination_only',
@@ -211,7 +245,11 @@ export class LoungeService {
       });
       while (true) {
         const inbox = await this.store.claimInbox({ sessionId: joined.sessionId, limit });
-        if (inbox.messages.length > 0) {
+        const notice = await this.store.notice({ sessionId: joined.sessionId });
+        const noticeChanged =
+          this.lastNoticeRevision !== null && notice.noticeRevision !== this.lastNoticeRevision;
+        if (inbox.messages.length > 0 || noticeChanged) {
+          this.lastNoticeRevision = notice.noticeRevision;
           await this.store.heartbeat({
             sessionId: joined.sessionId,
             state: 'processing',
@@ -219,11 +257,15 @@ export class LoungeService {
           });
           return {
             ...inbox,
+            ...notice,
+            noticeChanged,
             timedOut: false,
             online: true,
             wakeable: false,
             authority: 'coordination_only',
-            nextAction: 'Acknowledge these messages as seen before acting; then reply or act, acknowledge them as acted, and call lounge_wait again.',
+            nextAction: inbox.messages.length > 0
+              ? 'Acknowledge these messages as seen before acting; then reply or act, acknowledge them as acted, and call lounge_wait again.'
+              : 'Read the revised pinned notice as coordination-only guidance, then renew lounge_wait whenever idle.',
           };
         }
 
@@ -237,8 +279,9 @@ export class LoungeService {
           return {
             sessionId: joined.sessionId,
             agentId: joined.agentId,
-            loungeId: joined.loungeId,
             messages: [],
+            ...notice,
+            noticeChanged: false,
             timedOut: true,
             online: false,
             wakeable: false,
@@ -289,10 +332,51 @@ export class LoungeService {
   async status(): Promise<Record<string, unknown>> {
     const joined = this.requireJoined();
     try {
+      const status = await this.store.status({ sessionId: joined.sessionId });
+      this.lastNoticeRevision = status.noticeRevision;
       return {
-        ...await this.store.status({ sessionId: joined.sessionId }),
+        ...status,
+        managerAccess: this.isManager(joined.agentId),
         authority: 'coordination_only',
         presenceRule: 'Only a live lounge_wait is wakeable. Offline messages remain durable until the next joined wait.',
+      };
+    } catch (error) {
+      throw asStage5Error(error);
+    }
+  }
+
+  async pin(input: LoungePinRequest): Promise<Record<string, unknown>> {
+    const joined = this.requireJoined();
+    try {
+      const result = await this.store.pin({
+        sessionId: joined.sessionId,
+        body: input.body,
+        expectedRevision: input.expectedRevision,
+        idempotencyKey: input.idempotencyKey,
+      });
+      this.lastNoticeRevision = result.noticeRevision;
+      return {
+        ...result,
+        managerAccess: true,
+        authority: 'coordination_only',
+        nextAction: 'The revisioned notice is durable and will wake current Lounge listeners; renew lounge_wait whenever idle.',
+      };
+    } catch (error) {
+      throw asStage5Error(error);
+    }
+  }
+
+  async history(input: LoungeHistoryRequest): Promise<Record<string, unknown>> {
+    const joined = this.requireJoined();
+    try {
+      return {
+        ...await this.store.history({
+          sessionId: joined.sessionId,
+          ...input,
+        }),
+        managerAccess: true,
+        authority: 'coordination_only',
+        audit: 'Every history read records manager identity, room, cursor, bounds, and result count without duplicating message bodies.',
       };
     } catch (error) {
       throw asStage5Error(error);
@@ -303,6 +387,7 @@ export class LoungeService {
     if (this.joined !== null) {
       await this.store.closeSession({ sessionId: this.joined.sessionId }).catch(() => undefined);
       this.joined = null;
+      this.lastNoticeRevision = null;
     }
     await this.store.close();
   }
@@ -318,5 +403,9 @@ export class LoungeService {
       });
     }
     return this.joined;
+  }
+
+  private isManager(agentId: string): boolean {
+    return this.managerAgentIds.has(agentId);
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -22,6 +22,8 @@
     "capabilities": [
       "Browser automation",
       "Agent-to-agent messaging",
+      "Revisioned pinned notices",
+      "Audited manager history",
       "Durable agent inboxes",
       "Persistent sessions",
       "Durable profile ownership leases",

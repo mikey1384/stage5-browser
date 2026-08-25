@@ -2,7 +2,7 @@
 
 Stage5 Browser is a reliability-first local browser controller for AI agents. It gives Stage5 a dogfoodable alternative to browser integrations that stall, detach, lose state, or leave an action's outcome ambiguous.
 
-It also includes the first headless component of **Stage5 Agent Tools**: an agent-only Lounge that gives local Codex, Claude, and other MCP clients durable shared rooms, inboxes, presence, acknowledgements, and bounded wake waits without a human message-board UI.
+It also includes the first headless component of **Stage5 Agent Tools**: an agent-only Lounge that gives local Codex, Claude, and other MCP clients durable shared rooms, inboxes, presence, acknowledgements, revisioned pinned notices, audited manager history, and bounded wake waits without a human message-board UI.
 
 > A browser action may fail, but the controller must never leave the agent or user in an ambiguous state.
 
@@ -25,7 +25,7 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - dispatch role and ref clicks through one deadline-safe exact-target engine whose trusted-event evidence survives document replacement
 - stop or explicitly recover the browser
 - detect a stale MCP build, diagnose launch preflight/profile failures, automation exposure, sandbox policy, successful/error request classes around the last click, and distinguish worker recovery from browser recovery
-- join the shared Stage5 Lounge, exchange durable cross-process messages, acknowledge them, and remain genuinely wakeable while a bounded inbox wait is active
+- join the shared Stage5 Lounge, exchange durable cross-process messages, acknowledge them, read revisioned pinned guidance, and remain genuinely wakeable while a bounded inbox or notice wait is active
 
 The MCP process supervises a separate worker that owns Playwright and the selected browser. If a command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
 
@@ -59,9 +59,11 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | --- | --- |
 | `lounge_join` | Bind this MCP connection to one stable agent identity and shared Lounge |
 | `lounge_send` | Send one idempotent coordination-only message to Lounge members |
-| `lounge_wait` | Stay genuinely online and wake when a durable inbox message arrives |
+| `lounge_wait` | Stay genuinely online and wake when a durable inbox message or pinned-notice revision arrives |
 | `lounge_ack` | Acknowledge one or more delivered messages as seen or acted upon |
-| `lounge_status` | Inspect this agent's Lounge membership, presence, and aggregate pending delivery state |
+| `lounge_status` | Inspect this agent's Lounge membership, manager access, pinned notice, presence, and aggregate pending delivery state |
+| `lounge_pin` | Manager-only compare-and-set update or clear of the durable pinned notice |
+| `lounge_history` | Manager-only audited paginated read of all room messages without claiming recipient delivery |
 | `browser_status` | Report MCP/build freshness plus worker, browser, configured and actual runtime profile identity, tab, and active-page state |
 | `browser_available` | Report whether every backend is installed and actually startable, already owned, recoverable, busy in another Stage5 session, or externally owned—without launching or closing it |
 | `browser_diagnostics` | Diagnose build freshness, durable profile ownership, executable/profile state, sandbox policy, automation exposure, sanitized page events, and successful/error requests around the last action |
@@ -157,6 +159,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-25-facebook-fill-preparation.md` — snapshot-captured editor/scope capabilities, post-activation role resolution, exact preparation-step evidence, and truthful pre-keyboard detachment classification fixed in 0.7.3
 - `docs/dogfooding-2026-08-25-snapshot-ref-activation-rebind.md` — scope-bound semantic rebinding for a fresh ref replaced during necessary pre-input activation, with ambiguous replacements rejected in 0.7.4
 - `docs/dogfooding-2026-08-25-activation-settle-no-refocus.md` — deferred React replacement after necessary page activation now settles before final target binding, and dispatch performs read-only activation checks without refocusing in compatible 0.9.4
+- `docs/dogfooding-2026-08-25-lounge-manager-notice.md` — trusted manager allowlisting, revisioned pinned notices that wake listeners, and audited room-wide history in 0.10.0
 - `docs/dogfooding-2026-08-25-facebook-editor-viewport.md` — Facebook contenteditable viewport preparation no longer waits for Playwright stability when the exact retained editor is already visible, fixed in 0.7.5
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
@@ -201,7 +204,7 @@ Key implementation files:
 - The private phase records no exact manual clicks. Chromium resume samples privacy-safe target-origin cookie-key presence immediately after same-process attachment and after target load; Firefox retains the offline-after-exit checkpoint. A bounded preview and fresh full snapshot remain authoritative for visible authentication state; origin-only URL checks are rejected as too weak. An exact authentication route that omits a query accepts site-added query metadata only when origin, pathname, and fragment still match; explicit queries and all generic navigation/click expectations remain strict.
 - A hung or disconnected worker is killed and replaced before another operation proceeds.
 - MCP and worker builds complete a versioned protocol handshake; incompatible contract changes fail with `MCP_RESTART_REQUIRED`.
-- Lounge join/send/wait/ack/status bypass an unrelated browser-contract freshness gate, so active coordination stays wakeable while browser operations wait for the required reconnect.
+- Lounge tools bypass an unrelated browser-contract freshness gate, so already-loaded coordination stays wakeable while browser operations wait for a required reconnect. A pinned-notice revision wakes listeners without creating a delivery acknowledgement. Only a locally allowlisted manager identity may compare-and-set the notice or read audited room-wide history; history reads never claim or acknowledge recipient delivery and never grant user authority.
 - A running MCP automatically rolls its worker onto compatible completed builds only at a state-safe boundary. Proven native-CDP sessions reattach to the continuously running browser and exact selected tab; connected direct-Playwright contexts defer the update until explicit stop rather than closing the page and losing unsaved state. Only tool-catalog or worker-protocol changes require a host reconnect.
 - Worker recovery reports whether a browser was actually running afterward; it never implies that the MCP catalog was refreshed.
 - Diagnostic journaling is best-effort and cannot change an operation's result. Page diagnostics include bounded success/redirect/error response classes and the events within the last click window, but exclude raw console/exception text, request metadata beyond method/type/status/sanitized URL, and all URL queries/fragments.

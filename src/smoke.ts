@@ -65,6 +65,8 @@ try {
     'lounge_wait',
     'lounge_ack',
     'lounge_status',
+    'lounge_pin',
+    'lounge_history',
     'browser_available',
     'browser_diagnostics',
     'browser_start',

@@ -14,8 +14,14 @@ import {
   type LoungeCloseSessionResult,
   type LoungeHeartbeatInput,
   type LoungeHeartbeatResult,
+  type LoungeHistoryInput,
+  type LoungeHistoryResult,
   type LoungeJoinInput,
   type LoungeJoinResult,
+  type LoungeNoticeInput,
+  type LoungeNoticeState,
+  type LoungePinInput,
+  type LoungePinResult,
   type LoungeSendInput,
   type LoungeSendResult,
   type LoungeStatusInput,
@@ -27,6 +33,7 @@ import {
 
 export interface LoungeStoreClientOptions {
   databasePath: string;
+  managerAgentIds?: string[];
   workerUrl?: URL;
   requestTimeoutMs?: number;
 }
@@ -73,6 +80,7 @@ export class LoungeStoreClient {
       workerData: {
         stage5LoungeStoreWorker: true,
         databasePath: options.databasePath,
+        managerAgentIds: options.managerAgentIds ?? [],
       },
     });
     this.exited = new Promise<number>((resolve) => {
@@ -139,6 +147,18 @@ export class LoungeStoreClient {
 
   status(input: LoungeStatusInput): Promise<LoungeStatusResult> {
     return this.request('status', input);
+  }
+
+  notice(input: LoungeNoticeInput): Promise<LoungeNoticeState> {
+    return this.request('notice', input);
+  }
+
+  pin(input: LoungePinInput): Promise<LoungePinResult> {
+    return this.request('pin', input);
+  }
+
+  history(input: LoungeHistoryInput): Promise<LoungeHistoryResult> {
+    return this.request('history', input);
   }
 
   closeSession(input: LoungeCloseSessionInput): Promise<LoungeCloseSessionResult> {

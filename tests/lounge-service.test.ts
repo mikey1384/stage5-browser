@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { Stage5BrowserError } from '../src/errors.js';
-import { LoungeService } from '../src/lounge-service.js';
+import { LoungeService, loungeManagerAgentIds } from '../src/lounge-service.js';
 
 const services: LoungeService[] = [];
 const roots: string[] = [];
@@ -27,6 +27,15 @@ async function serviceFixture(agentRoot = 'stage5-lounge-service-'): Promise<Lou
 }
 
 describe('LoungeService', () => {
+  it('parses a deduplicated trusted manager allowlist and fails closed on invalid configuration', () => {
+    expect(loungeManagerAgentIds({
+      STAGE5_LOUNGE_MANAGER_AGENT_IDS: ' ghostty-codex,browser-agent,ghostty-codex ',
+    })).toEqual(['browser-agent', 'ghostty-codex']);
+    expect(loungeManagerAgentIds({
+      STAGE5_LOUNGE_MANAGER_AGENT_IDS: 'ghostty-codex,invalid manager',
+    })).toEqual([]);
+  });
+
   it('defines online as a pending wake wait and returns a bounded renewal result on timeout', async () => {
     const service = await serviceFixture();
     await service.join({ agentId: 'browser-agent', provider: 'codex', room: 'stage5-lounge' });
@@ -87,5 +96,65 @@ describe('LoungeService', () => {
 
     cancellation.abort();
     await pending.catch(() => undefined);
+  });
+
+  it('wakes listeners on notice revision and denies unconfigured manager operations', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-lounge-notice-service-'));
+    roots.push(root);
+    const databasePath = path.join(root, 'lounge.sqlite3');
+    const manager = new LoungeService({
+      databasePath,
+      managerAgentIds: ['ghostty-codex'],
+      pollIntervalMs: 10,
+    });
+    const listener = new LoungeService({ databasePath, pollIntervalMs: 10 });
+    services.push(manager, listener);
+
+    await expect(manager.join({
+      agentId: 'ghostty-codex',
+      provider: 'codex',
+      room: 'stage5-lounge',
+    })).resolves.toMatchObject({ managerAccess: true, noticeRevision: 0, pinnedNotice: null });
+    await expect(listener.join({
+      agentId: 'youtube-agent',
+      provider: 'claude',
+      room: 'stage5-lounge',
+    })).resolves.toMatchObject({ managerAccess: false, noticeRevision: 0, pinnedNotice: null });
+
+    const pending = listener.wait({ timeoutMs: 2_000 }, new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await expect(manager.pin({
+      body: 'Route browser defects to ghostty-codex.',
+      expectedRevision: 0,
+      idempotencyKey: 'service-pin-routing',
+    })).resolves.toMatchObject({
+      managerAccess: true,
+      noticeRevision: 1,
+      duplicate: false,
+    });
+    await expect(pending).resolves.toMatchObject({
+      timedOut: false,
+      online: true,
+      messages: [],
+      noticeChanged: true,
+      noticeRevision: 1,
+      pinnedNotice: {
+        body: 'Route browser defects to ghostty-codex.',
+        pinnedByAgentId: 'ghostty-codex',
+      },
+      authority: 'coordination_only',
+    });
+    await expect(listener.pin({
+      body: 'Unauthorized replacement.',
+      expectedRevision: 1,
+      idempotencyKey: 'service-unauthorized-pin',
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      recoverable: false,
+      details: { reason: 'MANAGER_ACCESS_REQUIRED' },
+    });
+    await expect(listener.history({ limit: 10 })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      recoverable: false,
+      details: { reason: 'MANAGER_ACCESS_REQUIRED' },
+    });
   });
 });

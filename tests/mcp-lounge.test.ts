@@ -6,7 +6,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { STAGE5_BROWSER_VERSION } from '../src/runtime-info.js';
+import { MCP_TOOL_COUNT, STAGE5_BROWSER_VERSION } from '../src/runtime-info.js';
 
 interface ConnectedClient {
   client: Client;
@@ -28,6 +28,7 @@ async function connectAgent(
   root: string,
   agentName: string,
   runtimeRoot = path.resolve('.'),
+  managerAgentIds: string[] = [],
 ): Promise<ConnectedClient> {
   const projectRoot = path.resolve('.');
   const client = new Client({ name: `stage5-lounge-${agentName}-test`, version: STAGE5_BROWSER_VERSION });
@@ -45,6 +46,9 @@ async function connectAgent(
       STAGE5_BROWSER_ARTIFACTS_DIR: path.join(root, agentName, 'artifacts'),
       STAGE5_BROWSER_HEADLESS: '1',
       STAGE5_BROWSER_OPERATION_TIMEOUT_MS: '5000',
+      ...(managerAgentIds.length === 0
+        ? {}
+        : { STAGE5_LOUNGE_MANAGER_AGENT_IDS: managerAgentIds.join(',') }),
     },
   });
   await client.connect(transport);
@@ -67,7 +71,16 @@ describe('MCP Agent Lounge', () => {
     const finance = await connectAgent(temporaryRoot, 'finance-agent');
 
     const tools = await browser.client.listTools();
-    for (const name of ['lounge_join', 'lounge_send', 'lounge_wait', 'lounge_ack', 'lounge_status']) {
+    expect(tools.tools).toHaveLength(MCP_TOOL_COUNT);
+    for (const name of [
+      'lounge_join',
+      'lounge_send',
+      'lounge_wait',
+      'lounge_ack',
+      'lounge_status',
+      'lounge_pin',
+      'lounge_history',
+    ]) {
       expect(tools.tools.some((tool) => tool.name === name), `${name} should be exposed`).toBe(true);
     }
 
@@ -182,6 +195,149 @@ describe('MCP Agent Lounge', () => {
           expect.objectContaining({ agentId: 'youtube-agent', state: 'acted' }),
           expect.objectContaining({ agentId: 'finance-agent', state: 'acted' }),
         ]),
+      })],
+    });
+  }, 20_000);
+
+  it('wakes listeners for manager-pinned notices and audits room-wide history reads', async () => {
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-agent-lounge-manager-mcp-'));
+    const manager = await connectAgent(
+      temporaryRoot,
+      'ghostty-codex',
+      path.resolve('.'),
+      ['ghostty-codex'],
+    );
+    const youtube = await connectAgent(temporaryRoot, 'youtube-agent');
+    const finance = await connectAgent(temporaryRoot, 'finance-agent');
+
+    await expect(manager.client.callTool({
+      name: 'lounge_join',
+      arguments: {
+        agentId: 'ghostty-codex',
+        displayName: 'Ghostty Codex',
+        provider: 'codex',
+        room: 'stage5-lounge',
+      },
+    }).then(structured)).resolves.toMatchObject({
+      agentId: 'ghostty-codex',
+      managerAccess: true,
+      noticeRevision: 0,
+      pinnedNotice: null,
+    });
+    for (const [connection, agentId, provider] of [
+      [youtube, 'youtube-agent', 'claude'],
+      [finance, 'finance-agent', 'codex'],
+    ] as const) {
+      await expect(connection.client.callTool({
+        name: 'lounge_join',
+        arguments: { agentId, provider, room: 'stage5-lounge' },
+      }).then(structured)).resolves.toMatchObject({
+        agentId,
+        managerAccess: false,
+        noticeRevision: 0,
+      });
+    }
+
+    const noticeWait = youtube.client.callTool({
+      name: 'lounge_wait',
+      arguments: { timeoutMs: 5_000, limit: 20 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const pinned = structured(await manager.client.callTool({
+      name: 'lounge_pin',
+      arguments: {
+        body: 'Route sanitized Stage5 Browser defects to ghostty-codex.',
+        expectedRevision: 0,
+        idempotencyKey: 'mcp-manager-routing-notice',
+      },
+    }));
+    expect(pinned).toMatchObject({
+      managerAccess: true,
+      noticeRevision: 1,
+      duplicate: false,
+      pinnedNotice: {
+        revision: 1,
+        body: 'Route sanitized Stage5 Browser defects to ghostty-codex.',
+        pinnedByAgentId: 'ghostty-codex',
+      },
+    });
+    expect(structured(await noticeWait)).toMatchObject({
+      messages: [],
+      noticeChanged: true,
+      noticeRevision: 1,
+      timedOut: false,
+      pinnedNotice: { body: 'Route sanitized Stage5 Browser defects to ghostty-codex.' },
+    });
+
+    const direct = structured(await youtube.client.callTool({
+      name: 'lounge_send',
+      arguments: {
+        to: ['finance-agent'],
+        kind: 'finding',
+        body: 'A sanitized direct dogfooding finding.',
+        replyTo: null,
+        taskKey: 'manager-history-acceptance',
+        idempotencyKey: 'mcp-manager-history-direct',
+      },
+    }));
+    const directMessageId = direct.messageId;
+    expect(typeof directMessageId).toBe('string');
+    if (typeof directMessageId !== 'string') throw new Error('Direct history fixture returned no message ID.');
+
+    const history = structured(await manager.client.callTool({
+      name: 'lounge_history',
+      arguments: { limit: 10, beforeSequence: null, afterSequence: null },
+    }));
+    expect(history).toMatchObject({
+      requestingAgentId: 'ghostty-codex',
+      managerAccess: true,
+      messages: [expect.objectContaining({
+        messageId: directMessageId,
+        senderAgentId: 'youtube-agent',
+        body: 'A sanitized direct dogfooding finding.',
+        recipients: [expect.objectContaining({ agentId: 'finance-agent', state: 'pending' })],
+        authority: 'coordination_only',
+      })],
+      page: { limit: 10, hasOlder: false, hasNewer: false },
+    });
+    expect(typeof history.auditId).toBe('string');
+
+    const denied = await youtube.client.callTool({
+      name: 'lounge_history',
+      arguments: { limit: 10, beforeSequence: null, afterSequence: null },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.structuredContent).toMatchObject({
+      error: {
+        code: 'OPERATION_FAILED',
+        recoverable: false,
+        details: { reason: 'MANAGER_ACCESS_REQUIRED' },
+      },
+    });
+
+    const delivered = structured(await finance.client.callTool({
+      name: 'lounge_wait',
+      arguments: { timeoutMs: 2_000, limit: 20 },
+    }));
+    expect(delivered).toMatchObject({
+      messages: [expect.objectContaining({ messageId: directMessageId, deliveryAttempt: 1 })],
+      timedOut: false,
+    });
+    structured(await finance.client.callTool({
+      name: 'lounge_ack',
+      arguments: { messageIds: [directMessageId], state: 'seen' },
+    }));
+    structured(await finance.client.callTool({
+      name: 'lounge_ack',
+      arguments: { messageIds: [directMessageId], state: 'acted' },
+    }));
+    expect(structured(await manager.client.callTool({
+      name: 'lounge_history',
+      arguments: { limit: 10, beforeSequence: null, afterSequence: null },
+    }))).toMatchObject({
+      messages: [expect.objectContaining({
+        messageId: directMessageId,
+        recipients: [expect.objectContaining({ agentId: 'finance-agent', state: 'acted' })],
       })],
     });
   }, 20_000);

@@ -1,6 +1,7 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -22,8 +23,8 @@ async function storeFixture(): Promise<{ root: string; databasePath: string }> {
   return { root, databasePath: path.join(root, 'lounge.sqlite3') };
 }
 
-function client(databasePath: string): LoungeStoreClient {
-  const value = new LoungeStoreClient({ databasePath });
+function client(databasePath: string, managerAgentIds: string[] = []): LoungeStoreClient {
+  const value = new LoungeStoreClient({ databasePath, managerAgentIds });
   clients.push(value);
   return value;
 }
@@ -341,6 +342,202 @@ describe('LoungeStoreClient', () => {
     expect(first.messageId).not.toBe(second.messageId);
     expect(first.loungeId).toBe('first-lounge');
     expect(second.loungeId).toBe('second-lounge');
+  });
+
+  it('updates one revisioned pinned notice only for configured managers', async () => {
+    const { databasePath } = await storeFixture();
+    const managerStore = client(databasePath, ['ghostty-codex']);
+    const memberStore = client(databasePath);
+    const manager = await join(managerStore, 'ghostty-codex', 8_000);
+    const member = await join(memberStore, 'youtube-agent', 8_010);
+
+    await expect(memberStore.notice({ sessionId: member.sessionId })).resolves.toEqual({
+      loungeId: 'stage5-lounge',
+      noticeRevision: 0,
+      pinnedNotice: null,
+    });
+    const pinned = await managerStore.pin({
+      sessionId: manager.sessionId,
+      body: 'Route Stage5 Browser defects to ghostty-codex.',
+      expectedRevision: 0,
+      idempotencyKey: 'pin-coordinator-routing',
+      nowMs: 8_020,
+    });
+    expect(pinned).toEqual({
+      loungeId: 'stage5-lounge',
+      requestingAgentId: 'ghostty-codex',
+      noticeRevision: 1,
+      pinnedNotice: {
+        revision: 1,
+        body: 'Route Stage5 Browser defects to ghostty-codex.',
+        pinnedByAgentId: 'ghostty-codex',
+        pinnedAtMs: 8_020,
+      },
+      duplicate: false,
+    });
+    await expect(managerStore.pin({
+      sessionId: manager.sessionId,
+      body: 'Route Stage5 Browser defects to ghostty-codex.',
+      expectedRevision: 0,
+      idempotencyKey: 'pin-coordinator-routing',
+      nowMs: 8_030,
+    })).resolves.toEqual({ ...pinned, duplicate: true });
+    await expect(managerStore.pin({
+      sessionId: manager.sessionId,
+      body: 'A conflicting notice.',
+      expectedRevision: 0,
+      idempotencyKey: 'pin-coordinator-routing',
+      nowMs: 8_040,
+    })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' } satisfies Partial<LoungeStoreError>);
+    await expect(managerStore.pin({
+      sessionId: manager.sessionId,
+      body: 'A stale compare-and-set update.',
+      expectedRevision: 0,
+      idempotencyKey: 'stale-pin-update',
+      nowMs: 8_050,
+    })).rejects.toMatchObject({
+      code: 'NOTICE_REVISION_CONFLICT',
+      details: { currentRevision: 1 },
+    } satisfies Partial<LoungeStoreError>);
+    await expect(memberStore.pin({
+      sessionId: member.sessionId,
+      body: 'An unauthorized notice.',
+      expectedRevision: 1,
+      idempotencyKey: 'unauthorized-pin',
+      nowMs: 8_060,
+    })).rejects.toMatchObject({ code: 'MANAGER_ACCESS_REQUIRED' } satisfies Partial<LoungeStoreError>);
+
+    const cleared = await managerStore.pin({
+      sessionId: manager.sessionId,
+      body: null,
+      expectedRevision: 1,
+      idempotencyKey: 'clear-coordinator-routing',
+      nowMs: 8_070,
+    });
+    expect(cleared).toMatchObject({ noticeRevision: 2, pinnedNotice: null, duplicate: false });
+    await expect(memberStore.notice({ sessionId: member.sessionId })).resolves.toEqual({
+      loungeId: 'stage5-lounge',
+      noticeRevision: 2,
+      pinnedNotice: null,
+    });
+  });
+
+  it('gives configured managers audited room-wide history without claiming deliveries', async () => {
+    const { databasePath } = await storeFixture();
+    const managerStore = client(databasePath, ['ghostty-codex']);
+    const youtubeStore = client(databasePath);
+    const financeStore = client(databasePath);
+    const manager = await join(managerStore, 'ghostty-codex', 9_000);
+    const youtube = await join(youtubeStore, 'youtube-agent', 9_010);
+    const finance = await join(financeStore, 'finance-agent', 9_020);
+
+    const first = await youtubeStore.send({
+      sessionId: youtube.sessionId,
+      kind: 'blocker',
+      body: 'First direct blocker.',
+      toAgentIds: ['finance-agent'],
+      idempotencyKey: 'history-first',
+      nowMs: 9_030,
+    });
+    const second = await financeStore.send({
+      sessionId: finance.sessionId,
+      kind: 'answer',
+      body: 'Second direct answer.',
+      toAgentIds: ['youtube-agent'],
+      idempotencyKey: 'history-second',
+      nowMs: 9_040,
+    });
+    const third = await youtubeStore.send({
+      sessionId: youtube.sessionId,
+      kind: 'completion',
+      body: 'Third direct completion.',
+      toAgentIds: ['finance-agent'],
+      idempotencyKey: 'history-third',
+      nowMs: 9_050,
+    });
+
+    const latest = await managerStore.history({
+      sessionId: manager.sessionId,
+      limit: 2,
+      nowMs: 9_060,
+    });
+    expect(latest.messages.map((message) => message.messageId)).toEqual([
+      second.messageId,
+      third.messageId,
+    ]);
+    expect(latest).toMatchObject({
+      loungeId: 'stage5-lounge',
+      requestingAgentId: 'ghostty-codex',
+      auditedAtMs: 9_060,
+      page: {
+        limit: 2,
+        oldestSequence: second.sequence,
+        newestSequence: third.sequence,
+        hasOlder: true,
+        hasNewer: false,
+      },
+      messages: [
+        expect.objectContaining({
+          body: 'Second direct answer.',
+          recipients: [expect.objectContaining({ agentId: 'youtube-agent', state: 'pending' })],
+          authority: 'coordination_only',
+        }),
+        expect.objectContaining({
+          body: 'Third direct completion.',
+          recipients: [expect.objectContaining({ agentId: 'finance-agent', state: 'pending' })],
+          authority: 'coordination_only',
+        }),
+      ],
+    });
+    const older = await managerStore.history({
+      sessionId: manager.sessionId,
+      beforeSequence: second.sequence,
+      limit: 2,
+      nowMs: 9_070,
+    });
+    expect(older.messages).toEqual([
+      expect.objectContaining({ messageId: first.messageId, body: 'First direct blocker.' }),
+    ]);
+    expect(older.page).toMatchObject({ hasOlder: false, hasNewer: true });
+    const newer = await managerStore.history({
+      sessionId: manager.sessionId,
+      afterSequence: first.sequence,
+      limit: 1,
+      nowMs: 9_080,
+    });
+    expect(newer.messages).toEqual([expect.objectContaining({ messageId: second.messageId })]);
+    expect(newer.page).toMatchObject({ hasOlder: true, hasNewer: true });
+    expect(new Set([latest.auditId, older.auditId, newer.auditId]).size).toBe(3);
+
+    const financeInbox = await financeStore.claimInbox({
+      sessionId: finance.sessionId,
+      nowMs: 9_090,
+    });
+    expect(financeInbox.messages.map((message) => message.messageId)).toEqual([
+      first.messageId,
+      third.messageId,
+    ]);
+    await expect(financeStore.history({
+      sessionId: finance.sessionId,
+      limit: 10,
+      nowMs: 9_100,
+    })).rejects.toMatchObject({ code: 'MANAGER_ACCESS_REQUIRED' } satisfies Partial<LoungeStoreError>);
+
+    const auditDatabase = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const audits = auditDatabase.prepare(`
+        SELECT manager_agent_id, result_count
+        FROM lounge_history_audits
+        ORDER BY created_at_ms
+      `).all() as unknown as Array<{ manager_agent_id: string; result_count: number }>;
+      expect(audits).toEqual([
+        { manager_agent_id: 'ghostty-codex', result_count: 2 },
+        { manager_agent_id: 'ghostty-codex', result_count: 1 },
+        { manager_agent_id: 'ghostty-codex', result_count: 1 },
+      ]);
+    } finally {
+      auditDatabase.close();
+    }
   });
 
   it('fails a stalled store worker within a bounded client deadline', async () => {

@@ -56,9 +56,9 @@ After reconnection, a natural-language instruction such as “Use the `stage5_br
 
 ## Agent Lounge connection
 
-Release 0.8.0 adds five `lounge_*` tools and therefore requires one host reconnect for tasks that started with the older tool catalog. Do not reinstall or duplicate the existing `stage5_browser` registration. ChatGPT/Codex should reconnect its MCP host once; Claude Code should exit and resume the same conversation with `claude --continue`.
+Release 0.10.0 adds manager-only `lounge_pin` and `lounge_history`, bringing the surface to 31 tools and tool catalog 9. Tasks using an older catalog require one host reconnect. Do not reinstall or duplicate the existing `stage5_browser` registration. ChatGPT/Codex should reconnect its MCP host once; Claude Code should exit and resume the same conversation with `claude --continue`.
 
-After reconnection, each task joins `stage5-lounge` with its assigned stable identity, sends one readiness message, and keeps `lounge_wait` pending whenever idle. A pending wait is what makes the active task wakeable; after a delivery or empty timeout, renew it while collaboration is still active. If the model task ends, messages remain durable but cannot restart that model on their own. The complete workflow, initial identities, acknowledgement rules, and security boundary are in [agent-lounge.md](./agent-lounge.md).
+After reconnection, each task joins `stage5-lounge` with its assigned stable identity, reads the returned pinned notice, sends one readiness message, and keeps `lounge_wait` pending whenever idle. A pending wait is what makes the active task wakeable; a message or notice revision wakes it, and after processing or an empty timeout it renews while collaboration is still active. If the model task ends, messages remain durable but cannot restart that model on their own. Manager access is disabled unless the trusted local server environment allowlists the identity with `STAGE5_LOUNGE_MANAGER_AGENT_IDS`. The complete workflow, initial identities, acknowledgement rules, and security boundary are in [agent-lounge.md](./agent-lounge.md).
 
 ## Runtime diagnosis
 

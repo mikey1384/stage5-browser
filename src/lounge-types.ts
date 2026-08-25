@@ -44,6 +44,19 @@ export interface LoungeJoinResult {
   supersededSessionCount: number;
 }
 
+export interface LoungePinnedNotice {
+  revision: number;
+  body: string;
+  pinnedByAgentId: string;
+  pinnedAtMs: number;
+}
+
+export interface LoungeNoticeState {
+  loungeId: string;
+  noticeRevision: number;
+  pinnedNotice: LoungePinnedNotice | null;
+}
+
 export interface LoungeHeartbeatInput {
   sessionId: string;
   state: Exclude<LoungeSessionState, 'offline'>;
@@ -163,6 +176,74 @@ export interface LoungeStatusResult {
   requestingAgentId: string;
   members: LoungeMemberStatus[];
   recentSentMessages: LoungeSentMessageStatus[];
+  noticeRevision: number;
+  pinnedNotice: LoungePinnedNotice | null;
+}
+
+export interface LoungePinInput {
+  sessionId: string;
+  body: string | null;
+  expectedRevision: number;
+  idempotencyKey: string;
+  nowMs?: number;
+}
+
+export interface LoungePinResult extends LoungeNoticeState {
+  requestingAgentId: string;
+  duplicate: boolean;
+}
+
+export interface LoungeNoticeInput {
+  sessionId: string;
+}
+
+export interface LoungeHistoryInput {
+  sessionId: string;
+  limit?: number;
+  beforeSequence?: number | null;
+  afterSequence?: number | null;
+  nowMs?: number;
+}
+
+export interface LoungeHistoryRecipient {
+  agentId: string;
+  state: LoungeDeliveryState;
+  deliveredAtMs: number | null;
+  seenAtMs: number | null;
+  actedAtMs: number | null;
+  updatedAtMs: number;
+}
+
+export interface LoungeHistoryMessage {
+  messageId: string;
+  sequence: number;
+  loungeId: string;
+  senderAgentId: string;
+  senderDisplayName: string;
+  kind: LoungeMessageKind;
+  body: string;
+  replyToMessageId: string | null;
+  taskKey: string | null;
+  createdAtMs: number;
+  recipients: LoungeHistoryRecipient[];
+  authority: 'coordination_only';
+}
+
+export interface LoungeHistoryResult {
+  loungeId: string;
+  requestingAgentId: string;
+  auditId: string;
+  auditedAtMs: number;
+  messages: LoungeHistoryMessage[];
+  page: {
+    limit: number;
+    beforeSequence: number | null;
+    afterSequence: number | null;
+    oldestSequence: number | null;
+    newestSequence: number | null;
+    hasOlder: boolean;
+    hasNewer: boolean;
+  };
 }
 
 export interface LoungeCloseSessionInput {
@@ -188,6 +269,9 @@ export type LoungeStoreOperation =
   | 'claimInbox'
   | 'ack'
   | 'status'
+  | 'notice'
+  | 'pin'
+  | 'history'
   | 'closeSession'
   | 'close';
 
@@ -198,6 +282,9 @@ export type LoungeStoreRequest =
   | { id: string; operation: 'claimInbox'; input: LoungeClaimInboxInput }
   | { id: string; operation: 'ack'; input: LoungeAckInput }
   | { id: string; operation: 'status'; input: LoungeStatusInput }
+  | { id: string; operation: 'notice'; input: LoungeNoticeInput }
+  | { id: string; operation: 'pin'; input: LoungePinInput }
+  | { id: string; operation: 'history'; input: LoungeHistoryInput }
   | { id: string; operation: 'closeSession'; input: LoungeCloseSessionInput }
   | { id: string; operation: 'close'; input: Record<string, never> };
 

@@ -17,10 +17,18 @@ import {
   type LoungeDeliveryState,
   type LoungeHeartbeatInput,
   type LoungeHeartbeatResult,
+  type LoungeHistoryInput,
+  type LoungeHistoryMessage,
+  type LoungeHistoryRecipient,
+  type LoungeHistoryResult,
   type LoungeInboxMessage,
   type LoungeJoinInput,
   type LoungeJoinResult,
   type LoungeMemberStatus,
+  type LoungeNoticeInput,
+  type LoungeNoticeState,
+  type LoungePinInput,
+  type LoungePinResult,
   type LoungePresenceState,
   type LoungeSendInput,
   type LoungeSendResult,
@@ -39,7 +47,15 @@ const MAX_SESSION_LEASE_MS = 300_000;
 const MAX_MESSAGE_BODY_BYTES = 16 * 1024;
 const MAX_INBOX_CLAIM = 50;
 const MAX_RECENT_SENT_MESSAGES = 50;
+const MAX_HISTORY_MESSAGES = 100;
+const MAX_PINNED_NOTICE_CHARACTERS = 4_000;
+const MAX_PINNED_NOTICE_BYTES = 8 * 1024;
+const STORE_INITIALIZATION_TIMEOUT_MS = 5_000;
+const STORE_INITIALIZATION_RETRY_MS = 25;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const STORE_INITIALIZATION_WAIT = new Int32Array(
+  new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
+);
 
 interface SessionRow {
   session_id: string;
@@ -92,6 +108,44 @@ interface SentDeliveryRow {
   recipient_agent_id: string | null;
   delivery_state: LoungeDeliveryState | null;
   delivery_updated_at_ms: number | null;
+}
+
+interface NoticeRow {
+  revision: number;
+  body: string | null;
+  pinned_by_agent_id: string | null;
+  pinned_at_ms: number | null;
+}
+
+interface NoticeMutationRow {
+  payload_hash: string;
+  revision: number;
+  body: string | null;
+  actor_agent_id: string;
+  created_at_ms: number;
+}
+
+interface HistoryMessageRow {
+  message_id: string;
+  sequence: number;
+  lounge_id: string;
+  sender_agent_id: string;
+  sender_display_name: string;
+  kind: LoungeInboxMessage['kind'];
+  body: string;
+  reply_to_message_id: string | null;
+  task_key: string | null;
+  created_at_ms: number;
+}
+
+interface HistoryDeliveryRow {
+  message_id: string;
+  recipient_agent_id: string;
+  state: LoungeDeliveryState;
+  delivered_at_ms: number | null;
+  seen_at_ms: number | null;
+  acted_at_ms: number | null;
+  updated_at_ms: number;
 }
 
 function assertIdentifier(value: string, label: string): void {
@@ -182,6 +236,26 @@ function messagePayloadHash(input: {
   return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }
 
+function noticePayloadHash(input: { body: string | null; expectedRevision: number }): string {
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
+}
+
+function optionalSequence(value: number | null | undefined, label: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new LoungeStoreError('INVALID_ARGUMENT', `${label} must be a positive safe integer.`);
+  }
+  return value;
+}
+
+function retryableSqliteContention(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as Error & { code?: unknown }).code;
+  return code === 'SQLITE_BUSY' ||
+    code === 'SQLITE_LOCKED' ||
+    /\b(database|schema|table) (?:is )?locked\b/iu.test(error.message);
+}
+
 function storeError(error: unknown): LoungeStoreErrorShape {
   if (error instanceof LoungeStoreError) {
     return {
@@ -198,8 +272,14 @@ function storeError(error: unknown): LoungeStoreErrorShape {
 
 export class LoungeStoreDatabase {
   private readonly database: DatabaseSync;
+  private readonly managerAgentIds: ReadonlySet<string>;
 
-  constructor(readonly databasePath: string) {
+  constructor(readonly databasePath: string, managerAgentIds: string[] = []) {
+    const uniqueManagerAgentIds = [...new Set(managerAgentIds)];
+    for (const agentId of uniqueManagerAgentIds) {
+      assertIdentifier(agentId, 'manager agentId');
+    }
+    this.managerAgentIds = new Set(uniqueManagerAgentIds);
     mkdirSync(path.dirname(databasePath), { recursive: true, mode: 0o700 });
     this.database = new DatabaseSync(databasePath, {
       open: true,
@@ -207,11 +287,12 @@ export class LoungeStoreDatabase {
       allowExtension: false,
       timeout: 1_000,
     });
-    this.database.exec('PRAGMA busy_timeout = 5000');
-    this.database.exec('PRAGMA foreign_keys = ON');
-    this.database.exec('PRAGMA journal_mode = WAL');
-    this.database.exec('PRAGMA synchronous = NORMAL');
-    this.migrate();
+    try {
+      this.initialize();
+    } catch (error) {
+      this.database.close();
+      throw error;
+    }
     chmodSync(databasePath, 0o600);
   }
 
@@ -758,11 +839,298 @@ export class LoungeStoreDatabase {
     }
 
     return {
-      loungeId: session.lounge_id,
       requestingAgentId: session.agent_id,
       members,
       recentSentMessages: [...sentById.values()],
+      ...this.currentNotice(session.lounge_id),
     };
+  }
+
+  notice(input: LoungeNoticeInput): LoungeNoticeState {
+    assertIdentifier(input.sessionId, 'sessionId');
+    const session = this.requireSession(input.sessionId);
+    return this.currentNotice(session.lounge_id);
+  }
+
+  pin(input: LoungePinInput): LoungePinResult {
+    assertIdentifier(input.sessionId, 'sessionId');
+    assertBoundedText(input.idempotencyKey, 'idempotencyKey', 120);
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+      throw new LoungeStoreError(
+        'INVALID_ARGUMENT',
+        'expectedRevision must be a non-negative safe integer.',
+      );
+    }
+    const body = input.body === null ? null : input.body.trim();
+    if (body !== null) {
+      assertBoundedText(body, 'body', MAX_PINNED_NOTICE_CHARACTERS);
+      if (Buffer.byteLength(body, 'utf8') > MAX_PINNED_NOTICE_BYTES) {
+        throw new LoungeStoreError(
+          'INVALID_ARGUMENT',
+          `body must be no larger than ${MAX_PINNED_NOTICE_BYTES} UTF-8 bytes.`,
+        );
+      }
+    }
+    const nowMs = operationTime(input.nowMs);
+    const session = this.requireManagerSession(input.sessionId);
+    const payloadHash = noticePayloadHash({ body, expectedRevision: input.expectedRevision });
+
+    return this.transaction(() => {
+      const existing = this.database.prepare(`
+        SELECT payload_hash, revision, body, actor_agent_id, created_at_ms
+        FROM lounge_notice_mutations
+        WHERE lounge_id = ? AND actor_agent_id = ? AND idempotency_key = ?
+      `).get(
+        session.lounge_id,
+        session.agent_id,
+        input.idempotencyKey,
+      ) as NoticeMutationRow | undefined;
+      if (existing !== undefined) {
+        if (existing.payload_hash !== payloadHash) {
+          throw new LoungeStoreError(
+            'IDEMPOTENCY_CONFLICT',
+            'The idempotency key was already used for a different pinned-notice mutation.',
+          );
+        }
+        return {
+          loungeId: session.lounge_id,
+          requestingAgentId: session.agent_id,
+          noticeRevision: existing.revision,
+          pinnedNotice: existing.body === null
+            ? null
+            : {
+                revision: existing.revision,
+                body: existing.body,
+                pinnedByAgentId: existing.actor_agent_id,
+                pinnedAtMs: existing.created_at_ms,
+              },
+          duplicate: true,
+        };
+      }
+
+      const current = this.currentNotice(session.lounge_id);
+      if (current.noticeRevision !== input.expectedRevision) {
+        throw new LoungeStoreError(
+          'NOTICE_REVISION_CONFLICT',
+          'The pinned notice changed since it was last observed.',
+          { currentRevision: current.noticeRevision },
+        );
+      }
+      const revision = current.noticeRevision + 1;
+      this.database.prepare(`
+        INSERT INTO lounge_notices (
+          lounge_id,
+          revision,
+          body,
+          pinned_by_agent_id,
+          pinned_at_ms
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(lounge_id) DO UPDATE SET
+          revision = excluded.revision,
+          body = excluded.body,
+          pinned_by_agent_id = excluded.pinned_by_agent_id,
+          pinned_at_ms = excluded.pinned_at_ms
+      `).run(
+        session.lounge_id,
+        revision,
+        body,
+        body === null ? null : session.agent_id,
+        body === null ? null : nowMs,
+      );
+      this.database.prepare(`
+        INSERT INTO lounge_notice_mutations (
+          lounge_id,
+          actor_agent_id,
+          idempotency_key,
+          payload_hash,
+          revision,
+          body,
+          created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        session.lounge_id,
+        session.agent_id,
+        input.idempotencyKey,
+        payloadHash,
+        revision,
+        body,
+        nowMs,
+      );
+      return {
+        loungeId: session.lounge_id,
+        requestingAgentId: session.agent_id,
+        noticeRevision: revision,
+        pinnedNotice: body === null
+          ? null
+          : {
+              revision,
+              body,
+              pinnedByAgentId: session.agent_id,
+              pinnedAtMs: nowMs,
+            },
+        duplicate: false,
+      };
+    });
+  }
+
+  history(input: LoungeHistoryInput): LoungeHistoryResult {
+    assertIdentifier(input.sessionId, 'sessionId');
+    const nowMs = operationTime(input.nowMs);
+    const limit = input.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_HISTORY_MESSAGES) {
+      throw new LoungeStoreError(
+        'INVALID_ARGUMENT',
+        `limit must be between 1 and ${MAX_HISTORY_MESSAGES}.`,
+      );
+    }
+    const beforeSequence = optionalSequence(input.beforeSequence, 'beforeSequence');
+    const afterSequence = optionalSequence(input.afterSequence, 'afterSequence');
+    if (beforeSequence !== null && afterSequence !== null) {
+      throw new LoungeStoreError(
+        'INVALID_ARGUMENT',
+        'beforeSequence and afterSequence are mutually exclusive.',
+      );
+    }
+    const session = this.requireManagerSession(input.sessionId);
+
+    return this.transaction(() => {
+      const select = (where: string, order: 'ASC' | 'DESC', cursor?: number): HistoryMessageRow[] =>
+        this.database.prepare(`
+          SELECT
+            m.id AS message_id,
+            m.sequence,
+            m.lounge_id,
+            m.sender_agent_id,
+            sender.display_name AS sender_display_name,
+            m.kind,
+            m.body,
+            m.reply_to_message_id,
+            m.task_key,
+            m.created_at_ms
+          FROM messages m
+          JOIN agents sender ON sender.id = m.sender_agent_id
+          WHERE m.lounge_id = ? ${where}
+          ORDER BY m.sequence ${order}
+          LIMIT ?
+        `).all(
+          ...(cursor === undefined
+            ? [session.lounge_id, limit]
+            : [session.lounge_id, cursor, limit]),
+        ) as unknown as HistoryMessageRow[];
+      let rows: HistoryMessageRow[];
+      if (afterSequence !== null) {
+        rows = select('AND m.sequence > ?', 'ASC', afterSequence);
+      } else if (beforeSequence !== null) {
+        rows = select('AND m.sequence < ?', 'DESC', beforeSequence).reverse();
+      } else {
+        rows = select('', 'DESC').reverse();
+      }
+
+      const recipientsByMessage = new Map<string, LoungeHistoryRecipient[]>();
+      if (rows.length > 0) {
+        const placeholders = rows.map(() => '?').join(', ');
+        const deliveries = this.database.prepare(`
+          SELECT
+            message_id,
+            recipient_agent_id,
+            state,
+            delivered_at_ms,
+            seen_at_ms,
+            acted_at_ms,
+            updated_at_ms
+          FROM deliveries
+          WHERE message_id IN (${placeholders})
+          ORDER BY message_id, recipient_agent_id
+        `).all(...rows.map((row) => row.message_id)) as unknown as HistoryDeliveryRow[];
+        for (const delivery of deliveries) {
+          const recipients = recipientsByMessage.get(delivery.message_id) ?? [];
+          recipients.push({
+            agentId: delivery.recipient_agent_id,
+            state: delivery.state,
+            deliveredAtMs: delivery.delivered_at_ms,
+            seenAtMs: delivery.seen_at_ms,
+            actedAtMs: delivery.acted_at_ms,
+            updatedAtMs: delivery.updated_at_ms,
+          });
+          recipientsByMessage.set(delivery.message_id, recipients);
+        }
+      }
+      const messages: LoungeHistoryMessage[] = rows.map((row) => ({
+        messageId: row.message_id,
+        sequence: row.sequence,
+        loungeId: row.lounge_id,
+        senderAgentId: row.sender_agent_id,
+        senderDisplayName: row.sender_display_name,
+        kind: row.kind,
+        body: row.body,
+        replyToMessageId: row.reply_to_message_id,
+        taskKey: row.task_key,
+        createdAtMs: row.created_at_ms,
+        recipients: recipientsByMessage.get(row.message_id) ?? [],
+        authority: 'coordination_only',
+      }));
+      const oldestSequence = messages[0]?.sequence ?? null;
+      const newestSequence = messages.at(-1)?.sequence ?? null;
+      const exists = (comparison: '<' | '<=' | '>' | '>=', sequence: number): boolean => {
+        const row = this.database.prepare(`
+          SELECT 1 AS present
+          FROM messages
+          WHERE lounge_id = ? AND sequence ${comparison} ?
+          LIMIT 1
+        `).get(session.lounge_id, sequence) as { present: number } | undefined;
+        return row !== undefined;
+      };
+      const hasOlder = oldestSequence === null
+        ? (afterSequence !== null && exists('<=', afterSequence))
+        : exists('<', oldestSequence);
+      const hasNewer = newestSequence === null
+        ? (beforeSequence !== null && exists('>=', beforeSequence))
+        : exists('>', newestSequence);
+      const auditId = randomUUID();
+      this.database.prepare(`
+        INSERT INTO lounge_history_audits (
+          id,
+          lounge_id,
+          manager_agent_id,
+          session_id,
+          before_sequence,
+          after_sequence,
+          requested_limit,
+          result_count,
+          oldest_sequence,
+          newest_sequence,
+          created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        auditId,
+        session.lounge_id,
+        session.agent_id,
+        session.session_id,
+        beforeSequence,
+        afterSequence,
+        limit,
+        messages.length,
+        oldestSequence,
+        newestSequence,
+        nowMs,
+      );
+      return {
+        loungeId: session.lounge_id,
+        requestingAgentId: session.agent_id,
+        auditId,
+        auditedAtMs: nowMs,
+        messages,
+        page: {
+          limit,
+          beforeSequence,
+          afterSequence,
+          oldestSequence,
+          newestSequence,
+          hasOlder,
+          hasNewer,
+        },
+      };
+    });
   }
 
   closeSession(input: LoungeCloseSessionInput): LoungeCloseSessionResult {
@@ -774,6 +1142,41 @@ export class LoungeStoreDatabase {
       WHERE id = ? AND closed_at_ms IS NULL
     `).run(nowMs, nowMs, nowMs, input.sessionId);
     return { sessionId: input.sessionId, closed: Number(result.changes) === 1 };
+  }
+
+  private currentNotice(loungeId: string): LoungeNoticeState {
+    const row = this.database.prepare(`
+      SELECT revision, body, pinned_by_agent_id, pinned_at_ms
+      FROM lounge_notices
+      WHERE lounge_id = ?
+    `).get(loungeId) as NoticeRow | undefined;
+    if (row === undefined) {
+      return { loungeId, noticeRevision: 0, pinnedNotice: null };
+    }
+    return {
+      loungeId,
+      noticeRevision: row.revision,
+      pinnedNotice:
+        row.body === null || row.pinned_by_agent_id === null || row.pinned_at_ms === null
+          ? null
+          : {
+              revision: row.revision,
+              body: row.body,
+              pinnedByAgentId: row.pinned_by_agent_id,
+              pinnedAtMs: row.pinned_at_ms,
+            },
+    };
+  }
+
+  private requireManagerSession(sessionId: string): SessionRow {
+    const session = this.requireSession(sessionId);
+    if (!this.managerAgentIds.has(session.agent_id)) {
+      throw new LoungeStoreError(
+        'MANAGER_ACCESS_REQUIRED',
+        'This Lounge connection is not authorized for manager access.',
+      );
+    }
+    return session;
   }
 
   private requireSession(sessionId: string): SessionRow {
@@ -804,6 +1207,28 @@ export class LoungeStoreDatabase {
     } catch (error) {
       this.database.exec('ROLLBACK');
       throw error;
+    }
+  }
+
+  private initialize(): void {
+    const deadline = Date.now() + STORE_INITIALIZATION_TIMEOUT_MS;
+    while (true) {
+      try {
+        this.database.exec('PRAGMA busy_timeout = 5000');
+        this.database.exec('PRAGMA foreign_keys = ON');
+        this.database.exec('PRAGMA journal_mode = WAL');
+        this.database.exec('PRAGMA synchronous = NORMAL');
+        this.migrate();
+        return;
+      } catch (error) {
+        if (!retryableSqliteContention(error) || Date.now() >= deadline) throw error;
+        Atomics.wait(
+          STORE_INITIALIZATION_WAIT,
+          0,
+          0,
+          Math.min(STORE_INITIALIZATION_RETRY_MS, Math.max(1, deadline - Date.now())),
+        );
+      }
     }
   }
 
@@ -892,7 +1317,48 @@ export class LoungeStoreDatabase {
         CREATE INDEX IF NOT EXISTS lounge_deliveries_by_recipient
           ON deliveries (recipient_agent_id, state, updated_at_ms);
 
-        PRAGMA user_version = 1;
+        CREATE TABLE IF NOT EXISTS lounge_notices (
+          lounge_id TEXT PRIMARY KEY REFERENCES lounges(id),
+          revision INTEGER NOT NULL CHECK (revision >= 1),
+          body TEXT,
+          pinned_by_agent_id TEXT REFERENCES agents(id),
+          pinned_at_ms INTEGER,
+          CHECK (
+            (body IS NULL AND pinned_by_agent_id IS NULL AND pinned_at_ms IS NULL) OR
+            (body IS NOT NULL AND pinned_by_agent_id IS NOT NULL AND pinned_at_ms IS NOT NULL)
+          )
+        );
+
+        CREATE TABLE IF NOT EXISTS lounge_notice_mutations (
+          lounge_id TEXT NOT NULL REFERENCES lounges(id),
+          actor_agent_id TEXT NOT NULL REFERENCES agents(id),
+          idempotency_key TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK (revision >= 1),
+          body TEXT,
+          created_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (lounge_id, actor_agent_id, idempotency_key),
+          UNIQUE (lounge_id, revision)
+        );
+
+        CREATE TABLE IF NOT EXISTS lounge_history_audits (
+          id TEXT PRIMARY KEY,
+          lounge_id TEXT NOT NULL REFERENCES lounges(id),
+          manager_agent_id TEXT NOT NULL REFERENCES agents(id),
+          session_id TEXT NOT NULL REFERENCES sessions(id),
+          before_sequence INTEGER,
+          after_sequence INTEGER,
+          requested_limit INTEGER NOT NULL,
+          result_count INTEGER NOT NULL,
+          oldest_sequence INTEGER,
+          newest_sequence INTEGER,
+          created_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS lounge_history_audits_by_room
+          ON lounge_history_audits (lounge_id, created_at_ms DESC);
+
+        PRAGMA user_version = 2;
       `);
     });
   }
@@ -901,6 +1367,7 @@ export class LoungeStoreDatabase {
 interface LoungeStoreWorkerData {
   stage5LoungeStoreWorker: true;
   databasePath: string;
+  managerAgentIds: string[];
 }
 
 function isWorkerConfiguration(value: unknown): value is LoungeStoreWorkerData {
@@ -911,7 +1378,9 @@ function isWorkerConfiguration(value: unknown): value is LoungeStoreWorkerData {
   return (
     candidate.stage5LoungeStoreWorker === true &&
     typeof candidate.databasePath === 'string' &&
-    path.isAbsolute(candidate.databasePath)
+    path.isAbsolute(candidate.databasePath) &&
+    Array.isArray(candidate.managerAgentIds) &&
+    candidate.managerAgentIds.every((agentId) => typeof agentId === 'string')
   );
 }
 
@@ -929,6 +1398,12 @@ function handleRequest(store: LoungeStoreDatabase, request: LoungeStoreRequest):
       return store.ack(request.input);
     case 'status':
       return store.status(request.input);
+    case 'notice':
+      return store.notice(request.input);
+    case 'pin':
+      return store.pin(request.input);
+    case 'history':
+      return store.history(request.input);
     case 'closeSession':
       return store.closeSession(request.input);
     case 'close':
@@ -942,7 +1417,7 @@ if (!isMainThread) {
     throw new Error('Invalid Stage5 Lounge store worker configuration.');
   }
   const port = parentPort;
-  const store = new LoungeStoreDatabase(workerData.databasePath);
+  const store = new LoungeStoreDatabase(workerData.databasePath, workerData.managerAgentIds);
   port.on('message', (request: LoungeStoreRequest) => {
     let response: LoungeStoreResponse;
     try {
