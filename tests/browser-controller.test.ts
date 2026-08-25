@@ -330,6 +330,13 @@ describe('BrowserController', () => {
     expect(editorRef).toBeDefined();
     if (editorRef === undefined) throw new Error('Unnamed composer fixture did not expose a textbox ref.');
 
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const snapshotRoot = vi.spyOn(
+      controller as unknown as { snapshotRoot: (...args: unknown[]) => Promise<unknown> },
+      'snapshotRoot',
+    ).mockRejectedValue(new Error('fill_ref must not rediscover the live snapshot root'));
+    const frameLocator = vi.spyOn(page.mainFrame(), 'locator');
+
     const draft = '새로운 영상의 핵심 내용을 정리했습니다.\n\nhttps://example.com/watch?v=stage5';
     const filled = await controller.fillRef({
       snapshotId: observed.snapshotId,
@@ -347,7 +354,9 @@ describe('BrowserController', () => {
       targetKind: 'contenteditable',
     });
     expect(JSON.stringify(filled)).not.toContain(draft);
-    const page = (controller as unknown as { activePage: Page }).activePage;
+    expect(snapshotRoot).not.toHaveBeenCalled();
+    expect(frameLocator.mock.calls.some(([selector]) =>
+      typeof selector === 'string' && selector.startsWith('aria-ref='))).toBe(false);
     await expect(page.locator('#editor p').allTextContents()).resolves.toEqual([
       '새로운 영상의 핵심 내용을 정리했습니다.',
       '',
@@ -360,6 +369,7 @@ describe('BrowserController', () => {
       actionDispatched: true,
       clickDispatched: null,
       fillPhase: 'completed',
+      fillPreparationStep: 'completed',
       inputEvidence: {
         inputEventObserved: true,
         valueMatches: true,
@@ -462,6 +472,62 @@ describe('BrowserController', () => {
       clickDispatched: null,
       fillPhase: 'fill_dispatch',
       inputEvidence: { valueMatches: false },
+    });
+  });
+
+  it('fails a detached snapshot scope promptly at the exact preparation step without resolving ARIA refs again', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Replacing composer</title></head><body>
+        <div id="composer" role="dialog" aria-modal="true" aria-label="Create post">
+          <div id="editor" role="textbox" contenteditable="true" tabindex="0"><p><br></p></div>
+          <button type="button" disabled>Next</button>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-fill-ref-scope-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/compose`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    const editorRef = observed.snapshot.match(/textbox[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(editorRef).toBeDefined();
+    if (editorRef === undefined) throw new Error('Replacing composer fixture did not expose a textbox ref.');
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await page.locator('#composer').evaluate((composer) => composer.replaceWith(composer.cloneNode(true)));
+
+    const startedAt = Date.now();
+    await expect(controller.fillRef({
+      snapshotId: observed.snapshotId,
+      ref: editorRef,
+      frameId: null,
+      value: '이 값은 입력되면 안 됩니다.\n\nhttps://example.com/private-draft',
+      timeoutMs: 2_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'TARGET_NOT_FOUND',
+      details: {
+        reason: 'snapshot_scope_changed',
+        fillPhase: 'target_preparation',
+        fillPreparationStep: 'scope_validation',
+        actionDispatched: false,
+        targetState: null,
+        inputEvidence: null,
+      },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    await expect(page.locator('#editor').textContent()).resolves.toBe('');
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'fill_ref',
+      outcome: 'blocked',
+      actionDispatched: false,
+      fillPhase: 'target_preparation',
+      fillPreparationStep: 'scope_validation',
+      targetState: null,
     });
   });
 
@@ -981,11 +1047,13 @@ describe('BrowserController', () => {
       code: 'OPERATION_FAILED',
       details: {
         reason: 'detached',
+        actionDispatched: true,
         clickDispatched: false,
         suggestedAction: expect.stringMatching(/do not retry/i),
         dispatchEvidence: {
           forcedFallbackUsed: false,
           pageMouseFallbackUsed: false,
+          keyDownOnTarget: true,
           pointerDownOnTarget: false,
           mouseDownOnTarget: false,
           clickOnTarget: false,
@@ -993,9 +1061,81 @@ describe('BrowserController', () => {
         },
       },
     });
-    expect(failure?.details?.actionDispatched).not.toBe(false);
     expect((await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 })).snapshot)
       .toContain('keydowns:1 pointerdowns:0 clicks:0 replacements:1 replacement-clicks:0');
+  });
+
+  it('reports definite no-dispatch when a native dropdown opener detaches while press is focusing it', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Pre-keyboard replacement</title></head><body>
+        <button id="opener" type="button" aria-haspopup="listbox" aria-expanded="false">Funding source</button>
+        <output id="counters">focuses:0 keydowns:0 clicks:0 replacements:0</output>
+        <script>
+          const counters = { focuses: 0, keydowns: 0, clicks: 0, replacements: 0 };
+          const renderCounters = () => {
+            document.querySelector('#counters').textContent =
+              'focuses:' + counters.focuses +
+              ' keydowns:' + counters.keydowns +
+              ' clicks:' + counters.clicks +
+              ' replacements:' + counters.replacements;
+          };
+          const opener = document.querySelector('#opener');
+          opener.addEventListener('focus', () => {
+            counters.focuses += 1;
+            counters.replacements += 1;
+            opener.replaceWith(opener.cloneNode(true));
+            renderCounters();
+          }, { once: true });
+          opener.addEventListener('keydown', () => { counters.keydowns += 1; renderCounters(); });
+          opener.addEventListener('click', () => { counters.clicks += 1; renderCounters(); });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-popup-pre-keyboard-detach-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/popup`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Funding source',
+      exact: true,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 3_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'detached',
+        actionDispatched: false,
+        clickDispatched: false,
+        dispatchEvidence: {
+          trustedEventObserved: true,
+          keyDownOnTarget: false,
+          keyUpOnTarget: false,
+          pointerDownOnTarget: false,
+          mouseDownOnTarget: false,
+          clickOnTarget: false,
+          targetConnectedAfter: false,
+          misdirectedEventBlocked: true,
+        },
+      },
+    });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_role',
+      outcome: 'blocked',
+      reason: 'detached',
+      actionDispatched: false,
+      clickDispatched: false,
+    });
+    expect((await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 })).snapshot)
+      .toContain('focuses:1 keydowns:0 clicks:0 replacements:1');
   });
 
   it('re-resolves one unique role target when scrolling replaces it before any input', async () => {

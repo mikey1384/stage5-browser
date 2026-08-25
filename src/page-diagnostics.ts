@@ -120,6 +120,8 @@ export interface SanitizedClickDispatchEvidence {
   targetConnectedAfter: boolean;
   geometryChangedBeforeFirstEvent: boolean | null;
   trustedEventObserved: boolean;
+  keyDownOnTarget: boolean;
+  keyUpOnTarget: boolean;
   pointerDownOnTarget: boolean;
   mouseDownOnTarget: boolean;
   pointerUpOnTarget: boolean;
@@ -138,6 +140,7 @@ export interface SanitizedActionDiagnostic {
   targetState: SafeTargetState | null;
   dispatchEvidence?: SanitizedClickDispatchEvidence;
   fillPhase?: 'completed' | 'event_verification' | 'fill_dispatch' | 'page_activation' | 'target_preparation' | 'value_matching';
+  fillPreparationStep?: 'completed' | 'editor_capability' | 'editor_validation' | 'reference_validation' | 'scope_validation' | 'target_state' | 'viewport_preparation';
   inputEvidence?: FillRefEvidence;
   pageUrl: string | null;
   startedAt: string;

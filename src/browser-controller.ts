@@ -160,9 +160,15 @@ interface ObservedSnapshot {
   id: string;
   documentVersion: number;
   scope: 'document' | 'modal';
+  scopeHandle: ElementHandle<HTMLElement>;
   refs: Set<string>;
+  textEditors: Map<string, ObservedTextEditor>;
   fileInputs: Map<string, ObservedFileInput>;
   scrollContainers: Map<string, ObservedScrollContainer>;
+}
+
+interface ObservedTextEditor {
+  handle: ElementHandle<HTMLElement>;
 }
 
 interface ObservedFileInput {
@@ -355,6 +361,7 @@ const NATIVE_WINDOW_VISIBILITY_WAIT_MS = 750;
 const NATIVE_WINDOW_VISIBILITY_POLL_MS = 50;
 const SCREENSHOT_MIN_COMPRESSED_BYTES_PER_PIXEL = 0.01;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
+const MAX_TEXT_EDITORS_PER_SNAPSHOT = 100;
 const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
 
@@ -657,6 +664,8 @@ function safeRawClickDispatchEvidence(value: unknown): RawClickDispatchEvidence 
     'targetConnectedBefore',
     'targetConnectedAfter',
     'trustedEventObserved',
+    'keyDownOnTarget',
+    'keyUpOnTarget',
     'pointerDownOnTarget',
     'mouseDownOnTarget',
     'pointerUpOnTarget',
@@ -683,6 +692,8 @@ function safeRawClickDispatchEvidence(value: unknown): RawClickDispatchEvidence 
     targetConnectedAfter: candidate.targetConnectedAfter as boolean,
     geometryChangedBeforeFirstEvent: candidate.geometryChangedBeforeFirstEvent as boolean | null,
     trustedEventObserved: candidate.trustedEventObserved as boolean,
+    keyDownOnTarget: candidate.keyDownOnTarget as boolean,
+    keyUpOnTarget: candidate.keyUpOnTarget as boolean,
     pointerDownOnTarget: candidate.pointerDownOnTarget as boolean,
     mouseDownOnTarget: candidate.mouseDownOnTarget as boolean,
     pointerUpOnTarget: candidate.pointerUpOnTarget as boolean,
@@ -709,6 +720,8 @@ function mergeRawClickDispatchEvidence(
     geometryChangedBeforeFirstEvent:
       external.geometryChangedBeforeFirstEvent ?? inPage.geometryChangedBeforeFirstEvent,
     trustedEventObserved: inPage.trustedEventObserved || external.trustedEventObserved,
+    keyDownOnTarget: inPage.keyDownOnTarget || external.keyDownOnTarget,
+    keyUpOnTarget: inPage.keyUpOnTarget || external.keyUpOnTarget,
     pointerDownOnTarget: inPage.pointerDownOnTarget || external.pointerDownOnTarget,
     mouseDownOnTarget: inPage.mouseDownOnTarget || external.mouseDownOnTarget,
     pointerUpOnTarget: inPage.pointerUpOnTarget || external.pointerUpOnTarget,
@@ -1508,91 +1521,116 @@ export class BrowserController {
     const page = await this.ensureActivePage(await this.ensureContext());
     const frame = this.resolveFrame(page, input.frameId);
     const documentVersion = this.documentVersion(frame);
+    const deadlineAt = Date.now() + input.timeoutMs;
     const root = await this.snapshotRoot(frame);
     const snapshot = await root.locator.ariaSnapshot({
       mode: 'ai',
       depth: input.depth,
       boxes: input.boxes,
-      timeout: input.timeoutMs,
+      timeout: Math.max(1, remainingUntil(deadlineAt)),
     });
     const refs = new Set(snapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? []);
-    const observedFileInputs = await this.observeFileInputs(root.locator);
-    let observedScrollContainers: Awaited<ReturnType<BrowserController['observeScrollContainers']>>;
+    let scopeHandle: ElementHandle<HTMLElement> | null = null;
+    let observedTextEditors: Awaited<ReturnType<BrowserController['observeTextEditors']>> | null = null;
+    let observedFileInputs: Awaited<ReturnType<BrowserController['observeFileInputs']>> | null = null;
+    let observedScrollContainers: Awaited<ReturnType<BrowserController['observeScrollContainers']>> | null = null;
+    let retained = false;
     try {
-      observedScrollContainers = await this.observeScrollContainers(root.locator);
-    } catch (error) {
-      for (const { handle } of observedFileInputs.inputs.values()) {
-        await handle.dispose().catch(() => undefined);
-      }
-      throw error;
-    }
-    if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
-      for (const { handle } of observedFileInputs.inputs.values()) {
-        await handle.dispose().catch(() => undefined);
-      }
-      for (const { handle } of observedScrollContainers.containers.values()) {
-        await handle.dispose().catch(() => undefined);
-      }
-      throw new Stage5BrowserError(
-        'TARGET_NOT_FOUND',
-        'The document changed while the semantic snapshot was being captured.',
-        {
+      scopeHandle = await boundedValue(
+        root.locator.elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
+        Math.max(1, remainingUntil(deadlineAt)),
+        null,
+      );
+      if (scopeHandle === null) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The semantic snapshot scope could not be retained.', {
           recoverable: true,
           details: {
-            reason: 'document_changed_during_snapshot',
-            suggestedAction: 'Wait for the current page to stabilize, then take one fresh snapshot.',
+            reason: 'snapshot_scope_handle_unavailable',
+            suggestedAction: 'Wait for the current page or modal to stabilize, then take one fresh snapshot.',
           },
-        },
-      );
-    }
-    const snapshotId = randomUUID();
-    this.discardObservedSnapshot(frame);
-    this.observedSnapshots.set(frame, {
-      id: snapshotId,
-      documentVersion,
-      scope: root.scope,
-      refs,
-      fileInputs: observedFileInputs.inputs,
-      scrollContainers: observedScrollContainers.containers,
-    });
+        });
+      }
+      observedTextEditors = await this.observeTextEditors(root.locator, refs, deadlineAt);
+      observedFileInputs = await this.observeFileInputs(root.locator);
+      observedScrollContainers = await this.observeScrollContainers(root.locator);
+      if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
+        throw new Stage5BrowserError(
+          'TARGET_NOT_FOUND',
+          'The document changed while the semantic snapshot was being captured.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'document_changed_during_snapshot',
+              suggestedAction: 'Wait for the current page to stabilize, then take one fresh snapshot.',
+            },
+          },
+        );
+      }
+      const snapshotId = randomUUID();
+      this.discardObservedSnapshot(frame);
+      this.observedSnapshots.set(frame, {
+        id: snapshotId,
+        documentVersion,
+        scope: root.scope,
+        scopeHandle,
+        refs,
+        textEditors: observedTextEditors.editors,
+        fileInputs: observedFileInputs.inputs,
+        scrollContainers: observedScrollContainers.containers,
+      });
+      retained = true;
 
-    this.lastKnownUrl = page.url();
-    if (
-      this.authenticationHandoff?.state === 'ready_for_agent_verification' &&
-      this.authenticationHandoff.page === page
-    ) {
-      this.authenticationHandoff = null;
+      this.lastKnownUrl = page.url();
+      if (
+        this.authenticationHandoff?.state === 'ready_for_agent_verification' &&
+        this.authenticationHandoff.page === page
+      ) {
+        this.authenticationHandoff = null;
+      }
+      return {
+        page: await this.pageSummary(page),
+        frame: this.frameSummary(frame, page),
+        snapshotId,
+        refCount: refs.size,
+        fileInputCount: observedFileInputs.inputs.size,
+        fileInputs: [...observedFileInputs.inputs.values()].map(({ observation }) => observation),
+        scrollContainerCount: observedScrollContainers.containers.size,
+        scrollContainers: [...observedScrollContainers.containers.values()].map(({ observation }) => observation),
+        scope: root.scope,
+        visibleModalCount: root.visibleModalCount,
+        warnings: [
+          ...root.warnings,
+          ...(observedFileInputs.truncated
+            ? [{
+                code: 'file_input_list_truncated' as const,
+                message: `The frame contains more than ${MAX_FILE_INPUTS_PER_SNAPSHOT} file inputs; only the first bounded set was observed.`,
+                suggestedAction: 'Narrow to the intended frame or page state before selecting a file input; Stage5 Browser will not guess among unobserved controls.',
+              }]
+            : []),
+          ...(observedScrollContainers.truncated
+            ? [{
+                code: 'scroll_container_list_truncated' as const,
+                message: `The snapshot scope contains more than ${MAX_SCROLL_CONTAINERS_PER_SNAPSHOT} vertical scroll surfaces; only the first bounded set was observed.`,
+                suggestedAction: 'Narrow to the intended modal or frame before scrolling; Stage5 Browser will not guess among unobserved containers.',
+              }]
+            : []),
+        ],
+        snapshot,
+      };
+    } finally {
+      if (!retained) {
+        await scopeHandle?.dispose().catch(() => undefined);
+        for (const { handle } of observedTextEditors?.editors.values() ?? []) {
+          await handle.dispose().catch(() => undefined);
+        }
+        for (const { handle } of observedFileInputs?.inputs.values() ?? []) {
+          await handle.dispose().catch(() => undefined);
+        }
+        for (const { handle } of observedScrollContainers?.containers.values() ?? []) {
+          await handle.dispose().catch(() => undefined);
+        }
+      }
     }
-    return {
-      page: await this.pageSummary(page),
-      frame: this.frameSummary(frame, page),
-      snapshotId,
-      refCount: refs.size,
-      fileInputCount: observedFileInputs.inputs.size,
-      fileInputs: [...observedFileInputs.inputs.values()].map(({ observation }) => observation),
-      scrollContainerCount: observedScrollContainers.containers.size,
-      scrollContainers: [...observedScrollContainers.containers.values()].map(({ observation }) => observation),
-      scope: root.scope,
-      visibleModalCount: root.visibleModalCount,
-      warnings: [
-        ...root.warnings,
-        ...(observedFileInputs.truncated
-          ? [{
-              code: 'file_input_list_truncated' as const,
-              message: `The frame contains more than ${MAX_FILE_INPUTS_PER_SNAPSHOT} file inputs; only the first bounded set was observed.`,
-              suggestedAction: 'Narrow to the intended frame or page state before selecting a file input; Stage5 Browser will not guess among unobserved controls.',
-            }]
-          : []),
-        ...(observedScrollContainers.truncated
-          ? [{
-              code: 'scroll_container_list_truncated' as const,
-              message: `The snapshot scope contains more than ${MAX_SCROLL_CONTAINERS_PER_SNAPSHOT} vertical scroll surfaces; only the first bounded set was observed.`,
-              suggestedAction: 'Narrow to the intended modal or frame before scrolling; Stage5 Browser will not guess among unobserved containers.',
-            }]
-          : []),
-      ],
-      snapshot,
-    };
   }
 
   async screenshot(input: BrowserCommandInput<'screenshot'>): Promise<BrowserCommandOutput<'screenshot'>> {
@@ -2194,6 +2232,7 @@ export class BrowserController {
     const actionDeadlineAt = deadlineAt - fillFinalizationReserve(input.timeoutMs);
     const startedAt = new Date(startedAtMs).toISOString();
     let fillPhase: NonNullable<SanitizedActionDiagnostic['fillPhase']> = 'target_preparation';
+    let fillPreparationStep: NonNullable<SanitizedActionDiagnostic['fillPreparationStep']> = 'reference_validation';
     let targetState: SafeTargetState | null = null;
     let inputEvidence: FillRefEvidence | null = null;
     let handle: ElementHandle<HTMLElement> | null = null;
@@ -2233,67 +2272,39 @@ export class BrowserController {
         );
       }
 
-      const locator = frame.locator(`aria-ref=${input.ref}`);
-      const count = await boundedValue(
-        locator.count(),
+      fillPreparationStep = 'editor_capability';
+      const observedEditor = observed.textEditors.get(input.ref);
+      if (observedEditor === undefined) {
+        throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The observed reference was not captured as a fillable text editor.', {
+          recoverable: true,
+          details: {
+            reason: 'reference_not_observed_as_text_editor',
+            actionDispatched: false,
+            suggestedAction: 'Take one fresh snapshot and use only a textbox ref exposed as a fillable editor capability.',
+          },
+        });
+      }
+      handle = observedEditor.handle;
+
+      fillPreparationStep = 'scope_validation';
+      const insideSameScope = await boundedValue(
+        observed.scopeHandle.evaluate(
+          (root, target) => root.isConnected && target.isConnected && (root === target || root.contains(target)),
+          handle,
+        ),
         Math.max(1, remainingUntil(actionDeadlineAt)),
-        -1,
+        null,
       );
-      if (count === -1) {
-        throw new Stage5BrowserError('OPERATION_FAILED', 'Textbox reference resolution exceeded its bounded preparation phase.', {
+      if (insideSameScope === null) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The retained snapshot scope could not be validated before the fill deadline.', {
           recoverable: true,
           details: {
             reason: 'target_preparation_timeout',
             actionDispatched: false,
-            suggestedAction: 'Take one fresh semantic snapshot; Stage5 Browser confirmed that no text was entered.',
+            suggestedAction: 'Take one fresh snapshot; Stage5 Browser confirmed that no text was entered.',
           },
         });
       }
-      if (count !== 1) {
-        throw new Stage5BrowserError(
-          count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
-          count === 0
-            ? 'The observed textbox reference no longer resolves in the current document.'
-            : 'The observed textbox reference resolves to multiple elements.',
-          {
-            recoverable: true,
-            details: {
-              reason: count === 0 ? 'reference_no_longer_available' : 'reference_resolution_ambiguous',
-              actionDispatched: false,
-              suggestedAction: 'Take one fresh semantic snapshot; Stage5 Browser did not enter any text.',
-            },
-          },
-        );
-      }
-      handle = await boundedValue(
-        locator.elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        null,
-      );
-      if (handle === null) {
-        throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The observed textbox detached before filling.', {
-          recoverable: true,
-          details: {
-            reason: 'target_detached_before_input',
-            actionDispatched: false,
-            suggestedAction: 'Take one fresh semantic snapshot; Stage5 Browser did not enter any text.',
-          },
-        });
-      }
-
-      const currentRoot = await boundedValue(
-        this.snapshotRoot(frame),
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        null,
-      );
-      const insideSameScope = currentRoot !== null && currentRoot.scope === observed.scope && await boundedValue(
-        currentRoot.locator.evaluate(
-          (root, target) => target instanceof Element && (root === target || root.contains(target)),
-          handle,
-        ),
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        false,
-      );
       if (!insideSameScope) {
         throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The snapshot scope changed before filling.', {
           recoverable: true,
@@ -2304,7 +2315,9 @@ export class BrowserController {
           },
         });
       }
+      this.consumeObservedSnapshot(frame, handle);
 
+      fillPreparationStep = 'editor_validation';
       const target = await boundedValue(handle.evaluate((element) => {
         const input = element instanceof HTMLInputElement;
         const type = input ? element.type.toLocaleLowerCase() : '';
@@ -2345,6 +2358,7 @@ export class BrowserController {
         });
       }
 
+      fillPreparationStep = 'viewport_preparation';
       try {
         await handle.scrollIntoViewIfNeeded({
           timeout: Math.max(1, remainingUntil(actionDeadlineAt)),
@@ -2362,6 +2376,7 @@ export class BrowserController {
           cause: error,
         });
       }
+      fillPreparationStep = 'target_state';
       targetState = await boundedValue(
         inspectTargetState(handle),
         Math.max(1, remainingUntil(actionDeadlineAt)),
@@ -2371,13 +2386,18 @@ export class BrowserController {
         throw new Stage5BrowserError('OPERATION_FAILED', 'The observed text editor is not safely actionable.', {
           recoverable: true,
           details: {
-            reason: targetState === null ? 'target_detached_before_input' : 'target_not_actionable',
+            reason: targetState === null
+              ? remainingUntil(actionDeadlineAt) === 0
+                ? 'target_preparation_timeout'
+                : 'target_detached_before_input'
+              : 'target_not_actionable',
             actionDispatched: false,
             targetState,
             suggestedAction: 'Take a fresh snapshot after the editor is visible and enabled; Stage5 Browser did not enter any text.',
           },
         });
       }
+      fillPreparationStep = 'completed';
 
       fillPhase = 'page_activation';
       const pageActivation = await boundedValue(
@@ -2548,6 +2568,7 @@ export class BrowserController {
         clickDispatched: null,
         targetState,
         fillPhase,
+        fillPreparationStep,
         inputEvidence,
         pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
         startedAt,
@@ -2590,6 +2611,7 @@ export class BrowserController {
         clickDispatched: null,
         targetState,
         fillPhase,
+        fillPreparationStep,
         ...(inputEvidence === null ? {} : { inputEvidence }),
         pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
         startedAt,
@@ -2603,6 +2625,7 @@ export class BrowserController {
           details: {
             ...(existing?.details ?? {}),
             fillPhase,
+            fillPreparationStep,
             actionDispatched,
             targetState,
             inputEvidence,
@@ -4741,6 +4764,129 @@ export class BrowserController {
     };
   }
 
+  private async observeTextEditors(
+    root: Locator,
+    snapshotRefs: Set<string>,
+    deadlineAt: number,
+  ): Promise<{ editors: Map<string, ObservedTextEditor> }> {
+    const locator = root.locator(
+      'input:not([type="button"]):not([type="checkbox"]):not([type="file"]):not([type="hidden"]):not([type="image"]):not([type="password"]):not([type="radio"]):not([type="range"]):not([type="reset"]):not([type="submit"]):visible, '
+      + 'textarea:visible, [contenteditable]:visible, [role="textbox"]:not(input):not(textarea):not([contenteditable]):visible',
+    );
+    const total = await boundedValue(
+      locator.count(),
+      Math.max(1, remainingUntil(deadlineAt)),
+      -1,
+    );
+    if (total === -1) {
+      throw new Stage5BrowserError('OPERATION_FAILED', 'Text-editor capability capture exceeded the snapshot deadline.', {
+        recoverable: true,
+        details: {
+          reason: 'text_editor_capability_timeout',
+          suggestedAction: 'Wait for the current modal or page to stabilize, then take one fresh snapshot.',
+        },
+      });
+    }
+    if (total > MAX_TEXT_EDITORS_PER_SNAPSHOT) {
+      throw new Stage5BrowserError('OPERATION_FAILED', 'The snapshot scope contains too many visible text editors to bind safely.', {
+        recoverable: true,
+        details: {
+          reason: 'text_editor_capability_observation_incomplete',
+          observedCandidateCount: total,
+          maximumCandidateCount: MAX_TEXT_EDITORS_PER_SNAPSHOT,
+          suggestedAction: 'Narrow to the intended modal or frame before filling; Stage5 Browser will not expose an unbound editor ref.',
+        },
+      });
+    }
+
+    const editors = new Map<string, ObservedTextEditor>();
+    try {
+      for (let index = 0; index < total; index += 1) {
+        const candidate = locator.nth(index);
+        const handle = await boundedValue(
+          candidate.elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
+          Math.max(1, remainingUntil(deadlineAt)),
+          null,
+        );
+        if (handle === null) {
+          throw new Stage5BrowserError('TARGET_NOT_FOUND', 'A visible text editor changed during snapshot capture.', {
+            recoverable: true,
+            details: {
+              reason: 'text_editor_detached_during_snapshot',
+              suggestedAction: 'Wait for the current modal or page to stabilize, then take one fresh snapshot.',
+            },
+          });
+        }
+        const eligible = await boundedValue(
+          handle.evaluate((element) => {
+            const input = element instanceof HTMLInputElement;
+            const type = input ? element.type.toLocaleLowerCase() : '';
+            return (input && ![
+              'button', 'checkbox', 'file', 'hidden', 'image', 'password', 'radio', 'range', 'reset', 'submit',
+            ].includes(type)) || element instanceof HTMLTextAreaElement || element.isContentEditable;
+          }),
+          Math.max(1, remainingUntil(deadlineAt)),
+          null,
+        );
+        if (eligible !== true) {
+          await handle.dispose().catch(() => undefined);
+          if (eligible === null) {
+            throw new Stage5BrowserError('OPERATION_FAILED', 'A visible text editor could not be inspected during snapshot capture.', {
+              recoverable: true,
+              details: {
+                reason: 'text_editor_capability_timeout',
+                suggestedAction: 'Wait for the current modal or page to stabilize, then take one fresh snapshot.',
+              },
+            });
+          }
+          continue;
+        }
+        const candidateSnapshot = await boundedValue(
+          candidate.ariaSnapshot({
+            mode: 'ai',
+            depth: 0,
+            boxes: false,
+            timeout: Math.max(1, remainingUntil(deadlineAt)),
+          }),
+          Math.max(1, remainingUntil(deadlineAt)),
+          null,
+        );
+        if (candidateSnapshot === null) {
+          await handle.dispose().catch(() => undefined);
+          throw new Stage5BrowserError('OPERATION_FAILED', 'A visible text editor could not be bound before the snapshot deadline.', {
+            recoverable: true,
+            details: {
+              reason: 'text_editor_capability_timeout',
+              suggestedAction: 'Wait for the current modal or page to stabilize, then take one fresh snapshot.',
+            },
+          });
+        }
+        const ref = candidateSnapshot.match(/\[ref=([^\]]+)\]/)?.[1];
+        if (ref === undefined || !snapshotRefs.has(ref)) {
+          await handle.dispose().catch(() => undefined);
+          continue;
+        }
+        if (editors.has(ref)) {
+          await handle.dispose().catch(() => undefined);
+          throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'A text-editor reference did not bind to one exact element.', {
+            recoverable: true,
+            details: {
+              reason: 'text_editor_capability_ambiguous',
+              suggestedAction: 'Take one fresh snapshot after the current modal or page stabilizes.',
+            },
+          });
+        }
+        editors.set(ref, { handle });
+      }
+    } catch (error) {
+      for (const { handle } of editors.values()) {
+        await handle.dispose().catch(() => undefined);
+      }
+      throw error;
+    }
+    return { editors };
+  }
+
   private async observeFileInputs(
     root: Locator,
   ): Promise<{ inputs: Map<string, ObservedFileInput>; truncated: boolean }> {
@@ -5116,6 +5262,14 @@ export class BrowserController {
     this.observedSnapshots.delete(frame);
     if (observed === undefined) {
       return;
+    }
+    if (observed.scopeHandle !== retainedHandle) {
+      void observed.scopeHandle.dispose().catch(() => undefined);
+    }
+    for (const { handle } of observed.textEditors.values()) {
+      if (handle !== retainedHandle) {
+        void handle.dispose().catch(() => undefined);
+      }
     }
     for (const { handle } of observed.fileInputs.values()) {
       if (handle !== retainedHandle) {
@@ -6825,13 +6979,11 @@ export class BrowserController {
       );
       if (preparedTarget.activation === 'keyboard_enter') {
         let keyboardError: unknown = null;
-        let keyboardCompleted = false;
         try {
           await preparedTarget.handle.press('Enter', {
             noWaitAfter: true,
             timeout: normalAttemptTimeoutMs,
           });
-          keyboardCompleted = true;
         } catch (error) {
           keyboardError = error;
         }
@@ -6840,8 +6992,13 @@ export class BrowserController {
         if (evidence?.clickOnTarget === true) {
           return evidence;
         }
+        const keyboardDispatchObserved = evidence === null
+          ? 'unknown'
+          : evidence.guardExpired && !evidence.trustedEventObserved
+            ? 'unknown'
+            : evidence.keyDownOnTarget || evidence.keyUpOnTarget;
         const conclusion: ClickDispatchConclusion = {
-          actionDispatched: keyboardCompleted ? true : 'unknown',
+          actionDispatched: keyboardDispatchObserved,
           clickDispatched: evidence === null ? 'unknown' : false,
         };
         return this.throwObservedClickDispatchFailure(
@@ -7487,6 +7644,8 @@ export class BrowserController {
           targetConnectedAfter: element.isConnected,
           geometryChangedBeforeFirstEvent: null,
           trustedEventObserved: false,
+          keyDownOnTarget: false,
+          keyUpOnTarget: false,
           pointerDownOnTarget: false,
           mouseDownOnTarget: false,
           pointerUpOnTarget: false,
@@ -7495,7 +7654,7 @@ export class BrowserController {
           misdirectedEventBlocked: false,
           targetStateChangeBlocked: false,
         };
-        const eventTypes = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'] as const;
+        const eventTypes = ['keydown', 'keyup', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'] as const;
         let cleaned = false;
         let expirationTimer: number | null = null;
 
@@ -7516,6 +7675,8 @@ export class BrowserController {
           event.stopPropagation();
         };
         const recordExactEvent = (eventType: typeof eventTypes[number]): void => {
+          if (eventType === 'keydown') state.keyDownOnTarget = true;
+          if (eventType === 'keyup') state.keyUpOnTarget = true;
           if (eventType === 'pointerdown') state.pointerDownOnTarget = true;
           if (eventType === 'mousedown') state.mouseDownOnTarget = true;
           if (eventType === 'pointerup') state.pointerUpOnTarget = true;
@@ -7610,6 +7771,8 @@ export class BrowserController {
       evidence !== null &&
       !evidence.guardExpired &&
       !evidence.trustedEventObserved &&
+      !evidence.keyDownOnTarget &&
+      !evidence.keyUpOnTarget &&
       !evidence.pointerDownOnTarget &&
       !evidence.mouseDownOnTarget &&
       !evidence.pointerUpOnTarget &&
@@ -7631,6 +7794,8 @@ export class BrowserController {
     return evidence !== null &&
       !evidence.guardExpired &&
       !evidence.trustedEventObserved &&
+      !evidence.keyDownOnTarget &&
+      !evidence.keyUpOnTarget &&
       !evidence.pointerDownOnTarget &&
       !evidence.mouseDownOnTarget &&
       !evidence.pointerUpOnTarget &&
@@ -7692,7 +7857,9 @@ export class BrowserController {
         clickDispatched: conclusion.clickDispatched,
       };
     }
-    const exactTargetActivity = evidence.pointerDownOnTarget ||
+    const exactTargetActivity = evidence.keyDownOnTarget ||
+      evidence.keyUpOnTarget ||
+      evidence.pointerDownOnTarget ||
       evidence.mouseDownOnTarget ||
       evidence.pointerUpOnTarget ||
       evidence.mouseUpOnTarget ||

@@ -48,7 +48,7 @@ PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
 npx vitest run tests/native-window-activation-smoke.test.ts
 ```
 
-This smoke necessarily takes desktop focus because foreground activation is its acceptance criterion. It must be announced and approved at action time; the ordinary headless suite does not require or imply permission to run it.
+This smoke necessarily takes desktop focus because foreground activation is its acceptance criterion. Run it only for native-activation work and disclose the expected interruption; the opt-in is a technical safeguard, not a repetitive approval gate. The ordinary headless suite never moves desktop focus.
 
 ## Update lifecycle
 
