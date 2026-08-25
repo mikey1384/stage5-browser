@@ -171,6 +171,7 @@ interface ObservedSnapshot {
 interface ObservedReferenceSemantic {
   role: string;
   name: string;
+  url: string | null;
 }
 
 interface ObservedTextEditor {
@@ -280,6 +281,7 @@ interface ClickTargetSemanticIdentity {
   tagName: string;
   role: string | null;
   name: string;
+  url: string | null;
   article: {
     fingerprint: string;
     tagName: string;
@@ -373,6 +375,16 @@ const POPUP_OPTION_ROLES = new Set([
   'option',
   'treeitem',
 ]);
+const POPUP_SURFACE_ROLES = new Set([
+  'listbox',
+  'menu',
+  'tree',
+]);
+const POPUP_RENDERED_STATE_ROLES = new Set([
+  ...POPUP_OPTION_ROLES,
+  ...POPUP_SURFACE_ROLES,
+]);
+const MAX_POPUP_RENDERED_STATE_CANDIDATES = 100;
 const FILL_RESULT_FINALIZATION_RESERVE_MS = 750;
 const FILL_REF_VIEWPORT_PREPARATION_TIMEOUT_MS = 500;
 const SCROLL_RESULT_FINALIZATION_RESERVE_MS = 750;
@@ -1578,12 +1590,13 @@ export class BrowserController {
     const documentVersion = this.documentVersion(frame);
     const deadlineAt = Date.now() + input.timeoutMs;
     const root = await this.snapshotRoot(frame);
-    const snapshot = await root.locator.ariaSnapshot({
+    const rawSnapshot = await root.locator.ariaSnapshot({
       mode: 'ai',
       depth: input.depth,
       boxes: input.boxes,
       timeout: Math.max(1, remainingUntil(deadlineAt)),
     });
+    const snapshot = await this.filterInactivePopupSnapshot(frame, rawSnapshot, deadlineAt);
     const refs = new Set(snapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? []);
     let scopeHandle: ElementHandle<HTMLElement> | null = null;
     let observedTextEditors: Awaited<ReturnType<BrowserController['observeTextEditors']>> | null = null;
@@ -1761,7 +1774,23 @@ export class BrowserController {
     refs: Set<string>,
   ): Map<string, ObservedReferenceSemantic> {
     const semantics = new Map<string, ObservedReferenceSemantic>();
-    for (const line of snapshot.split('\n')) {
+    const lines = snapshot.split('\n');
+    const decodeScalar = (value: string): string => {
+      const trimmed = value.trim();
+      if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+        try {
+          return JSON.parse(trimmed) as string;
+        } catch {
+          return trimmed;
+        }
+      }
+      if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+        return trimmed.slice(1, -1).replaceAll("''", "'");
+      }
+      return trimmed;
+    };
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? '';
       const ref = line.match(/\[ref=([^\]]+)\]/u)?.[1];
       if (ref === undefined || !refs.has(ref)) continue;
       const semantic = line.match(/^\s*-\s+([a-z][a-z0-9_-]*)(?:\s+"((?:\\.|[^"\\])*)")?/iu);
@@ -1775,9 +1804,147 @@ export class BrowserController {
           name = semantic[2];
         }
       }
-      semantics.set(ref, { role, name });
+      const indentation = line.match(/^\s*/u)?.[0].length ?? 0;
+      let url: string | null = null;
+      for (let childIndex = index + 1; childIndex < lines.length; childIndex += 1) {
+        const child = lines[childIndex] ?? '';
+        if (child.trim() === '') continue;
+        const childIndentation = child.match(/^\s*/u)?.[0].length ?? 0;
+        if (childIndentation <= indentation) break;
+        const observedUrl = childIndentation === indentation + 2
+          ? child.match(/^\s*-\s+\/url:\s*(.*)$/u)?.[1]
+          : undefined;
+        if (observedUrl !== undefined) {
+          url = decodeScalar(observedUrl);
+          break;
+        }
+      }
+      semantics.set(ref, { role, name, url });
     }
     return semantics;
+  }
+
+  private async filterInactivePopupSnapshot(
+    frame: Frame,
+    snapshot: string,
+    deadlineAt: number,
+  ): Promise<string> {
+    const lines = snapshot.split('\n');
+    const popupLines = lines.flatMap((line, index) => {
+      const semantic = line.match(/^(\s*)-\s+([a-z][a-z0-9_-]*)(?:\s|$)/iu);
+      const role = semantic?.[2]?.toLocaleLowerCase();
+      if (role === undefined || !POPUP_RENDERED_STATE_ROLES.has(role)) return [];
+      return [{
+        index,
+        indentation: semantic?.[1]?.length ?? 0,
+        role,
+        ref: line.match(/\[ref=([^\]]+)\]/u)?.[1] ?? null,
+      }];
+    });
+    if (popupLines.length === 0) return snapshot;
+
+    const renderedByLine = new Map<number, boolean | null>();
+    const inspected = await Promise.all(popupLines.map(async (entry, candidateIndex) => {
+      if (
+        candidateIndex >= MAX_POPUP_RENDERED_STATE_CANDIDATES ||
+        remainingUntil(deadlineAt) <= 0
+      ) {
+        return { index: entry.index, rendered: false };
+      }
+      if (entry.ref === null) {
+        return {
+          index: entry.index,
+          rendered: POPUP_SURFACE_ROLES.has(entry.role) ? null : false,
+        };
+      }
+      const locator = frame.locator(`aria-ref=${entry.ref}`);
+      const count = await boundedValue(
+        locator.count(),
+        Math.max(1, remainingUntil(deadlineAt)),
+        -1,
+      );
+      if (count !== 1) return { index: entry.index, rendered: false };
+      const state = await boundedValue(
+        inspectTargetState(locator),
+        Math.max(1, remainingUntil(deadlineAt)),
+        null,
+      );
+      return {
+        index: entry.index,
+        rendered: state?.visible === true && state.inViewport,
+      };
+    }));
+    for (const observation of inspected) {
+      renderedByLine.set(observation.index, observation.rendered);
+    }
+
+    const suppressedRoots = new Set<number>();
+    for (const entry of popupLines) {
+      if (renderedByLine.get(entry.index) === false) {
+        suppressedRoots.add(entry.index);
+      }
+      if (!POPUP_SURFACE_ROLES.has(entry.role)) continue;
+      const descendantOptions = popupLines.filter((candidate) =>
+        candidate.index > entry.index &&
+        candidate.indentation > entry.indentation &&
+        POPUP_OPTION_ROLES.has(candidate.role) &&
+        !lines.slice(entry.index + 1, candidate.index + 1).some((line) => {
+          if (line.trim() === '') return false;
+          const indentation = line.match(/^\s*/u)?.[0].length ?? 0;
+          return indentation <= entry.indentation;
+        }));
+      if (
+        descendantOptions.length > 0 &&
+        descendantOptions.every((candidate) => renderedByLine.get(candidate.index) !== true)
+      ) {
+        suppressedRoots.add(entry.index);
+      }
+    }
+
+    const filtered: string[] = [];
+    let suppressedIndentation: number | null = null;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? '';
+      const indentation = line.match(/^\s*/u)?.[0].length ?? 0;
+      if (suppressedIndentation !== null) {
+        if (line.trim() === '' || indentation > suppressedIndentation) continue;
+        suppressedIndentation = null;
+      }
+      if (suppressedRoots.has(index)) {
+        suppressedIndentation = indentation;
+        continue;
+      }
+      filtered.push(line);
+    }
+    return filtered.join('\n');
+  }
+
+  private async semanticForExactReference(
+    locator: Locator,
+    deadlineAt: number,
+  ): Promise<ObservedReferenceSemantic | null> {
+    const snapshot = await boundedValue(
+      locator.ariaSnapshot({
+        mode: 'ai',
+        depth: 2,
+        boxes: false,
+        timeout: Math.max(1, remainingUntil(deadlineAt)),
+      }),
+      Math.max(1, remainingUntil(deadlineAt)),
+      null,
+    );
+    if (snapshot === null) return null;
+    const refs = new Set(snapshot.match(/\[ref=([^\]]+)\]/gu)?.map((value) => value.slice(5, -1)) ?? []);
+    return this.snapshotReferenceSemantics(snapshot, refs).values().next().value ?? null;
+  }
+
+  private sameObservedReferenceSemantic(
+    expected: ObservedReferenceSemantic,
+    observed: ObservedReferenceSemantic,
+  ): boolean {
+    return expected.role === observed.role &&
+      expected.name === observed.name &&
+      (expected.url === null || expected.url === observed.url);
   }
 
   async tabs(): Promise<BrowserCommandOutput<'tabs'>> {
@@ -5174,6 +5341,18 @@ export class BrowserController {
             rect.right > 0 &&
             rect.top < window.innerHeight &&
             rect.left < window.innerWidth;
+          const role = element.getAttribute('role')?.trim().split(/\s+/)[0]?.toLocaleLowerCase() ?? null;
+          const containsPopupSemantics =
+            role === 'listbox' ||
+            role === 'menu' ||
+            role === 'tree' ||
+            element.matches('select') ||
+            element.querySelector(
+              '[role="option"], option, [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"]',
+            ) !== null;
+          if (!inViewport && containsPopupSemantics) {
+            return null;
+          }
           return {
             index,
             inViewport,
@@ -5259,6 +5438,23 @@ export class BrowserController {
         if (!visible || !overflowAllowsScrolling || maxY <= 1) {
           return null;
         }
+        const inViewport =
+          rect.bottom > 0 &&
+          rect.right > 0 &&
+          rect.top < window.innerHeight &&
+          rect.left < window.innerWidth;
+        const semanticRole = element.getAttribute('role')?.trim().split(/\s+/)[0]?.toLocaleLowerCase() ?? null;
+        const containsPopupSemantics =
+          semanticRole === 'listbox' ||
+          semanticRole === 'menu' ||
+          semanticRole === 'tree' ||
+          element.matches('select') ||
+          element.querySelector(
+            '[role="option"], option, [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"]',
+          ) !== null;
+        if (!inViewport && containsPopupSemantics) {
+          return null;
+        }
         const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
           .split(/\s+/)
           .filter(Boolean)
@@ -5273,11 +5469,7 @@ export class BrowserController {
         return {
           label: label.length === 0 ? null : label,
           role: element.getAttribute('role'),
-          inViewport:
-            rect.bottom > 0 &&
-            rect.right > 0 &&
-            rect.top < window.innerHeight &&
-            rect.left < window.innerWidth,
+          inViewport,
           position: {
             x: element.scrollLeft,
             y: element.scrollTop,
@@ -5704,7 +5896,14 @@ export class BrowserController {
           name: expectation.name,
           exact: expectation.exact,
         });
-        observed = (await locator.count()) === 1 && await locator.isVisible();
+        if ((await locator.count()) === 1) {
+          if (POPUP_RENDERED_STATE_ROLES.has(expectation.role.toLocaleLowerCase())) {
+            const state = await inspectTargetState(locator);
+            observed = state?.visible === true && state.inViewport;
+          } else {
+            observed = await locator.isVisible();
+          }
+        }
       } catch {
         observed = false;
       }
@@ -6986,11 +7185,11 @@ export class BrowserController {
             return { kind: 'resolved', locator: exactLocator, handle: exactHandle };
           }
           const identity = await boundedValue(
-            this.observeClickTargetIdentity(exactHandle),
+            this.semanticForExactReference(exactLocator, actionDeadlineAt),
             Math.max(1, remainingUntil(actionDeadlineAt)),
             null,
           );
-          if (identity !== null && identity.role === semantic.role && identity.name === semantic.name) {
+          if (identity !== null && this.sameObservedReferenceSemantic(semantic, identity)) {
             return { kind: 'resolved', locator: exactLocator, handle: exactHandle };
           }
         }
@@ -7066,6 +7265,17 @@ export class BrowserController {
         if (!insideScope) {
           await handle.dispose().catch(() => undefined);
           continue;
+        }
+        if (semantic.url !== null) {
+          const candidateUrl = await boundedValue(
+            handle.getAttribute('href'),
+            Math.max(1, remainingUntil(deadlineAt)),
+            null,
+          );
+          if (candidateUrl !== semantic.url) {
+            await handle.dispose().catch(() => undefined);
+            continue;
+          }
         }
         if (match !== null) {
           await handle.dispose().catch(() => undefined);
@@ -8408,6 +8618,7 @@ export class BrowserController {
           tagName: element.tagName.toLocaleLowerCase(),
           role: semanticRole(element),
           name: semanticName(element),
+          url: element.getAttribute('href'),
           article: article === null
             ? null
             : {
@@ -8422,6 +8633,7 @@ export class BrowserController {
         tagName: observed.tagName,
         role: observed.role,
         name: observed.name,
+        url: observed.url,
         article: observed.article === null
           ? null
           : {
@@ -8662,7 +8874,8 @@ export class BrowserController {
           if (
             candidate.tagName.toLocaleLowerCase() === expected.tagName &&
             semanticRole(candidate) === expected.role &&
-            semanticName(candidate) === expected.name
+            semanticName(candidate) === expected.name &&
+            candidate.getAttribute('href') === expected.url
           ) {
             indexes.push(index);
           }
@@ -8672,6 +8885,7 @@ export class BrowserController {
         tagName: identity.tagName,
         role: identity.role,
         name: identity.name,
+        url: identity.url,
         maximumCandidates: CLICK_REF_ELEMENT_CANDIDATES,
       });
       if (match.tooMany || match.indexes.length > 1) {
@@ -8706,7 +8920,8 @@ export class BrowserController {
     if (
       expected.tagName !== observed.tagName ||
       expected.role !== observed.role ||
-      expected.name !== observed.name
+      expected.name !== observed.name ||
+      expected.url !== observed.url
     ) {
       return false;
     }

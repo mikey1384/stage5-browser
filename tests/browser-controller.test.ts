@@ -1597,6 +1597,7 @@ describe('BrowserController', () => {
       response.end(`<!doctype html><html><head><title>Pre-input role replacement</title><style>
         body { margin: 0; min-height: 4200px; }
         #opener { position: absolute; top: 3200px; left: 40px; }
+        #choices { position: absolute; top: 3250px; left: 40px; }
         #counters { position: fixed; top: 10px; left: 10px; }
       </style></head><body>
         <button id="opener" type="button" aria-haspopup="listbox" aria-expanded="false">
@@ -2262,6 +2263,66 @@ describe('BrowserController', () => {
       actionDispatched: true,
       clickDispatched: true,
     });
+  });
+
+  it('keeps and rebinds a fresh unnamed link ref by its observed destination', async () => {
+    server = createServer((request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      if (request.url === '/build') {
+        response.end('<!doctype html><html><head><title>Build destination</title></head><body>Build ready</body></html>');
+        return;
+      }
+      response.end(`<!doctype html><html><head><title>Unnamed destination links</title></head><body>
+        <a id="build" href="/build"><span aria-hidden="true">Build icon</span></a>
+        <a id="settings" href="/settings"><span aria-hidden="true">Settings icon</span></a>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-unnamed-link-ref-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    const baseUrl = `http://127.0.0.1:${port}`;
+    for (const replaceBeforeClick of [false, true]) {
+      await controller.open({
+        url: `${baseUrl}/`,
+        newTab: false,
+        stabilizationMs: 0,
+        timeoutMs: 5_000,
+      });
+      const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+      const lines = observed.snapshot.split('\n');
+      const buildUrlLine = lines.findIndex((line) => line.includes('/url: /build'));
+      expect(buildUrlLine).toBeGreaterThan(0);
+      const buildLinkLine = lines.slice(0, buildUrlLine).reverse().find((line) => /\blink\b/u.test(line));
+      const buildRef = buildLinkLine?.match(/\[ref=([^\]]+)\]/u)?.[1];
+      expect(buildRef).toBeDefined();
+      if (buildRef === undefined) throw new Error('Unnamed-link fixture did not expose its observed /build ref.');
+      if (replaceBeforeClick) {
+        const page = (controller as unknown as { activePage: Page }).activePage;
+        await page.locator('#build').evaluate((link) => link.replaceWith(link.cloneNode(true)));
+      }
+
+      await expect(controller.clickRef({
+        snapshotId: observed.snapshotId,
+        ref: buildRef,
+        frameId: null,
+        postcondition: {
+          expectedUrl: { url: `${baseUrl}/build`, match: 'exact' },
+          expectedSelected: null,
+          expectedVisible: null,
+          timeoutMs: 2_000,
+        },
+        timeoutMs: 4_000,
+      })).resolves.toMatchObject({
+        page: { url: `${baseUrl}/build` },
+        postcondition: { passed: true },
+      });
+      expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+        action: 'click_by_ref',
+        outcome: 'succeeded',
+        actionDispatched: true,
+        clickDispatched: true,
+      });
+    }
   });
 
   it('rebinds a fresh ref to one semantically identical in-scope replacement after page activation', async () => {
@@ -3617,6 +3678,120 @@ describe('BrowserController', () => {
       expected: null,
       timeoutMs: 1_000,
     })).rejects.toMatchObject<Partial<Stage5BrowserError>>({ code: 'AUTH_HANDOFF_REQUIRED' });
+  });
+
+  it('suppresses offscreen popup semantics and requires rendered option postconditions', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Dormant popup portal</title><style>
+        body { margin: 0; min-height: 1800px; }
+        #closed-portal {
+          position: fixed;
+          left: -10000px;
+          top: 20px;
+          width: 240px;
+          height: 80px;
+          overflow-y: auto;
+          background: white;
+        }
+        #popup-spacer { height: 500px; }
+        #ordinary-link { position: absolute; top: 1400px; }
+      </style></head><body>
+        <button id="closed-check" type="button">Check closed choices</button>
+        <button id="open-check" type="button">Check open choices</button>
+        <output id="clicks">clicks:0</output>
+        <div id="closed-portal" role="listbox" aria-label="Dormant choices">
+          <div role="option">Agency account</div>
+          <div role="status">Stale focused choice</div>
+          <div id="popup-spacer"></div>
+        </div>
+        <a id="ordinary-link" href="/ordinary">Ordinary offscreen link</a>
+        <script>
+          let clicks = 0;
+          for (const button of document.querySelectorAll('button')) {
+            button.addEventListener('click', () => {
+              clicks += 1;
+              document.querySelector('#clicks').textContent = 'clicks:' + clicks;
+            });
+          }
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-dormant-popup-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/popup`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const closed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    expect(closed.snapshot).not.toContain('Dormant choices');
+    expect(closed.snapshot).not.toContain('Agency account');
+    expect(closed.snapshot).not.toContain('Stale focused choice');
+    expect(closed.snapshot).toContain('Ordinary offscreen link');
+    expect(closed.scrollContainerCount).toBe(0);
+
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Check closed choices',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'option',
+          name: 'Agency account',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 500,
+      },
+      timeoutMs: 3_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'POSTCONDITION_FAILED',
+      details: {
+        clickDispatched: true,
+        actionOutcome: 'click_dispatched_postcondition_failed',
+        checks: [{ kind: 'visible', expected: true, observed: false, passed: false }],
+      },
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator('#clicks').textContent()).resolves.toBe('clicks:1');
+
+    await page.locator('#closed-portal').evaluate((portal) => {
+      (portal as HTMLElement).style.left = '20px';
+    });
+    const opened = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    expect(opened.snapshot).toContain('Dormant choices');
+    expect(opened.snapshot).toContain('Agency account');
+    expect(opened.snapshot).toContain('Stale focused choice');
+    expect(opened).toMatchObject({
+      scrollContainerCount: 1,
+      scrollContainers: [{ role: 'listbox', inViewport: true }],
+    });
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Check open choices',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'option',
+          name: 'Agency account',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 500,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    await expect(page.locator('#clicks').textContent()).resolves.toBe('clicks:2');
   });
 
   it('targets observed nested scrollers, waits for feed growth, correlates diagnostics, and tolerates fractional boundaries', async () => {
