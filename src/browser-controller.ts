@@ -5950,7 +5950,11 @@ export class BrowserController {
       after.visibility !== 'visible'
     ) {
       nativeWindow = await this.activateOwnedNativeWindow(page);
-      if (nativeWindow.applicationActivationSucceeded === true) {
+      const applicationReadyForRendererSelection =
+        nativeWindow.applicationHiddenAfter === false &&
+        (nativeWindow.activationRequestAccepted === true ||
+          nativeWindow.applicationFrontmostAfter === true);
+      if (applicationReadyForRendererSelection) {
         try {
           await page.bringToFront();
         } catch {
@@ -5960,7 +5964,7 @@ export class BrowserController {
       after = await this.waitForVisiblePageActivation(page, after);
       if (after.visibility === 'visible') {
         nativeWindow = { ...nativeWindow, result: 'activated' };
-      } else if (nativeWindow.result === 'activated') {
+      } else if (nativeWindow.result === 'activated' || applicationReadyForRendererSelection) {
         nativeWindow = { ...nativeWindow, result: 'visibility_unchanged' };
       }
     }
@@ -5993,6 +5997,12 @@ export class BrowserController {
       normalizationSucceeded: null,
       applicationActivationAttempted: false,
       applicationActivationSucceeded: null,
+      applicationHiddenBefore: null,
+      unhideAttempted: false,
+      unhideSucceeded: null,
+      activationRequestAccepted: null,
+      applicationFrontmostAfter: null,
+      applicationHiddenAfter: null,
       result: 'not_required',
     };
   }
@@ -6015,6 +6025,12 @@ export class BrowserController {
       normalizationSucceeded: null,
       applicationActivationAttempted: false,
       applicationActivationSucceeded: null,
+      applicationHiddenBefore: null,
+      unhideAttempted: false,
+      unhideSucceeded: null,
+      activationRequestAccepted: null,
+      applicationFrontmostAfter: null,
+      applicationHiddenAfter: null,
       result: 'native_activation_unsupported',
     };
     if (this.config.headless) {
@@ -6053,13 +6069,21 @@ export class BrowserController {
       ownedProcessRunning: activated.ownedProcessRunning,
       applicationActivationAttempted: activated.attempted,
       applicationActivationSucceeded: activated.applicationActivated,
+      applicationHiddenBefore: activated.applicationHiddenBefore,
+      unhideAttempted: activated.unhideAttempted,
+      unhideSucceeded: activated.unhideSucceeded,
+      activationRequestAccepted: activated.activationRequestAccepted,
+      applicationFrontmostAfter: activated.applicationFrontmostAfter,
+      applicationHiddenAfter: activated.applicationHiddenAfter,
       result: activated.applicationActivated
         ? 'activated'
         : activated.reason === 'owned_process_not_running'
           ? 'owned_process_not_running'
           : activated.reason === 'platform_unsupported'
             ? 'native_activation_unsupported'
-            : 'application_activation_failed',
+            : activated.reason === 'activation_state_unverified'
+              ? 'application_activation_unverified'
+              : 'application_activation_failed',
     };
   }
 

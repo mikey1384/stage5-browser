@@ -1068,8 +1068,14 @@ describe('BrowserController', () => {
         attempted: true,
         supported: true,
         ownedProcessRunning: true,
-        applicationActivated: true,
-        reason: 'activated' as const,
+        applicationActivated: false,
+        applicationHiddenBefore: true,
+        unhideAttempted: true,
+        unhideSucceeded: true,
+        activationRequestAccepted: true,
+        applicationFrontmostAfter: false,
+        applicationHiddenAfter: false,
+        reason: 'activation_state_unverified' as const,
       };
     });
     const activator: OwnedBrowserWindowActivator = {
@@ -1164,7 +1170,9 @@ describe('BrowserController', () => {
             normalizationAttempted: true,
             normalizationSucceeded: true,
             applicationActivationAttempted: true,
-            applicationActivationSucceeded: true,
+            applicationActivationSucceeded: false,
+            activationRequestAccepted: true,
+            applicationFrontmostAfter: false,
             result: 'activated',
           },
         },
@@ -1189,6 +1197,12 @@ describe('BrowserController', () => {
       supported: true,
       ownedProcessRunning: true,
       applicationActivated: true,
+      applicationHiddenBefore: false,
+      unhideAttempted: false,
+      unhideSucceeded: null,
+      activationRequestAccepted: true,
+      applicationFrontmostAfter: true,
+      applicationHiddenAfter: false,
       reason: 'activated' as const,
     }));
     controller = new BrowserController(

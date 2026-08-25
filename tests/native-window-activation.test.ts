@@ -24,7 +24,16 @@ afterEach(async () => {
 
 describe('NativeOwnedBrowserWindowActivator', () => {
   it('activates only an exact running owned PID on macOS', async () => {
-    const runner = vi.fn<NativeActivationCommandRunner>().mockResolvedValue('succeeded');
+    const runner = vi.fn<NativeActivationCommandRunner>().mockResolvedValue({
+      outcome: 'succeeded',
+      state: {
+        applicationHiddenBefore: true,
+        unhideAttempted: true,
+        activationRequestAccepted: true,
+        applicationFrontmostAfter: true,
+        applicationHiddenAfter: false,
+      },
+    });
     const processProbe = vi.fn((processId: number) => processId === 42_424);
     const activator = new NativeOwnedBrowserWindowActivator('darwin', runner, processProbe);
 
@@ -33,6 +42,12 @@ describe('NativeOwnedBrowserWindowActivator', () => {
       supported: true,
       ownedProcessRunning: true,
       applicationActivated: true,
+      applicationHiddenBefore: true,
+      unhideAttempted: true,
+      unhideSucceeded: true,
+      activationRequestAccepted: true,
+      applicationFrontmostAfter: true,
+      applicationHiddenAfter: false,
       reason: 'activated',
     });
     expect(processProbe).toHaveBeenCalledWith(42_424);
@@ -40,7 +55,16 @@ describe('NativeOwnedBrowserWindowActivator', () => {
   });
 
   it('never runs native activation for an absent process or unsupported platform', async () => {
-    const runner = vi.fn<NativeActivationCommandRunner>().mockResolvedValue('succeeded');
+    const runner = vi.fn<NativeActivationCommandRunner>().mockResolvedValue({
+      outcome: 'succeeded',
+      state: {
+        applicationHiddenBefore: false,
+        unhideAttempted: false,
+        activationRequestAccepted: true,
+        applicationFrontmostAfter: true,
+        applicationHiddenAfter: false,
+      },
+    });
     const missing = new NativeOwnedBrowserWindowActivator('darwin', runner, () => false);
     await expect(missing.activateOwnedProcess(98_765, 500)).resolves.toMatchObject({
       attempted: false,
@@ -62,16 +86,44 @@ describe('NativeOwnedBrowserWindowActivator', () => {
   it.each([
     ['failed', 'activation_failed'],
     ['timed_out', 'activation_timed_out'],
-  ] as const)('sanitizes a %s native command result', async (commandResult, reason) => {
+  ] as const)('sanitizes a %s native command result', async (outcome, reason) => {
     const activator = new NativeOwnedBrowserWindowActivator(
       'darwin',
-      async () => commandResult,
+      async () => ({ outcome, state: null }),
       () => true,
     );
     await expect(activator.activateOwnedProcess(12_345, 500)).resolves.toMatchObject({
       attempted: true,
       applicationActivated: false,
       reason,
+    });
+  });
+
+  it('does not treat an accepted activation request as proof of visible foreground state', async () => {
+    const activator = new NativeOwnedBrowserWindowActivator(
+      'darwin',
+      async () => ({
+        outcome: 'failed',
+        state: {
+          applicationHiddenBefore: true,
+          unhideAttempted: true,
+          activationRequestAccepted: true,
+          applicationFrontmostAfter: false,
+          applicationHiddenAfter: false,
+        },
+      }),
+      () => true,
+    );
+
+    await expect(activator.activateOwnedProcess(12_345, 500)).resolves.toMatchObject({
+      applicationActivated: false,
+      applicationHiddenBefore: true,
+      unhideAttempted: true,
+      unhideSucceeded: true,
+      activationRequestAccepted: true,
+      applicationFrontmostAfter: false,
+      applicationHiddenAfter: false,
+      reason: 'activation_state_unverified',
     });
   });
 });

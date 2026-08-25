@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { afterAll, describe, expect, it } from 'vitest';
 import type { Page } from 'playwright';
@@ -11,6 +13,25 @@ import type { SanitizedNativeWindowActivationEvidence } from '../src/page-diagno
 
 const runNativeSmoke = process.platform === 'darwin' &&
   process.env.STAGE5_BROWSER_NATIVE_WINDOW_SMOKE === '1';
+const execFileAsync = promisify(execFile);
+
+async function hideExactOwnedApplication(processId: number): Promise<void> {
+  const script = String.raw`
+ObjC.import('AppKit');
+const application = $.NSRunningApplication.runningApplicationWithProcessIdentifier(${processId});
+if (!application) {
+  throw new Error('temporary_owned_application_unavailable');
+}
+application.hide;
+for (let attempt = 0; attempt < 20 && !application.hidden; attempt += 1) {
+  $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.025));
+}
+if (!application.hidden) {
+  throw new Error('temporary_owned_application_hide_failed');
+}
+`;
+  await execFileAsync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script]);
+}
 
 describe.skipIf(!runNativeSmoke)('native window activation smoke', () => {
   let root: string | undefined;
@@ -23,7 +44,7 @@ describe.skipIf(!runNativeSmoke)('native window activation smoke', () => {
     }
   });
 
-  it('restores the exact minimized Chromium window and activates its owned macOS process', async () => {
+  it('restores and unhides the exact owned Chromium application before input', async () => {
     root = await mkdtemp(path.join(os.tmpdir(), 'stage5-native-window-smoke-'));
     const config: Stage5BrowserConfig = {
       browser: 'chromium',
@@ -85,8 +106,41 @@ describe.skipIf(!runNativeSmoke)('native window activation smoke', () => {
       normalizationAttempted: true,
       normalizationSucceeded: true,
       applicationActivationAttempted: true,
-      applicationActivationSucceeded: true,
-      result: 'activated',
+      applicationActivationSucceeded: expect.any(Boolean),
+      applicationHiddenBefore: false,
+      unhideAttempted: false,
+      unhideSucceeded: null,
+      activationRequestAccepted: true,
+      applicationFrontmostAfter: expect.any(Boolean),
+      applicationHiddenAfter: false,
+      result: expect.stringMatching(/^(activated|application_activation_unverified)$/),
+    });
+
+    await hideExactOwnedApplication(processId);
+    const unhiddenWindow = await internals.activateOwnedNativeWindow(page);
+    await page.bringToFront();
+    const unhiddenDeadline = Date.now() + 2_000;
+    while (await page.evaluate(() => document.visibilityState) !== 'visible') {
+      if (Date.now() >= unhiddenDeadline) {
+        throw new Error('The temporary Chromium application did not become visible after activation.');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(unhiddenWindow).toMatchObject({
+      required: true,
+      attempted: true,
+      ownedProcessAvailable: true,
+      ownedProcessRunning: true,
+      targetWindowResolved: true,
+      applicationActivationAttempted: true,
+      applicationActivationSucceeded: expect.any(Boolean),
+      applicationHiddenBefore: true,
+      unhideAttempted: true,
+      unhideSucceeded: true,
+      activationRequestAccepted: true,
+      applicationFrontmostAfter: expect.any(Boolean),
+      applicationHiddenAfter: false,
+      result: expect.stringMatching(/^(activated|application_activation_unverified)$/),
     });
     await expect(controller.screenshot({ fullPage: false, timeoutMs: 5_000 })).resolves.toMatchObject({
       captureEvidence: { pageActivation: { visibilityAfter: 'visible' } },

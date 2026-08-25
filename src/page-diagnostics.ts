@@ -62,6 +62,7 @@ export interface SafeTargetState {
 export type SanitizedNativeWindowActivationResult =
   | 'activated'
   | 'application_activation_failed'
+  | 'application_activation_unverified'
   | 'headless_not_applicable'
   | 'native_activation_unsupported'
   | 'not_required'
@@ -83,6 +84,12 @@ export interface SanitizedNativeWindowActivationEvidence {
   normalizationSucceeded: boolean | null;
   applicationActivationAttempted: boolean;
   applicationActivationSucceeded: boolean | null;
+  applicationHiddenBefore: boolean | null;
+  unhideAttempted: boolean;
+  unhideSucceeded: boolean | null;
+  activationRequestAccepted: boolean | null;
+  applicationFrontmostAfter: boolean | null;
+  applicationHiddenAfter: boolean | null;
   result: SanitizedNativeWindowActivationResult;
 }
 
