@@ -13,7 +13,8 @@ import { NativeOwnedBrowserWindowActivator } from '../src/native-window-activati
 import type { SanitizedNativeWindowActivationEvidence } from '../src/page-diagnostics.js';
 
 const runNativeSmoke = process.platform === 'darwin' &&
-  process.env.STAGE5_BROWSER_NATIVE_WINDOW_SMOKE === '1';
+  process.env.STAGE5_BROWSER_NATIVE_WINDOW_SMOKE === '1' &&
+  process.env.STAGE5_BROWSER_ALLOW_FOCUS_CHANGE === '1';
 const execFileAsync = promisify(execFile);
 
 async function hideExactOwnedApplication(processId: number): Promise<void> {

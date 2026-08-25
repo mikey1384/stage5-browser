@@ -38,6 +38,8 @@ npm test
 npm run smoke
 ```
 
+The ordinary build and test suite is headless and must not take desktop focus. The opt-in macOS native-window smoke deliberately verifies foreground recovery and therefore moves focus; it requires both `STAGE5_BROWSER_NATIVE_WINDOW_SMOKE=1` and `STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1`, plus an explicit warning and action-time user approval.
+
 Run the MCP server directly:
 
 ```bash

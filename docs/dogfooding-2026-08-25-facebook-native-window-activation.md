@@ -43,9 +43,12 @@ A gated macOS smoke also launches only a temporary isolated Chromium profile, pu
 
 ```bash
 STAGE5_BROWSER_NATIVE_WINDOW_SMOKE=1 \
+STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1 \
 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
 npx vitest run tests/native-window-activation-smoke.test.ts
 ```
+
+This smoke necessarily takes desktop focus because foreground activation is its acceptance criterion. It must be announced and approved at action time; the ordinary headless suite does not require or imply permission to run it.
 
 ## Update lifecycle
 

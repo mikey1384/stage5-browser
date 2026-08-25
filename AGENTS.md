@@ -99,6 +99,7 @@ See `docs/agent-setup.md` for host-specific checks and the exact decision tree.
 - Screenshots are explicit operations, stored outside the repository with restrictive permissions.
 - Activate the selected page before screenshots. Return privacy-safe artifact evidence and one bounded recapture for a possibly uniform artifact with semantic content. If a managed client shows black while the artifact is classified contentful, inspect the returned source path rather than declaring the page blank.
 - Browser tools that may change external state must be marked as writes in MCP annotations.
+- Keep the ordinary build and test suite headless. A native window-activation smoke proves real macOS foreground recovery and therefore necessarily interrupts the user's active application/Space. Never enable `STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1` without action-time confirmation after warning the user that focus will move; do not treat that opt-in smoke as routine validation for changes outside native activation.
 
 ## Commands
 
@@ -112,4 +113,7 @@ npm run smoke
 # Opt-in native handoff release gates (use only dedicated temporary profiles)
 STAGE5_BROWSER_NATIVE_SMOKE=1 npm test -- tests/native-human-auth-smoke.test.ts
 STAGE5_BROWSER_FIREFOX_NATIVE_SMOKE=1 npm test -- tests/native-firefox-handoff-smoke.test.ts
+
+# Focus-changing macOS activation smoke (requires action-time user approval)
+STAGE5_BROWSER_NATIVE_WINDOW_SMOKE=1 STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1 npm test -- tests/native-window-activation-smoke.test.ts
 ```

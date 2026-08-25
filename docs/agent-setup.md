@@ -4,6 +4,8 @@
 
 Stage5 Browser should be registered at user scope when agents need it from multiple repositories. The active local registration points directly to this checkout's `dist/launcher.js`; it is not a cached marketplace-plugin installation and does not need redeployment after a compatible patch.
 
+Ordinary builds and tests run headless and must not interrupt the user's desktop. The macOS native-window activation smoke is different: its purpose is to hide, restore, and foreground a disposable browser, so focus movement is unavoidable for that single test. It is gated behind both `STAGE5_BROWSER_NATIVE_WINDOW_SMOKE=1` and `STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1`. Do not enable the second flag without warning the user and receiving action-time approval, and do not run the smoke for unrelated changes.
+
 ### ChatGPT desktop app
 
 The ChatGPT desktop app and Codex CLI share `~/.codex/config.toml`. The official host documentation is [Model Context Protocol](https://learn.chatgpt.com/docs/extend/mcp?surface=chatgpt-desktop).
