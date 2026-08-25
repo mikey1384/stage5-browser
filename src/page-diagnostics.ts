@@ -1,6 +1,6 @@
 import { createHmac, randomBytes } from 'node:crypto';
 
-import type { ConsoleMessage, Locator, Page, Request, Response } from 'playwright';
+import type { ConsoleMessage, ElementHandle, Locator, Page, Request, Response } from 'playwright';
 
 import { sanitizeUrlForJournal } from './url-policy.js';
 
@@ -239,48 +239,61 @@ export function actionDiagnosticForFailure(
   };
 }
 
-export async function inspectTargetState(locator: Locator): Promise<SafeTargetState | null> {
+export function inspectTargetState(locator: Locator): Promise<SafeTargetState | null>;
+export function inspectTargetState(
+  locator: ElementHandle<HTMLElement | SVGElement>,
+): Promise<SafeTargetState | null>;
+export async function inspectTargetState(
+  locator: Locator | ElementHandle<HTMLElement | SVGElement>,
+): Promise<SafeTargetState | null> {
+  const inspect = (element: Element): SafeTargetState => {
+    if (!element.isConnected) {
+      throw new Error('Target element is detached.');
+    }
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    const visible =
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.opacity !== '0';
+    const inViewport =
+      visible &&
+      rect.bottom > 0 &&
+      rect.right > 0 &&
+      rect.top < window.innerHeight &&
+      rect.left < window.innerWidth;
+    const centerX = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2));
+    const centerY = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2));
+    const hit = inViewport ? document.elementFromPoint(centerX, centerY) : null;
+    const receivesPointerEvents = hit === null
+      ? null
+      : hit === element || element.contains(hit);
+    const htmlDisabled = 'disabled' in element && Boolean((element as HTMLButtonElement).disabled);
+    const ariaDisabled = element.getAttribute('aria-disabled') === 'true';
+    const coveredBy = receivesPointerEvents === false && hit !== null
+      ? {
+          tagName: hit.tagName.toLocaleLowerCase(),
+          role: hit.getAttribute('role'),
+          pointerEvents: getComputedStyle(hit).pointerEvents,
+        }
+      : null;
+    return {
+      visible,
+      enabled: !htmlDisabled && !ariaDisabled,
+      inViewport,
+      receivesPointerEvents,
+      tagName: element.tagName.toLocaleLowerCase(),
+      role: element.getAttribute('role'),
+      coveredBy,
+    };
+  };
   try {
-    return await locator.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      const visible =
-        rect.width > 0 &&
-        rect.height > 0 &&
-        style.display !== 'none' &&
-        style.visibility !== 'hidden' &&
-        style.opacity !== '0';
-      const inViewport =
-        visible &&
-        rect.bottom > 0 &&
-        rect.right > 0 &&
-        rect.top < window.innerHeight &&
-        rect.left < window.innerWidth;
-      const centerX = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2));
-      const centerY = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2));
-      const hit = inViewport ? document.elementFromPoint(centerX, centerY) : null;
-      const receivesPointerEvents = hit === null
-        ? null
-        : hit === element || element.contains(hit);
-      const htmlDisabled = 'disabled' in element && Boolean((element as HTMLButtonElement).disabled);
-      const ariaDisabled = element.getAttribute('aria-disabled') === 'true';
-      const coveredBy = receivesPointerEvents === false && hit !== null
-        ? {
-            tagName: hit.tagName.toLocaleLowerCase(),
-            role: hit.getAttribute('role'),
-            pointerEvents: getComputedStyle(hit).pointerEvents,
-          }
-        : null;
-      return {
-        visible,
-        enabled: !htmlDisabled && !ariaDisabled,
-        inViewport,
-        receivesPointerEvents,
-        tagName: element.tagName.toLocaleLowerCase(),
-        role: element.getAttribute('role'),
-        coveredBy,
-      };
-    });
+    if ('elementHandle' in locator) {
+      return await locator.evaluate(inspect);
+    }
+    return await locator.evaluate(inspect);
   } catch {
     return null;
   }

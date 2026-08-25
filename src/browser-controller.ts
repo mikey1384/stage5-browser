@@ -200,12 +200,44 @@ interface SearchableTextLine {
   text: string;
 }
 
+interface ClickTargetSemanticIdentity {
+  tagName: string;
+  role: string | null;
+  name: string;
+  article: {
+    fingerprint: string;
+    tagName: string;
+    role: string | null;
+    nestingDepth: number;
+  } | null;
+}
+
+interface PreparedObservedClickTarget {
+  locator: Locator;
+  handle: ElementHandle<HTMLElement | SVGElement>;
+  targetState: SafeTargetState;
+}
+
+type VirtualizedClickResolution =
+  | { kind: 'ambiguous' | 'missing' }
+  | {
+      kind: 'resolved';
+      locator: Locator;
+      handle: ElementHandle<HTMLElement | SVGElement>;
+    };
+
 const MAX_SEARCHABLE_TEXT_CHARACTERS = 2_000_000;
 const TEXT_SNIPPET_CONTEXT = 100;
 const TEXT_SNIPPET_SURROUNDING_LINES = 2;
 const TEXT_SNIPPET_CONTEXT_SCAN_LINES = 12;
 const TEXT_SNIPPET_CONTEXT_LINE_CHARACTERS = 160;
-const CLICK_REF_SCROLL_INTO_VIEW_TIMEOUT_MS = 2_000;
+const CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS = 5_000;
+const CLICK_REF_INCREMENTAL_SCROLL_STEPS = 32;
+const CLICK_REF_INCREMENTAL_SETTLE_MS = 75;
+const CLICK_REF_REBIND_SETTLE_MS = 500;
+const CLICK_REF_ARTICLE_TEXT_CHARACTERS = 20_000;
+const CLICK_REF_ARTICLE_CANDIDATES = 100;
+const CLICK_REF_ELEMENT_CANDIDATES = 5_000;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
@@ -877,6 +909,7 @@ export class BrowserController {
     const locator = frame.locator(`aria-ref=${input.ref}`);
     const startedAt = Date.now();
     const actionStartedAt = new Date(startedAt).toISOString();
+    let preparedTarget: PreparedObservedClickTarget | null = null;
     this.pageDiagnostics.beginAction(page, actionStartedAt);
     try {
       let count: number;
@@ -908,20 +941,23 @@ export class BrowserController {
           count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
         );
       }
-      const targetState = await this.prepareObservedClickTarget(
+      preparedTarget = await this.prepareObservedClickTarget(
         page,
+        frame,
         locator,
         actionStartedAt,
         input.timeoutMs,
       );
       try {
-        await locator.click({ timeout: Math.max(1, input.timeoutMs - (Date.now() - startedAt)) });
+        await preparedTarget.handle.click({
+          timeout: Math.max(1, input.timeoutMs - (Date.now() - startedAt)),
+        });
       } catch (error) {
         const diagnostic = actionDiagnosticForFailure(
           'click_by_ref',
           page,
           error,
-          await inspectTargetState(locator) ?? targetState,
+          await inspectTargetState(preparedTarget.handle) ?? preparedTarget.targetState,
           actionStartedAt,
         );
         this.pageDiagnostics.recordAction(page, diagnostic);
@@ -931,13 +967,18 @@ export class BrowserController {
         const postcondition = await this.verifyClickPostcondition(
           page,
           frame,
-          locator,
+          preparedTarget.locator,
           input.postcondition,
           Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
         );
         this.pageDiagnostics.recordAction(
           page,
-          this.successfulActionDiagnostic('click_by_ref', page, targetState, actionStartedAt),
+          this.successfulActionDiagnostic(
+            'click_by_ref',
+            page,
+            preparedTarget.targetState,
+            actionStartedAt,
+          ),
         );
         this.lastKnownUrl = page.url();
         return {
@@ -949,12 +990,18 @@ export class BrowserController {
         if (error instanceof Stage5BrowserError && error.code === 'POSTCONDITION_FAILED') {
           this.pageDiagnostics.recordAction(
             page,
-            this.postconditionFailureDiagnostic('click_by_ref', page, targetState, actionStartedAt),
+            this.postconditionFailureDiagnostic(
+              'click_by_ref',
+              page,
+              preparedTarget.targetState,
+              actionStartedAt,
+            ),
           );
         }
         throw error;
       }
     } finally {
+      await preparedTarget?.handle.dispose().catch(() => undefined);
       this.discardObservedSnapshot(frame);
     }
   }
@@ -3992,62 +4039,116 @@ export class BrowserController {
 
   private async prepareObservedClickTarget(
     page: Page,
+    frame: Frame,
     locator: Locator,
     startedAt: string,
     timeoutMs: number,
-  ): Promise<SafeTargetState> {
-    let targetState = await inspectTargetState(locator);
-    if (targetState?.inViewport !== true) {
-      try {
-        await locator.scrollIntoViewIfNeeded({
-          timeout: Math.min(timeoutMs, CLICK_REF_SCROLL_INTO_VIEW_TIMEOUT_MS),
-        });
-      } catch {
-        targetState = await inspectTargetState(locator) ?? targetState;
-        this.failClickBeforeDispatch(
-          page,
-          startedAt,
-          targetState,
-          targetState === null ? 'detached' : 'not_visible',
-          'scroll_into_view_failed',
-          'The observed element could not be brought into the viewport before the click deadline.',
-          'Take a fresh snapshot of the current page state and inspect its scroll surface before choosing another action.',
-        );
-      }
-    }
-
-    let count: number;
-    try {
-      count = await locator.count();
-    } catch {
-      this.failClickBeforeDispatch(
-        page,
-        startedAt,
-        await inspectTargetState(locator),
-        'detached',
-        'reference_revalidation_failed_after_scroll',
-        'The observed reference could not be revalidated after viewport preparation.',
-        'The page may have changed during scrolling. Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
-        'TARGET_NOT_FOUND',
-      );
-    }
-    if (count !== 1) {
+  ): Promise<PreparedObservedClickTarget> {
+    let preparedLocator = locator;
+    let handle = await locator.elementHandle();
+    if (handle === null) {
       this.failClickBeforeDispatch(
         page,
         startedAt,
         null,
-        count === 0 ? 'target_missing' : 'ambiguous_target',
-        'reference_resolution_changed_after_scroll',
-        count === 0
-          ? 'The observed reference detached while it was being brought into view.'
-          : 'The observed reference became ambiguous while it was being brought into view.',
-        'Take one fresh semantic snapshot; Stage5 Browser will not click a changed or ambiguous reference.',
-        count === 0 ? 'TARGET_NOT_FOUND' : 'AMBIGUOUS_TARGET',
+        'detached',
+        'reference_handle_missing',
+        'The observed reference detached before viewport preparation began.',
+        'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+        'TARGET_NOT_FOUND',
       );
     }
 
-    targetState = await inspectTargetState(locator);
+    let targetState = await inspectTargetState(handle);
     if (targetState === null) {
+      await handle.dispose().catch(() => undefined);
+      this.failClickBeforeDispatch(
+        page,
+        startedAt,
+        null,
+        'detached',
+        'target_detached_before_scroll',
+        'The observed element detached before Stage5 Browser could prepare it for a click.',
+        'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+        'TARGET_NOT_FOUND',
+      );
+    }
+
+    const identity = targetState.inViewport
+      ? null
+      : await this.observeClickTargetIdentity(handle);
+    const preparationBudgetMs = Math.min(
+      CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS,
+      Math.max(100, timeoutMs <= 1_000 ? Math.floor(timeoutMs / 2) : timeoutMs - 1_000),
+    );
+    const preparationDeadline = Date.now() + preparationBudgetMs;
+
+    for (
+      let step = 0;
+      !targetState.inViewport &&
+        step < CLICK_REF_INCREMENTAL_SCROLL_STEPS &&
+        Date.now() < preparationDeadline;
+      step += 1
+    ) {
+      const movement = await this.incrementalScrollTowardClickTarget(handle);
+      if (movement === null) {
+        const rebound = await this.waitForVirtualizedClickTarget(
+          frame,
+          locator,
+          identity,
+          preparationDeadline,
+        );
+        if (rebound.kind !== 'resolved') {
+          await handle.dispose().catch(() => undefined);
+          this.failVirtualizedClickRebind(page, startedAt, rebound.kind, targetState);
+        }
+        await handle.dispose().catch(() => undefined);
+        handle = rebound.handle;
+        preparedLocator = rebound.locator;
+      } else if (!movement.moved && !movement.targetInViewport) {
+        break;
+      }
+
+      const remaining = preparationDeadline - Date.now();
+      if (remaining > 0) {
+        await page.waitForTimeout(Math.min(CLICK_REF_INCREMENTAL_SETTLE_MS, remaining));
+      }
+      const priorTargetState = targetState;
+      targetState = await inspectTargetState(handle);
+      if (targetState === null) {
+        const rebound = await this.waitForVirtualizedClickTarget(
+          frame,
+          locator,
+          identity,
+          preparationDeadline,
+        );
+        if (rebound.kind !== 'resolved') {
+          await handle.dispose().catch(() => undefined);
+          this.failVirtualizedClickRebind(page, startedAt, rebound.kind, priorTargetState);
+        }
+        await handle.dispose().catch(() => undefined);
+        handle = rebound.handle;
+        preparedLocator = rebound.locator;
+        targetState = await inspectTargetState(handle);
+        if (targetState === null) {
+          await handle.dispose().catch(() => undefined);
+          this.failClickBeforeDispatch(
+            page,
+            startedAt,
+            null,
+            'detached',
+            'virtualized_target_detached_after_rebind',
+            'The uniquely rebound element detached again before Stage5 Browser could click it.',
+            'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+            'TARGET_NOT_FOUND',
+          );
+        }
+      }
+    }
+
+    targetState = await inspectTargetState(handle);
+    if (targetState === null) {
+      await handle.dispose().catch(() => undefined);
       this.failClickBeforeDispatch(
         page,
         startedAt,
@@ -4067,6 +4168,7 @@ export class BrowserController {
           ? { diagnostic: 'pointer_intercepted' as const, reason: 'target_covered_after_scroll' }
           : null;
     if (failure !== null) {
+      await handle.dispose().catch(() => undefined);
       this.failClickBeforeDispatch(
         page,
         startedAt,
@@ -4077,7 +4179,409 @@ export class BrowserController {
         'Take a fresh snapshot and resolve the reported visibility, enabled-state, or covering element before another click.',
       );
     }
-    return targetState;
+    return { locator: preparedLocator, handle, targetState };
+  }
+
+  private async observeClickTargetIdentity(
+    handle: ElementHandle<HTMLElement | SVGElement>,
+  ): Promise<ClickTargetSemanticIdentity | null> {
+    try {
+      const observed = await handle.evaluate((element, articleTextCharacters) => {
+        if (!element.isConnected) {
+          throw new Error('Target element is detached.');
+        }
+        const normalize = (value: string | null | undefined): string =>
+          (value ?? '').replaceAll(/\s+/g, ' ').trim();
+        const semanticRole = (candidate: Element): string | null => {
+          const explicit = normalize(candidate.getAttribute('role')).split(' ')[0] ?? '';
+          if (explicit !== '') {
+            return explicit.toLocaleLowerCase();
+          }
+          const tagName = candidate.tagName.toLocaleLowerCase();
+          if (tagName === 'button') return 'button';
+          if (tagName === 'a' && candidate.hasAttribute('href')) return 'link';
+          if (tagName === 'article') return 'article';
+          if (tagName === 'img') return 'img';
+          if (tagName === 'textarea') return 'textbox';
+          if (tagName === 'select') return 'combobox';
+          if (tagName === 'input') {
+            const type = (candidate.getAttribute('type') ?? 'text').toLocaleLowerCase();
+            if (type === 'button' || type === 'submit' || type === 'reset') return 'button';
+            if (type === 'checkbox') return 'checkbox';
+            if (type === 'radio') return 'radio';
+            if (type !== 'hidden') return 'textbox';
+          }
+          return null;
+        };
+        const renderedText = (candidate: Element): string =>
+          candidate instanceof HTMLElement
+            ? normalize(candidate.innerText || candidate.textContent)
+            : normalize(candidate.textContent);
+        const semanticName = (candidate: Element): string => {
+          const ariaLabel = normalize(candidate.getAttribute('aria-label'));
+          if (ariaLabel !== '') return ariaLabel.slice(0, 500);
+          const labelledBy = normalize(candidate.getAttribute('aria-labelledby'));
+          if (labelledBy !== '') {
+            const labels = labelledBy.split(' ')
+              .map((id) => document.getElementById(id))
+              .filter((label): label is HTMLElement => label !== null)
+              .map((label) => normalize(label.innerText || label.textContent))
+              .filter((label) => label !== '')
+              .join(' ');
+            if (labels !== '') return labels.slice(0, 500);
+          }
+          const alt = normalize(candidate.getAttribute('alt'));
+          if (alt !== '') return alt.slice(0, 500);
+          const rendered = renderedText(candidate);
+          if (rendered !== '') return rendered.slice(0, 500);
+          const value = normalize(candidate.getAttribute('value'));
+          if (value !== '') return value.slice(0, 500);
+          const placeholder = normalize(candidate.getAttribute('placeholder'));
+          if (placeholder !== '') return placeholder.slice(0, 500);
+          return normalize(candidate.getAttribute('title')).slice(0, 500);
+        };
+        const article = element.closest('article, [role="article"]');
+        let nestingDepth = 0;
+        for (let ancestor: Element | null = article; ancestor !== null; ancestor = ancestor.parentElement) {
+          if (ancestor.matches('article, [role="article"]')) {
+            nestingDepth += 1;
+          }
+        }
+        return {
+          tagName: element.tagName.toLocaleLowerCase(),
+          role: semanticRole(element),
+          name: semanticName(element),
+          article: article === null
+            ? null
+            : {
+                text: renderedText(article).slice(0, articleTextCharacters),
+                tagName: article.tagName.toLocaleLowerCase(),
+                role: semanticRole(article),
+                nestingDepth,
+              },
+        };
+      }, CLICK_REF_ARTICLE_TEXT_CHARACTERS);
+      return {
+        tagName: observed.tagName,
+        role: observed.role,
+        name: observed.name,
+        article: observed.article === null
+          ? null
+          : {
+              fingerprint: privacyFingerprint(observed.article.text),
+              tagName: observed.article.tagName,
+              role: observed.article.role,
+              nestingDepth: observed.article.nestingDepth,
+            },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async incrementalScrollTowardClickTarget(
+    handle: ElementHandle<HTMLElement | SVGElement>,
+  ): Promise<{ moved: boolean; targetInViewport: boolean } | null> {
+    try {
+      return await handle.evaluate((element) => {
+        const viewportIntersects = (rect: DOMRect): boolean =>
+          rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+        const targetRect = element.getBoundingClientRect();
+        if (viewportIntersects(targetRect)) {
+          return { moved: false, targetInViewport: true };
+        }
+        const targetDirection = targetRect.bottom <= 0 ? -1 : targetRect.top >= window.innerHeight ? 1 : 0;
+        if (targetDirection === 0) {
+          return { moved: false, targetInViewport: false };
+        }
+        const moveSurface = (
+          surface: HTMLElement,
+          direction: number,
+          distance: number,
+          visibleHeight: number,
+        ): boolean => {
+          const before = surface.scrollTop;
+          const maximum = Math.max(0, surface.scrollHeight - surface.clientHeight);
+          const available = direction > 0 ? maximum - before : before;
+          if (available <= 1) return false;
+          const step = Math.min(
+            available,
+            Math.max(64, Math.min(distance, Math.max(64, Math.floor(visibleHeight * 0.72)))),
+          );
+          const priorBehavior = surface.style.scrollBehavior;
+          surface.style.scrollBehavior = 'auto';
+          surface.scrollTop = before + direction * step;
+          surface.style.scrollBehavior = priorBehavior;
+          return Math.abs(surface.scrollTop - before) > 1;
+        };
+
+        for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+          if (ancestor === document.body || ancestor === document.documentElement) continue;
+          const style = getComputedStyle(ancestor);
+          if (!/(auto|scroll|overlay)/u.test(style.overflowY)) continue;
+          if (ancestor.scrollHeight <= ancestor.clientHeight + 1) continue;
+          const surfaceRect = ancestor.getBoundingClientRect();
+          if (!viewportIntersects(surfaceRect)) continue;
+          const clipTop = Math.max(0, surfaceRect.top);
+          const clipBottom = Math.min(window.innerHeight, surfaceRect.bottom);
+          const direction = targetRect.bottom <= clipTop ? -1 : targetRect.top >= clipBottom ? 1 : 0;
+          if (direction === 0) continue;
+          const distance = direction > 0
+            ? Math.max(64, targetRect.top - clipBottom)
+            : Math.max(64, clipTop - targetRect.bottom);
+          if (moveSurface(ancestor, direction, distance, Math.max(1, clipBottom - clipTop))) {
+            const after = element.getBoundingClientRect();
+            return { moved: true, targetInViewport: viewportIntersects(after) };
+          }
+        }
+
+        const scrollingElement = document.scrollingElement;
+        if (!(scrollingElement instanceof HTMLElement)) {
+          return { moved: false, targetInViewport: false };
+        }
+        const distance = targetDirection > 0
+          ? Math.max(64, targetRect.top - window.innerHeight)
+          : Math.max(64, -targetRect.bottom);
+        const moved = moveSurface(
+          scrollingElement,
+          targetDirection,
+          distance,
+          Math.max(1, window.innerHeight),
+        );
+        const after = element.getBoundingClientRect();
+        return { moved, targetInViewport: viewportIntersects(after) };
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private async waitForVirtualizedClickTarget(
+    frame: Frame,
+    originalLocator: Locator,
+    identity: ClickTargetSemanticIdentity | null,
+    preparationDeadline: number,
+  ): Promise<VirtualizedClickResolution> {
+    const deadline = Math.min(
+      preparationDeadline,
+      Date.now() + CLICK_REF_REBIND_SETTLE_MS,
+    );
+    let result: VirtualizedClickResolution = { kind: 'missing' };
+    do {
+      result = await this.resolveVirtualizedClickTarget(frame, originalLocator, identity);
+      if (result.kind !== 'missing' || Date.now() >= deadline) {
+        return result;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+    } while (Date.now() < deadline);
+    return result;
+  }
+
+  private async resolveVirtualizedClickTarget(
+    frame: Frame,
+    originalLocator: Locator,
+    identity: ClickTargetSemanticIdentity | null,
+  ): Promise<VirtualizedClickResolution> {
+    try {
+      const originalCount = await originalLocator.count();
+      if (originalCount > 1) {
+        return { kind: 'ambiguous' };
+      }
+      if (originalCount === 1) {
+        const originalHandle = await originalLocator.elementHandle();
+        if (originalHandle !== null) {
+          const observed = await this.observeClickTargetIdentity(originalHandle);
+          if (identity !== null && observed !== null && this.sameClickTargetIdentity(identity, observed)) {
+            return { kind: 'resolved', locator: originalLocator, handle: originalHandle };
+          }
+          await originalHandle.dispose().catch(() => undefined);
+        }
+      }
+      if (identity?.article === null || identity?.article === undefined || identity.name === '') {
+        return { kind: 'missing' };
+      }
+      const articleIdentity = identity.article;
+
+      const articles = frame.locator('article, [role="article"]');
+      const articleCount = await articles.count();
+      if (articleCount > CLICK_REF_ARTICLE_CANDIDATES) {
+        return { kind: 'ambiguous' };
+      }
+      const articleCandidates = await articles.evaluateAll((candidates, articleTextCharacters) =>
+        candidates.map((article) => {
+          const normalize = (value: string | null | undefined): string =>
+            (value ?? '').replaceAll(/\s+/g, ' ').trim();
+          const explicitRole = normalize(article.getAttribute('role')).split(' ')[0] ?? '';
+          let nestingDepth = 0;
+          for (let ancestor: Element | null = article; ancestor !== null; ancestor = ancestor.parentElement) {
+            if (ancestor.matches('article, [role="article"]')) nestingDepth += 1;
+          }
+          return {
+            text: (article instanceof HTMLElement
+              ? normalize(article.innerText || article.textContent)
+              : normalize(article.textContent)).slice(0, articleTextCharacters),
+            tagName: article.tagName.toLocaleLowerCase(),
+            role: explicitRole === ''
+              ? article.tagName.toLocaleLowerCase() === 'article' ? 'article' : null
+              : explicitRole.toLocaleLowerCase(),
+            nestingDepth,
+          };
+        }), CLICK_REF_ARTICLE_TEXT_CHARACTERS);
+      const matchingArticleIndexes: number[] = [];
+      articleCandidates.forEach((candidate, index) => {
+        if (
+          privacyFingerprint(candidate.text) === articleIdentity.fingerprint &&
+          candidate.tagName === articleIdentity.tagName &&
+          candidate.role === articleIdentity.role &&
+          candidate.nestingDepth === articleIdentity.nestingDepth
+        ) {
+          matchingArticleIndexes.push(index);
+        }
+      });
+      if (matchingArticleIndexes.length > 1) {
+        return { kind: 'ambiguous' };
+      }
+      const articleIndex = matchingArticleIndexes[0];
+      if (articleIndex === undefined) {
+        return { kind: 'missing' };
+      }
+      const article = articles.nth(articleIndex);
+      const match = await article.evaluate((articleElement, expected) => {
+        const normalize = (value: string | null | undefined): string =>
+          (value ?? '').replaceAll(/\s+/g, ' ').trim();
+        const semanticRole = (candidate: Element): string | null => {
+          const explicit = normalize(candidate.getAttribute('role')).split(' ')[0] ?? '';
+          if (explicit !== '') return explicit.toLocaleLowerCase();
+          const tagName = candidate.tagName.toLocaleLowerCase();
+          if (tagName === 'button') return 'button';
+          if (tagName === 'a' && candidate.hasAttribute('href')) return 'link';
+          if (tagName === 'article') return 'article';
+          if (tagName === 'img') return 'img';
+          if (tagName === 'textarea') return 'textbox';
+          if (tagName === 'select') return 'combobox';
+          if (tagName === 'input') {
+            const type = (candidate.getAttribute('type') ?? 'text').toLocaleLowerCase();
+            if (type === 'button' || type === 'submit' || type === 'reset') return 'button';
+            if (type === 'checkbox') return 'checkbox';
+            if (type === 'radio') return 'radio';
+            if (type !== 'hidden') return 'textbox';
+          }
+          return null;
+        };
+        const renderedText = (candidate: Element): string =>
+          candidate instanceof HTMLElement
+            ? normalize(candidate.innerText || candidate.textContent)
+            : normalize(candidate.textContent);
+        const semanticName = (candidate: Element): string => {
+          const ariaLabel = normalize(candidate.getAttribute('aria-label'));
+          if (ariaLabel !== '') return ariaLabel.slice(0, 500);
+          const labelledBy = normalize(candidate.getAttribute('aria-labelledby'));
+          if (labelledBy !== '') {
+            const labels = labelledBy.split(' ')
+              .map((id) => document.getElementById(id))
+              .filter((label): label is HTMLElement => label !== null)
+              .map((label) => normalize(label.innerText || label.textContent))
+              .filter((label) => label !== '')
+              .join(' ');
+            if (labels !== '') return labels.slice(0, 500);
+          }
+          const alt = normalize(candidate.getAttribute('alt'));
+          if (alt !== '') return alt.slice(0, 500);
+          const rendered = renderedText(candidate);
+          if (rendered !== '') return rendered.slice(0, 500);
+          const value = normalize(candidate.getAttribute('value'));
+          if (value !== '') return value.slice(0, 500);
+          const placeholder = normalize(candidate.getAttribute('placeholder'));
+          if (placeholder !== '') return placeholder.slice(0, 500);
+          return normalize(candidate.getAttribute('title')).slice(0, 500);
+        };
+        const descendants = Array.from(articleElement.querySelectorAll('*'));
+        if (descendants.length + 1 > expected.maximumCandidates) {
+          return { tooMany: true, indexes: [] as number[] };
+        }
+        const candidates = [articleElement, ...descendants];
+        const indexes: number[] = [];
+        candidates.forEach((candidate, index) => {
+          if (
+            candidate.tagName.toLocaleLowerCase() === expected.tagName &&
+            semanticRole(candidate) === expected.role &&
+            semanticName(candidate) === expected.name
+          ) {
+            indexes.push(index);
+          }
+        });
+        return { tooMany: false, indexes };
+      }, {
+        tagName: identity.tagName,
+        role: identity.role,
+        name: identity.name,
+        maximumCandidates: CLICK_REF_ELEMENT_CANDIDATES,
+      });
+      if (match.tooMany || match.indexes.length > 1) {
+        return { kind: 'ambiguous' };
+      }
+      const targetIndex = match.indexes[0];
+      if (targetIndex === undefined) {
+        return { kind: 'missing' };
+      }
+      const reboundLocator = targetIndex === 0
+        ? article
+        : article.locator('*').nth(targetIndex - 1);
+      const reboundHandle = await reboundLocator.elementHandle();
+      if (reboundHandle === null) {
+        return { kind: 'missing' };
+      }
+      const reboundIdentity = await this.observeClickTargetIdentity(reboundHandle);
+      if (reboundIdentity === null || !this.sameClickTargetIdentity(identity, reboundIdentity)) {
+        await reboundHandle.dispose().catch(() => undefined);
+        return { kind: 'missing' };
+      }
+      return { kind: 'resolved', locator: reboundLocator, handle: reboundHandle };
+    } catch {
+      return { kind: 'missing' };
+    }
+  }
+
+  private sameClickTargetIdentity(
+    expected: ClickTargetSemanticIdentity,
+    observed: ClickTargetSemanticIdentity,
+  ): boolean {
+    if (
+      expected.tagName !== observed.tagName ||
+      expected.role !== observed.role ||
+      expected.name !== observed.name
+    ) {
+      return false;
+    }
+    if (expected.article === null || observed.article === null) {
+      return expected.article === null && observed.article === null;
+    }
+    return expected.article.fingerprint === observed.article.fingerprint &&
+      expected.article.tagName === observed.article.tagName &&
+      expected.article.role === observed.article.role &&
+      expected.article.nestingDepth === observed.article.nestingDepth;
+  }
+
+  private failVirtualizedClickRebind(
+    page: Page,
+    startedAt: string,
+    result: 'ambiguous' | 'missing',
+    priorTargetState: SafeTargetState,
+  ): never {
+    this.failClickBeforeDispatch(
+      page,
+      startedAt,
+      priorTargetState,
+      result === 'ambiguous' ? 'ambiguous_target' : 'detached',
+      result === 'ambiguous'
+        ? 'virtualized_target_rebind_ambiguous'
+        : 'virtualized_target_rebind_failed',
+      result === 'ambiguous'
+        ? 'The page virtualized the observed element and more than one replacement matched its article-scoped identity.'
+        : 'The page virtualized the observed element and Stage5 Browser could not uniquely prove its replacement.',
+      'Take one fresh semantic snapshot after the feed settles; Stage5 Browser did not dispatch the click.',
+      result === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'TARGET_NOT_FOUND',
+    );
   }
 
   private failClickBeforeDispatch(

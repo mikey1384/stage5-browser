@@ -345,7 +345,7 @@ describe('BrowserController', () => {
     expect(snippet).toContain('Full thumbnail beneath the link');
   });
 
-  it('brings fresh offscreen refs into view and fails closed before an impossible click', async () => {
+  it('incrementally scrolls to fresh refs, safely rebinds virtualization, and fails closed', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       response.end(`<!doctype html><html><head><title>Offscreen references</title><style>
@@ -354,9 +354,26 @@ describe('BrowserController', () => {
         #impossible { position: fixed; top: 2000px; left: 10px; }
       </style></head><body>
         <button id="impossible" type="button">Impossible action</button>
-        <div id="spacer"></div>
-        <button type="button" onclick="document.querySelector('#expanded').hidden = false">See more</button>
-        <a id="expanded" href="#expanded" hidden>Expanded caption</a>
+        <article id="virtualized-post">
+          <h2>Known virtualized post</h2>
+          <div id="spacer"></div>
+          <button type="button" onclick="void 0">See more</button>
+          <a id="expanded" href="#expanded" hidden>Expanded caption</a>
+        </article>
+        <script>
+          let replaced = false;
+          addEventListener('scroll', () => {
+            if (replaced) return;
+            replaced = true;
+            const current = document.querySelector('#virtualized-post');
+            const replacement = current.cloneNode(true);
+            replacement.querySelector('button').setAttribute(
+              'onclick',
+              "document.querySelector('#expanded').hidden = false",
+            );
+            current.replaceWith(replacement);
+          }, { passive: true });
+        </script>
       </body></html>`);
     });
     const port = await listen(server);
@@ -441,6 +458,70 @@ describe('BrowserController', () => {
     })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
       code: 'TARGET_NOT_FOUND',
       details: { reason: 'stale_or_unknown_snapshot' },
+    });
+  });
+
+  it('rejects ambiguous article-scoped replacements after feed virtualization', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Ambiguous virtualization</title><style>
+        body { margin: 0; }
+        .spacer { height: 2200px; }
+      </style></head><body>
+        <article id="virtualized-post">
+          <h2>Duplicated virtualized post</h2>
+          <div class="spacer"></div>
+          <button type="button">See more</button>
+        </article>
+        <script>
+          let replaced = false;
+          addEventListener('scroll', () => {
+            if (replaced) return;
+            replaced = true;
+            const current = document.querySelector('#virtualized-post');
+            current.replaceWith(current.cloneNode(true), current.cloneNode(true));
+          }, { passive: true });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-ambiguous-ref-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/post`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const observed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    const seeMoreLine = observed.snapshot.split('\n').find((line) => line.includes('See more'));
+    const seeMoreRef = seeMoreLine?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(seeMoreRef).toBeDefined();
+    if (seeMoreRef === undefined) {
+      throw new Error('Fixture did not expose the ambiguous offscreen reference.');
+    }
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: seeMoreRef,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'AMBIGUOUS_TARGET',
+      details: {
+        reason: 'virtualized_target_rebind_ambiguous',
+        actionDispatched: false,
+        clickDispatched: false,
+      },
+    });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'blocked',
+      reason: 'ambiguous_target',
+      actionDispatched: false,
+      clickDispatched: false,
     });
   });
 
