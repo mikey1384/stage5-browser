@@ -76,9 +76,11 @@ describe('human authentication bootstrap', () => {
       target: target({ browser: 'firefox', engine: 'firefox', executablePath: null, source: 'bundled' }),
     };
     expect(humanBrowserArguments(firefoxInput)).toEqual([
+      '-no-remote',
+      '-wait-for-browser',
+      '-foreground',
       '-profile',
       '/private/tmp/stage5 human profile',
-      '-new-instance',
       '-new-window',
       stage5HandoffMarkerUrl(input.handoffLabel),
       '-new-tab',
@@ -135,6 +137,15 @@ describe('human authentication bootstrap', () => {
     await expect(waitForProfileUnlock(root, 1_000)).resolves.toBe(true);
     clearTimeout(release);
     expect(await profileLocks(root)).toEqual([]);
+  });
+
+  it('does not mistake an unheld persistent macOS Firefox .parentlock file for a live owner', async () => {
+    if (process.platform !== 'darwin') return;
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-firefox-parentlock-'));
+    temporaryRoots.push(root);
+    await writeFile(path.join(root, '.parentlock'), '');
+    await expect(profileLocks(root)).resolves.toEqual([]);
+    await expect(waitForProfileUnlock(root, 250)).resolves.toBe(true);
   });
 
   it('tracks a detached native process without controlling it', async () => {

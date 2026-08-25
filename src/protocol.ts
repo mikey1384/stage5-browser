@@ -1,6 +1,7 @@
 import type { Stage5BrowserConfig } from './config.js';
 import type { BrowserDiagnostics } from './diagnostics.js';
 import type { BrowserAvailability, BrowserProduct } from './browser-provider.js';
+import type { ProfileOwnerEvidence } from './chromium-profile-owner.js';
 import type { SerializedStage5BrowserError } from './errors.js';
 import type { RuntimeProcessInfo } from './runtime-info.js';
 import type { SanitizedPageActivationEvidence } from './page-diagnostics.js';
@@ -165,6 +166,7 @@ export type ScrollEndState =
 export type AuthenticationHandoffState =
   | 'browser_stopped'
   | 'profile_ready'
+  | 'releasing_control'
   | 'awaiting_user'
   | 'ready_for_agent_verification';
 
@@ -252,12 +254,31 @@ export interface BrowserStatus {
   runtimeProfile: RuntimeProfileObservation | null;
   profileLockState: 'none' | 'owned_browser_running' | 'possible_external_owner';
   profileLockFiles: string[];
+  profileOwner: ProfileOwnerEvidence;
 }
 
 export interface AvailableBrowsers {
   defaultBrowser: BrowserProduct;
   currentBrowser: BrowserProduct;
-  browsers: BrowserAvailability[];
+  browsers: BrowserOperationalAvailability[];
+}
+
+export type BrowserProfileAvailabilityState =
+  | 'startable'
+  | 'owned_active'
+  | 'owned_orphaned'
+  | 'busy_other_stage5_session'
+  | 'external_owner'
+  | 'unavailable';
+
+export interface BrowserOperationalAvailability extends BrowserAvailability {
+  /** Executable/runtime discovery only; profile ownership is reported separately below. */
+  installed: boolean;
+  /** True only when this Stage5 session can safely use or start the backend now. */
+  profileState: BrowserProfileAvailabilityState;
+  startable: boolean;
+  recoverable: boolean;
+  suggestedAction: string | null;
 }
 
 export interface BrowserCommandMap {

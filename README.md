@@ -16,7 +16,10 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - capture a screenshot
 - click or fill one unique semantic target, with optional click postcondition verification
 - discover and target nested scroll surfaces, wait for feed growth, and search currently rendered text without arbitrary script evaluation
-- release a persistent isolated profile into a visibly marked native browser for private human login, then attach to the same running Chromium process so session cookies never cross a restart boundary
+- classify every installed backend as startable, currently owned, recoverable, busy in another Stage5 session, or externally owned before an agent tries to launch it
+- preserve exact cross-worker ownership through a private atomic per-profile lease and recover only a conclusively proven Stage5 orphan
+- release a persistent isolated profile into a visibly marked native browser for passwords, passkeys, tax identifiers, identity documents, selfies, or other private steps, then resume without exposing the user's input
+- dispatch role and ref clicks through one deadline-safe exact-target engine whose trusted-event evidence survives document replacement
 - stop or explicitly recover the browser
 - detect a stale MCP build, diagnose launch preflight/profile failures, automation exposure, sandbox policy, successful/error request classes around the last click, and distinguish worker recovery from browser recovery
 
@@ -49,8 +52,8 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | Tool | Purpose |
 | --- | --- |
 | `browser_status` | Report MCP/build freshness plus worker, browser, configured and actual runtime profile identity, tab, and active-page state |
-| `browser_available` | Preflight every backend without launching or closing a browser |
-| `browser_diagnostics` | Diagnose build freshness, executable/profile state, sandbox policy, automation exposure, sanitized page events, and successful/error requests around the last click |
+| `browser_available` | Report whether every backend is installed and actually startable, already owned, recoverable, busy in another Stage5 session, or externally owned—without launching or closing it |
+| `browser_diagnostics` | Diagnose build freshness, durable profile ownership, executable/profile state, sandbox policy, automation exposure, sanitized page events, and successful/error requests around the last action |
 | `browser_start` | Launch a requested profile without closing another running browser |
 | `browser_switch` | Safely switch to a preflighted isolated browser profile |
 | `browser_open` | Navigate with bounded commit, readiness, and client-redirect stabilization; report redirects and HTTP warnings |
@@ -59,16 +62,16 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_frames` | Inventory the active page's main document and nested frames |
 | `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound element, hidden-file-input, and nested-scroll references |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
-| `browser_click_by_role` | Click one unique role/name target, optionally verifying URL, selected state, or visible state |
-| `browser_click_ref` | Incrementally prepare one fresh reference, uniquely rebind feed virtualization, foreground the selected page, and instrument a guarded exact-target pointer dispatch |
+| `browser_click_by_role` | Resolve one unique role/name target and use the shared deadline-safe exact-target engine, optionally verifying URL, selected state, or visible state |
+| `browser_click_ref` | Incrementally prepare one fresh reference, uniquely rebind feed virtualization, then use the same deadline-safe exact-target engine |
 | `browser_set_input_files` | Select authorized regular local files through a fresh file-input ref and report attachment preview, progress, completion, and error evidence |
 | `browser_fill_by_role` | Fill one unique role/name target in the main document or an observed frame |
 | `browser_scroll` | Scroll the document or an observed nested container, optionally wait for article growth/loading completion, and distinguish confirmed ends from stalled feeds |
 | `browser_find_text` | Search bounded rendered page/frame text and return matching lines with nearby unique rendered context |
 | `browser_wait_for_url` | Wait for an exact, prefix, or substring URL postcondition |
-| `browser_auth_status` | Report the authentication-handoff lifecycle, actual runtime profile, three-phase storage boundary, native application, marker label, and exact profile binding |
-| `browser_request_login_handoff` | Close current control and launch the same isolated profile with a Stage5 marker tab for private login; returned instructions distinguish continuous Chromium attachment from Firefox restart |
-| `browser_resume_after_login` | Attach to the same running Chromium process, or restart a normally exited Firefox profile; verify storage continuity and require a fresh signed-in check |
+| `browser_auth_status` | Report the private-interaction lifecycle, actual runtime profile, three-phase storage boundary, native application, marker label, and exact profile binding |
+| `browser_request_login_handoff` | Retain the controlled release phase, then launch the same isolated profile with a Stage5 marker tab for private user input; instructions distinguish continuous Chromium attachment from Firefox restart |
+| `browser_resume_after_login` | Resume after private input by attaching to the same Chromium process or restarting a normally exited, actually unlocked Firefox profile; then require fresh visible verification |
 | `browser_recover` | Replace the worker process group and optionally reopen the last URL |
 | `browser_stop` | Close the owned browser context |
 
@@ -83,9 +86,11 @@ MCP server + serialized supervisor
         ▼
 Browser worker process group
         │
+        ├── atomic per-profile ownership lease + heartbeat
+        │
         ├── normal work: direct Playwright protocol
         │
-        └── authentication: close control → native Chromium login → same-process attach
+        └── private input: retain release → native Chromium step → same-process attach
                                       │
                                       ├── private loopback control channel
                                       └── dedicated persistent profile
@@ -100,6 +105,8 @@ Key implementation files:
 - `src/browser-worker.ts` — IPC command dispatch
 - `src/browser-controller.ts` — direct Playwright browser operations
 - `src/browser-provider.ts` — trusted browser selection and installed-browser discovery
+- `src/profile-ownership-lease.ts` — atomic cross-worker profile ownership, heartbeats, orphan proof, and exact owned-process recovery
+- `src/chromium-profile-owner.ts` — privacy-safe legacy Chromium lock/CDP ownership reconstruction
 - `src/native-window-activation.ts` — exact owned-process activation and Chromium profile-owner resolution
 - `docs/agent-setup.md` — Claude connection checks, session restart, and login lifecycle
 - `docs/browser-support.md` — support matrix and required agent selection workflow
@@ -114,6 +121,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-25-facebook-foreground-dispatch.md` — Facebook zero-event handle-dispatch finding plus the compatible 0.6.4 foreground check and guarded page-input fallback
 - `docs/dogfooding-2026-08-25-facebook-native-window-activation.md` — Facebook browser-hidden target finding plus the compatible 0.6.5 exact owned-window activation boundary
 - `docs/dogfooding-2026-08-25-twinkle-runtime-friction.md` — Twinkle profile-lock, transitioning-role, unknown-dispatch, and managed-capture findings plus their 0.6.4 evidence boundaries
+- `docs/dogfooding-2026-08-25-coinbase-release-gate.md` — Coinbase ownership, shared-click, Firefox release, private-input, and availability blockers plus the compatible 0.6.6 remedies
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -132,7 +140,9 @@ Key implementation files:
 - A unique visible modal becomes the snapshot root; multiple unresolved modals produce a warning instead of an arbitrary choice.
 - A dispatched click with an unmet requested postcondition fails as `POSTCONDITION_FAILED` and explicitly reports that the click already happened. The postcondition loop performs a final deadline-bound reconciliation so a state change during its last wait is not falsely reported as failure.
 - A fresh offscreen snapshot ref receives bounded incremental movement on a visible nested or document scroll surface. The controller retains the exact observed DOM node; if feed virtualization detaches it, rebind is allowed only when the same privacy-fingerprinted article and same semantic target are both unique. Global name matching is forbidden. Preparation failures consume the ref and return `actionDispatched: false`; only the later exact-node click phase may return an ambiguous dispatch outcome.
-- Exact-ref clicks activate the controller-selected page immediately before input, install a bounded capture guard, and record only activation/focus state, native-window result categories, connectivity, geometry-change, and trusted pointer/mouse/click booleans. On macOS, a browser-hidden Chromium target is resolved to its exact window, restored if minimized, and foregrounded only through its verified Stage5-owned PID before renderer visibility is checked again. PIDs, native window IDs, titles, geometry, and coordinates are never returned or journaled. A normal stable-click timeout may use one forced exact-handle fallback only when no trusted event was emitted and the same node remains fully actionable. If both handle paths emit zero events, one guarded page-level mouse dispatch may use the exact fresh main-frame hit point. Misdirected or newly non-actionable input is blocked; any partial or uncertain dispatch stops without another click.
+- Role and ref clicks share one absolute deadline across resolution, preparation, activation, normal input, guarded fallbacks, postcondition, and evidence finalization. A reserved finalization window precedes the supervisor deadline. Trusted-event evidence is also retained outside the current document, so navigation cannot erase proof of a completed click. Results are clicked, definitely not dispatched, or ambiguous; partial/ambiguous input is never replayed.
+- Clicks activate the controller-selected page immediately before input and record only activation/focus state, native-window result categories, connectivity, geometry-change, and trusted pointer/mouse/click booleans. On macOS, a browser-hidden Chromium target is resolved to its exact window, restored if minimized, and foregrounded only through its verified Stage5-owned PID before renderer visibility is checked again. PIDs, native window IDs, titles, geometry, and coordinates are never returned or journaled. A normal stable-click timeout may use one forced exact-handle fallback only when no trusted event was emitted and the same node remains fully actionable. If both handle paths emit zero events, one guarded page-level mouse dispatch may use the exact fresh main-frame hit point. Misdirected or newly non-actionable input is blocked; any partial or uncertain dispatch stops without another click.
+- Every persistent launch claims an atomic private per-profile lease containing the exact worker/browser start identities, canonical executable fingerprint, control mode, phase, and heartbeat. Status and availability distinguish current ownership, another live Stage5 owner, a conclusively proven orphan, an abandoned record, and genuinely external ownership. Stage5 may reattach or terminate only the exact fingerprint-matched orphan; it never deletes browser locks or kills an unknown owner.
 - Status reports profile locks separately from controller connection state, so a stopped worker cannot make an externally owned or still-releasing profile look available. Fresh Chromium starts allow a bounded lock-release interval but never delete lock files. Role targeting waits up to one second for a transitioning control and reports `actionDispatched: false` when it remains absent.
 - Screenshots activate the selected page before capture and return `captureEvidence` containing only activation state, PNG byte length, semantic-content presence, a conservative contentful/possibly-uniform classification, and whether one bounded recapture was used. The saved PNG path is authoritative when a managed client renders the returned image incorrectly.
 - File selection confirms privacy-minimized name/size metadata during the capture-phase input event or from the retained browser `FileList` before returning. Sites may consume and clear the input without creating a false failure. `observationMs` is a quick-sampling window from 0–5,000 ms; a supplied semantic `completion.timeoutMs` can wait up to 60,000 ms within the overall timeout. The bounded processing result is `completion_observed`, `in_progress`, `error_observed`, or `unverified`; temporal network activity is never presented as proof of upload completion.
@@ -142,9 +152,10 @@ Key implementation files:
 - Loading waits count only indicators intersecting the selected scroll surface's visible region. A uniquely visible semantic feed scopes document waits; unrelated page loaders do not prevent feed completion evidence.
 - Scroll is recorded as the latest sanitized page action, allowing diagnostics to isolate successful, redirected, failed, and HTTP-error requests within that bounded action window.
 - A click that cannot dispatch records sanitized visibility, enabled-state, viewport, and pointer-interception evidence.
-- Human login bootstrap releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume.
+- Private interaction bootstrap releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume; credentials, tax identifiers, identity documents, selfies, and other private values stay outside agent arguments and logs.
 - Chromium-family handoffs use a fixed ephemeral loopback-only CDP endpoint. The user leaves the dedicated browser open; resume attaches to that exact process, so in-memory session cookies are never serialized, imported, or restored by a new browser process. A user-only profile record with an explicit `awaiting_user`/`controlled` state lets compatible worker replacements reconnect without allowing a fresh worker to attach during private login. The endpoint is not returned to agents or written to the operation journal.
-- Firefox retains the exit-and-restart handoff. Its resume rejects a still-running, locked, or launch-identity-mismatched profile, applies the existing clean-exit/override checks, and never deletes locks or rewrites shutdown preferences.
+- Firefox retains the exit-and-restart handoff, modeled as `close_requested → process_exited → profile_unlocked`. An interrupted request/resume continues that retained phase within the remaining operation budget instead of relaunching. On macOS, a persistent `.parentlock` counts as active only while the OS reports a holder. Resume still rejects a running, actually locked, or launch-identity-mismatched profile and never deletes locks or rewrites shutdown preferences.
+- The pinned Playwright Firefox binary currently reports `navigator.webdriver: true` even during its uncontrolled native launch despite receiving no automation flags. Use Brave, Chrome, or Edge for bot-sensitive login/KYC; Firefox's private handoff is supported for lifecycle/session continuity but does not claim automation invisibility.
 - Chromium resume reports the canonical profile path observed by the running browser and compares it with the configured profile after resolving filesystem aliases. A mismatch fails before target navigation.
 - The private phase records no exact manual clicks. Chromium resume samples privacy-safe target-origin cookie-key presence immediately after same-process attachment and after target load; Firefox retains the offline-after-exit checkpoint. A bounded preview and fresh full snapshot remain authoritative for visible authentication state; origin-only URL checks are rejected as too weak.
 - A hung or disconnected worker is killed and replaced before another operation proceeds.
@@ -154,7 +165,7 @@ Key implementation files:
 - Diagnostic journaling is best-effort and cannot change an operation's result. Page diagnostics include bounded success/redirect/error response classes and the events within the last click window, but exclude raw console/exception text, request metadata beyond method/type/status/sanitized URL, and all URL queries/fragments.
 - Exact-target dispatch diagnostics contain only booleans for connectivity, geometry change, trusted event phases, and blocked conditions. They exclude coordinates, selectors, element text, event payloads, and page values.
 
-Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, semantic targeting, modal-scoped snapshots, document-bound reference clicks, incremental offscreen-ref preparation, unique same-article rebinding after feed virtualization, ambiguous replacement rejection, guarded dispatch of continuously moving exact targets, detached-before-dispatch rejection, exact owned-window activation, browser-hidden fail-closed behavior, and pre-dispatch failure certainty, plus hidden-file-input and nested-scroll capabilities, local-file preflight and attachment confirmation, click actionability and deadline-edge postconditions, upload progress/error evidence, scroll-correlated successful requests, fractional scroll boundaries, feed-scoped loading waits, content-growth waits, dynamic-feed stall classification, contextual timeline text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, private human authentication, same-process Chromium session continuity across worker replacement, configured-to-runtime profile verification, Firefox restart-boundary storage diagnostics, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
+Regression coverage currently includes URL restrictions, privacy-safe journal URLs and diagnostic causes, command serialization, atomic profile leases, competing-worker ownership, exact orphan proof, truthful backend availability, semantic targeting, modal-scoped snapshots, document-bound reference clicks, incremental offscreen-ref preparation, unique same-article rebinding after feed virtualization, ambiguous replacement rejection, shared role/ref OneTrust consent dispatch in Chromium and Firefox, navigation-safe trusted-click evidence, guarded dispatch of continuously moving exact targets, detached-before-dispatch rejection, exact owned-window activation, browser-hidden fail-closed behavior, and pre-dispatch failure certainty, plus hidden-file-input and nested-scroll capabilities, local-file preflight and attachment confirmation, click actionability and deadline-edge postconditions, upload progress/error evidence, scroll-correlated successful requests, fractional scroll boundaries, feed-scoped loading waits, content-growth waits, dynamic-feed stall classification, contextual timeline text search, server and client redirects, HTTP 429 classification, screenshots, ambiguous matches, cross-origin frames, browser switching, private human interaction, same-process Chromium continuity across worker replacement, retained Firefox release phases and delayed unlock, stale macOS `.parentlock` handling, configured-to-runtime profile verification, stale Chromium exit-marker handling, bounded unlocked-profile override, weak auth-URL rejection, automation exposure, stale-artifact detection, worker protocol mismatches, and deliberate worker hangs followed by PID replacement.
 
 ## Browser selection
 
@@ -197,7 +208,7 @@ WebKit provides Safari-engine coverage, not control of the installed Safari appl
 - Stage5 Browser never opens a person's default browser profile.
 - Bundled Chromium, Firefox, and WebKit are pinned under `.playwright-browsers/`; every selected backend keeps profile state in a dedicated Stage5 Browser application-data directory.
 - Chromium-engine browsers opt into Chromium sandboxing on macOS; diagnostics expose the resulting safe policy without exposing a raw process command line.
-- Human authentication launches only the selected browser, pinned dedicated-profile arguments, a new-window directive, a static Stage5 identity-marker data URL, and the target URL. Chromium also receives a fixed ephemeral control port bound to `127.0.0.1`; Stage5 does not attach until explicit resume. The launch does not use Playwright automation arguments, `--enable-automation`, `--no-sandbox`, or webdriver-masking scripts.
+- Private interaction launches only the selected browser, pinned dedicated-profile arguments, a new-window directive, a static Stage5 identity-marker data URL, and the target URL. Chromium also receives a fixed ephemeral control port bound to `127.0.0.1`; Stage5 does not attach until explicit resume. The launch does not use Playwright automation arguments, `--enable-automation`, `--no-sandbox`, or webdriver-masking scripts.
 - Only HTTP, HTTPS, and `about:blank` navigation are allowed.
 - URLs with embedded credentials are rejected.
 - The operation journal excludes arguments, page content, form values, cookies, headers, query strings, fragments, screenshots, credentials, and OTPs. Offline authentication continuity returns only allowlisted database metadata and booleans. During controlled checkpoints, Playwright results are immediately reduced to domain/name/expiry metadata; values are never read, retained, compared, hashed, logged, or returned. Cookie-key hashes used for set comparison are never returned. An open Chromium SQLite store remains non-authoritative; live presence comes from the in-memory browser context. Page-event fingerprints use a process-local keyed digest and cannot be compared across launches.

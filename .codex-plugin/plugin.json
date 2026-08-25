@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Reliability-first browser control for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -16,19 +16,22 @@
   "interface": {
     "displayName": "Stage5 Browser",
     "shortDescription": "Reliable, recoverable browser control for agents.",
-    "longDescription": "Stage5 Browser provides isolated persistent sessions with explicit profile-lock ownership, private native-browser authentication with same-process Chromium attachment, runtime-profile and storage-continuity diagnostics, modal-scoped semantic inspection, snapshot-bound scrolling with virtualization-safe reference actions, owned native-window activation with foreground-verified exact-target dispatch evidence and guarded input fallback, transition-aware semantic targeting, verified screenshot artifacts, local file selection with upload-state evidence, postcondition verification, cross-origin frame control, versioned recovery, and privacy-minimized automation/page/action diagnostics through MCP.",
+    "longDescription": "Stage5 Browser provides isolated persistent sessions with durable per-profile ownership leases, truthful backend availability, private native-browser interaction handoffs, same-process Chromium attachment, phase-aware Firefox resume, runtime-profile and storage-continuity diagnostics, modal-scoped semantic inspection, snapshot-bound scrolling with virtualization-safe reference actions, one deadline-safe click engine with retained exact-target dispatch evidence, verified screenshot artifacts, local file selection with upload-state evidence, postcondition verification, cross-origin frame control, versioned recovery, and privacy-minimized diagnostics through MCP.",
     "developerName": "Stage5 Tools LLC",
     "category": "Productivity",
     "capabilities": [
       "Browser automation",
       "Persistent sessions",
-      "Private authentication bootstrap",
+      "Durable profile ownership leases",
+      "Truthful backend availability",
+      "Private interaction handoff",
       "Verified authentication continuity",
       "Authentication storage-boundary diagnostics",
       "Modal-scoped semantic inspection",
       "Snapshot-bound nested scrolling",
       "Virtualization-safe reference actions",
       "Exact-target dispatch evidence",
+      "Deadline-safe shared click engine",
       "Foreground-verified guarded input",
       "Owned native-window activation",
       "Profile-lock ownership evidence",
@@ -43,7 +46,7 @@
     "defaultPrompt": [
       "Open a page and inspect its semantic structure.",
       "Search an infinite timeline using bounded scrolling and rendered-text search.",
-      "Open the isolated profile privately for login, attach to the same browser process, then verify the signed-in state.",
+      "Open the isolated profile privately for a password, passkey, tax identifier, identity document, selfie, or other sensitive step, then resume control without exposing the private input.",
       "Attach an authorized local file to an observed file input and verify its processing state before posting.",
       "Check the current browser session and tabs.",
       "Diagnose why a browser profile cannot start.",

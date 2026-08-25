@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
@@ -101,7 +101,7 @@ function escapeHtml(value: string): string {
 
 export function stage5HandoffMarkerUrl(label: string): string {
   const safeLabel = escapeHtml(label.slice(0, 200));
-  const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="stage5-browser-handoff" content="true"><title>${safeLabel}</title><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;margin:0;display:grid;place-items:center;min-height:100vh}main{max-width:42rem;padding:3rem}h1{font-size:2rem}p{color:#cbd5e1;line-height:1.5}</style></head><body><main><h1>${safeLabel}</h1><p>This marker identifies the dedicated Stage5 authentication window. Use the adjacent sign-in tab, then quit this exact browser application normally.</p></main></body></html>`;
+  const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="stage5-browser-handoff" content="true"><title>${safeLabel}</title><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;margin:0;display:grid;place-items:center;min-height:100vh}main{max-width:42rem;padding:3rem}h1{font-size:2rem}p{color:#cbd5e1;line-height:1.5}</style></head><body><main><h1>${safeLabel}</h1><p>This marker identifies the dedicated Stage5 private-interaction window. Complete only the private step in the adjacent tab, then follow the agent’s backend-specific resume instruction.</p></main></body></html>`;
   return `${HANDOFF_MARKER_PREFIX}${encodeURIComponent(document)}`;
 }
 
@@ -162,9 +162,11 @@ export function humanBrowserArguments(
   }
   if (input.target.engine === 'firefox') {
     return [
+      '-no-remote',
+      '-wait-for-browser',
+      '-foreground',
       '-profile',
       input.profileDir,
-      '-new-instance',
       '-new-window',
       markerUrl,
       '-new-tab',
@@ -335,9 +337,47 @@ async function pathExists(candidate: string): Promise<boolean> {
   }
 }
 
+async function macFirefoxParentLockHeld(candidate: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile('/usr/sbin/lsof', ['-t', candidate], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1_024,
+      timeout: 1_000,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        // Fail closed if the operating-system ownership probe is unavailable.
+        resolve(true);
+        return;
+      }
+      if (error !== null && (error as Error & { killed?: boolean }).killed === true) {
+        resolve(true);
+        return;
+      }
+      if (error === null) {
+        resolve(stdout.trim().length > 0);
+        return;
+      }
+      // lsof exits 1 without output when no process holds the persistent Firefox
+      // lock file. Any other failure is inconclusive and must remain locked.
+      const exitCode = (error as Error & { code?: string | number }).code;
+      resolve(!(exitCode === 1 && stdout.trim().length === 0 && stderr.trim().length === 0));
+    });
+  });
+}
+
+async function activeProfileLock(profileDir: string, name: (typeof PROFILE_LOCK_NAMES)[number]): Promise<boolean> {
+  const candidate = path.join(profileDir, name);
+  if (!(await pathExists(candidate))) return false;
+  if (process.platform === 'darwin' && name === '.parentlock') {
+    return macFirefoxParentLockHeld(candidate);
+  }
+  return true;
+}
+
 export async function profileLocks(profileDir: string): Promise<string[]> {
   const checks = await Promise.all(
-    PROFILE_LOCK_NAMES.map(async (name) => ({ name, exists: await pathExists(path.join(profileDir, name)) })),
+    PROFILE_LOCK_NAMES.map(async (name) => ({ name, exists: await activeProfileLock(profileDir, name) })),
   );
   return checks.filter((entry) => entry.exists).map((entry) => entry.name);
 }

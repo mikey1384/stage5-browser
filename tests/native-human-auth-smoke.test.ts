@@ -11,16 +11,27 @@ import {
   inspectProfileShutdown,
   waitForProfileUnlock,
 } from '../src/human-auth-bootstrap.js';
-import { processIsRunning } from '../src/native-control-channel.js';
+import {
+  processIsRunning,
+  removeNativeControlRecord,
+} from '../src/native-control-channel.js';
+import {
+  readProfileOwnershipLease,
+  writeProfileOwnershipLease,
+} from '../src/profile-ownership-lease.js';
 
 const runNativeSmoke = process.env.STAGE5_BROWSER_NATIVE_SMOKE === '1';
 
 describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
   let root: string | undefined;
   let controller: BrowserController | undefined;
+  let ownedHumanProcessId: number | null = null;
 
   afterAll(async () => {
     await controller?.stop().catch(() => undefined);
+    if (ownedHumanProcessId !== null && processIsRunning(ownedHumanProcessId)) {
+      process.kill(ownedHumanProcessId, 'SIGTERM');
+    }
     if (root !== undefined) {
       await rm(root, { recursive: true, force: true });
     }
@@ -99,9 +110,9 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
       });
       const handoff = await controller.requestLoginHandoff({ url: null, timeoutMs: 10_000 });
       expect(handoff.controlMode).toBe('human_bootstrap');
-      expect(handoff.instructions).toContain('Leave that exact browser application open');
-      const processId = handoff.humanBootstrap?.processId;
-      expect(processId).toEqual(expect.any(Number));
+      ownedHumanProcessId = handoff.humanBootstrap?.processId ?? null;
+      expect(handoff.instructions.toLocaleLowerCase()).toContain('leave that exact browser application open');
+      expect(ownedHumanProcessId).toEqual(expect.any(Number));
 
       await Promise.race([
         reportPromise,
@@ -113,8 +124,12 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
 
       const unrelatedWorker = new BrowserController(config, 'brave');
       await expect(unrelatedWorker.start()).rejects.toMatchObject({
-        code: 'AUTH_HANDOFF_REQUIRED',
-        details: { reason: 'native_handoff_awaiting_user' },
+        code: 'BROWSER_NOT_READY',
+        details: {
+          reason: 'profile_locked',
+          ownershipReason: 'busy_other_stage5_session',
+          profileOwner: { controlMode: 'human_handoff', phase: 'human_input' },
+        },
       });
 
       const resumed = await controller.resumeAfterLogin({ expected: null, timeoutMs: 10_000 });
@@ -136,10 +151,26 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
       expect(reattachedSessionCookiePresent).toBe(true);
 
       await controller.detachForWorkerShutdown();
+      await removeNativeControlRecord(root);
+      const detachedLease = await readProfileOwnershipLease(root);
+      if (detachedLease === null) throw new Error('Detached worker did not retain its durable ownership lease.');
+      // The smoke runs both controller instances in one Vitest process. Mark the
+      // first simulated worker identity as exited while retaining the exact live
+      // browser identity that a real replacement worker would inspect.
+      await writeProfileOwnershipLease(root, {
+        ...detachedLease,
+        ownerWorkerProcessId: 2_147_483_000,
+        ownerWorkerStartedAt: 'terminated-smoke-worker',
+      });
       controller = new BrowserController(config, 'brave');
       const recovered = await controller.start();
       expect(recovered.browserConnected).toBe(true);
       expect(recovered.runtimeProfile?.matchesConfigured).toBe(true);
+      expect(recovered.profileOwner).toMatchObject({
+        classification: 'owned_active',
+        ownership: 'proven',
+        applicationIdentity: 'matched',
+      });
       reattachedSessionCookiePresent = false;
       reattachedPersistentCookiePresent = false;
       await controller.open({
@@ -152,14 +183,15 @@ describe.skipIf(!runNativeSmoke)('native human-authentication smoke', () => {
 
       await controller.stop();
       controller = undefined;
-      if (typeof processId !== 'number') {
+      if (ownedHumanProcessId === null) {
         throw new Error('Native Brave did not expose an owned process ID.');
       }
       const deadline = Date.now() + 10_000;
-      while (processIsRunning(processId) && Date.now() < deadline) {
+      while (processIsRunning(ownedHumanProcessId) && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      expect(processIsRunning(processId)).toBe(false);
+      expect(processIsRunning(ownedHumanProcessId)).toBe(false);
+      ownedHumanProcessId = null;
       expect(await waitForProfileUnlock(root, 5_000)).toBe(true);
       await expect(inspectProfileShutdown(root, 'brave')).resolves.toMatchObject({
         state: 'clean',

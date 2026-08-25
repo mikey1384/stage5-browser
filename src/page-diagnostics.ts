@@ -308,6 +308,34 @@ export async function inspectTargetState(
   locator: Locator | ElementHandle<HTMLElement | SVGElement>,
 ): Promise<SafeTargetState | null> {
   const inspect = (element: Element): SafeTargetState => {
+    const semanticRole = (candidate: Element): string | null => {
+      const explicit = candidate.getAttribute('role')?.trim().split(/\s+/)[0];
+      if (explicit !== undefined && explicit.length > 0) return explicit;
+      const tagName = candidate.tagName.toLocaleLowerCase();
+      if (tagName === 'button' || tagName === 'summary') return 'button';
+      if ((tagName === 'a' || tagName === 'area') && candidate.hasAttribute('href')) return 'link';
+      if (tagName === 'textarea') return 'textbox';
+      if (tagName === 'select') {
+        const select = candidate as HTMLSelectElement;
+        return select.multiple || select.size > 1 ? 'listbox' : 'combobox';
+      }
+      if (tagName === 'input') {
+        const type = (candidate as HTMLInputElement).type.toLocaleLowerCase();
+        if (type === 'button' || type === 'image' || type === 'reset' || type === 'submit') return 'button';
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (type === 'range') return 'slider';
+        if (type === 'number') return 'spinbutton';
+        if (type === 'search') return 'searchbox';
+        if (type !== 'hidden') return 'textbox';
+      }
+      if (/^h[1-6]$/.test(tagName)) return 'heading';
+      if (tagName === 'img' && candidate.hasAttribute('alt')) return 'img';
+      if (tagName === 'main') return 'main';
+      if (tagName === 'nav') return 'navigation';
+      if (tagName === 'dialog') return 'dialog';
+      return null;
+    };
     if (!element.isConnected) {
       throw new Error('Target element is detached.');
     }
@@ -336,7 +364,7 @@ export async function inspectTargetState(
     const coveredBy = receivesPointerEvents === false && hit !== null
       ? {
           tagName: hit.tagName.toLocaleLowerCase(),
-          role: hit.getAttribute('role'),
+          role: semanticRole(hit),
           pointerEvents: getComputedStyle(hit).pointerEvents,
         }
       : null;
@@ -346,7 +374,7 @@ export async function inspectTargetState(
       inViewport,
       receivesPointerEvents,
       tagName: element.tagName.toLocaleLowerCase(),
-      role: element.getAttribute('role'),
+      role: semanticRole(element),
       coveredBy,
     };
   };

@@ -8,6 +8,7 @@ import {
   type BrowserExecutableSource,
   type BrowserProduct,
 } from './browser-provider.js';
+import type { ProfileOwnerEvidence } from './chromium-profile-owner.js';
 import { Stage5BrowserError } from './errors.js';
 import type { PageRuntimeDiagnostics } from './page-diagnostics.js';
 import type {
@@ -24,6 +25,7 @@ export const LAUNCH_FAILURE_REASONS = [
   'display_unavailable',
   'installation_not_found',
   'launch_timeout',
+  'ownership_unverified',
   'path_not_absolute',
   'path_not_executable',
   'permission_denied',
@@ -56,6 +58,7 @@ export interface BrowserDiagnostics {
   availability: BrowserAvailability;
   preflightSuggestedAction: string | null;
   profile: ProfileDiagnostics;
+  profileOwner: ProfileOwnerEvidence;
   profileBinding: BrowserProfileBinding;
   launchIdentity: BrowserLaunchIdentity | null;
   runtimeProfile: RuntimeProfileObservation | null;
@@ -128,6 +131,7 @@ const SUGGESTED_ACTIONS: Record<LaunchFailureReason, string> = {
   display_unavailable: 'Run Stage5 Browser in a desktop session with GUI access, or explicitly configure headless mode for a non-interactive check.',
   installation_not_found: 'Install the selected browser or configure a trusted absolute STAGE5_BROWSER_EXECUTABLE_PATH, then restart the MCP host.',
   launch_timeout: 'Check for a locked profile or blocked browser process with browser_diagnostics before retrying.',
+  ownership_unverified: 'Do not use, kill, or delete locks for the browser process. Run browser_diagnostics and correct exact process ownership before retrying.',
   path_not_absolute: 'Set STAGE5_BROWSER_EXECUTABLE_PATH to an absolute trusted executable path, then restart the MCP host.',
   path_not_executable: 'Correct STAGE5_BROWSER_EXECUTABLE_PATH so it points to an executable file, then restart the MCP host.',
   permission_denied: 'Make the Stage5 Browser profile and artifact directories writable by the current user, then retry.',

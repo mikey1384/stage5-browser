@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { BrowserController } from '../src/browser-controller.js';
+import { playwrightBrowserType, resolveBrowserLaunchTarget } from '../src/browser-provider.js';
 import type { Stage5BrowserConfig } from '../src/config.js';
 import { Stage5BrowserError } from '../src/errors.js';
 import type {
@@ -14,11 +16,25 @@ import type {
   HumanBrowserProcessState,
   HumanBrowserSession,
 } from '../src/human-auth-bootstrap.js';
+import { waitForProfileUnlock } from '../src/human-auth-bootstrap.js';
 import type { OwnedBrowserWindowActivator } from '../src/native-window-activation.js';
+import type { NativeControlRecord } from '../src/native-control-channel.js';
+import { processIsRunning } from '../src/native-control-channel.js';
 import {
   launchIdentityForTarget,
+  controlledProfileArguments,
+  type BrowserLaunchIdentity,
   type ProfileStorageInspection,
 } from '../src/profile-binding.js';
+import {
+  processExecutablePath,
+  processStartedAtToken,
+  profilePathFingerprint,
+  observeLaunchedBrowserProcess,
+  snapshotOwnedDescendants,
+  writeProfileOwnershipLease,
+} from '../src/profile-ownership-lease.js';
+import type { BrowserStatus } from '../src/protocol.js';
 
 let server: Server | undefined;
 let frameServer: Server | undefined;
@@ -36,7 +52,7 @@ class FakeHumanBrowserSession implements HumanBrowserSession {
   state(): HumanBrowserProcessState {
     return {
       running: this.running,
-      processId: 43_210,
+      processId: process.pid,
       exitCode: this.exitCode,
       exitSignal: null,
       launchedAt: this.launchedAt,
@@ -239,6 +255,27 @@ describe('BrowserController', () => {
     for (const browser of ['chromium', 'firefox', 'webkit'] as const) {
       expect(available.browsers.find((entry) => entry.browser === browser)?.available).toBe(true);
     }
+    expect(available.browsers.find((entry) => entry.browser === 'chromium')).toMatchObject({
+      installed: true,
+      profileState: 'owned_active',
+      startable: true,
+      recoverable: false,
+    });
+    expect(available.browsers.find((entry) => entry.browser === 'firefox')).toMatchObject({
+      installed: true,
+      profileState: 'startable',
+      startable: true,
+    });
+    const competingController = new BrowserController(browserConfig(temporaryRoot));
+    expect((await competingController.availableBrowsers()).browsers.find(
+      (entry) => entry.browser === 'chromium',
+    )).toMatchObject({
+      available: false,
+      installed: true,
+      profileState: 'busy_other_stage5_session',
+      startable: false,
+      recoverable: false,
+    });
 
     await expect(controller.start({ browser: 'firefox' })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
       code: 'OPERATION_FAILED',
@@ -278,6 +315,15 @@ describe('BrowserController', () => {
       profileLockState: 'possible_external_owner',
       profileLockFiles: ['SingletonLock'],
     });
+    expect((await controller.availableBrowsers()).browsers.find(
+      (entry) => entry.browser === 'chromium',
+    )).toMatchObject({
+      available: false,
+      installed: true,
+      profileState: 'external_owner',
+      startable: false,
+      recoverable: false,
+    });
     const release = setTimeout(() => {
       void rm(lockPath, { force: true });
     }, 150);
@@ -297,6 +343,110 @@ describe('BrowserController', () => {
       browserConnected: true,
     });
     expect(running.profileLockState).not.toBe('possible_external_owner');
+  });
+
+  it('recovers a conclusively proven direct-Playwright orphan without stranding its profile', async () => {
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-owned-orphan-'));
+    const config = browserConfig(temporaryRoot);
+    await mkdir(config.profileDir, { recursive: true });
+    const target = await resolveBrowserLaunchTarget({ browser: 'chromium', executablePath: null });
+    const identity = launchIdentityForTarget(target, config.profileDir);
+    const baselineDescendants = await snapshotOwnedDescendants(process.pid);
+    const orphanContext = await playwrightBrowserType('chromium').launchPersistentContext(
+      config.profileDir,
+      {
+        headless: true,
+        args: controlledProfileArguments(identity.profile),
+      },
+    );
+    try {
+      const orphanProcess = await observeLaunchedBrowserProcess(
+        identity,
+        baselineDescendants,
+        2_000,
+      );
+      expect(orphanProcess).not.toBeNull();
+      if (orphanProcess === null) throw new Error('Fixture browser process identity was not observable.');
+      const orphanProcessId = orphanProcess.processId;
+      const [browserStartedAt, browserExecutable] = await Promise.all([
+        processStartedAtToken(orphanProcessId),
+        processExecutablePath(orphanProcessId),
+      ]);
+      expect(browserStartedAt).not.toBeNull();
+      expect(browserExecutable).not.toBeNull();
+      if (browserStartedAt === null || browserExecutable === null) {
+        throw new Error('Fixture browser process identity was not observable.');
+      }
+      const canonicalExecutable = await realpath(browserExecutable);
+      const now = new Date().toISOString();
+      await writeProfileOwnershipLease(config.profileDir, {
+        version: 1,
+        leaseId: randomUUID(),
+        browser: 'chromium',
+        engine: 'chromium',
+        profileFingerprint: profilePathFingerprint(config.profileDir),
+        ownerWorkerProcessId: 2_147_483_000,
+        ownerWorkerStartedAt: 'unreachable-test-worker',
+        browserProcessId: orphanProcessId,
+        browserProcessStartedAt: browserStartedAt,
+        browserExecutableFingerprint: createHash('sha256').update(canonicalExecutable).digest('hex'),
+        controlMode: 'playwright',
+        phase: 'owned_active',
+        createdAt: now,
+        heartbeatAt: now,
+      });
+
+      controller = new BrowserController(config);
+      expect((await controller.availableBrowsers()).browsers.find(
+        (entry) => entry.browser === 'chromium',
+      )).toMatchObject({
+        available: true,
+        profileState: 'owned_orphaned',
+        startable: true,
+        recoverable: true,
+      });
+      await expect(controller.start()).resolves.toMatchObject({
+        state: 'running',
+        browserConnected: true,
+        profileOwner: {
+          classification: 'owned_active',
+          ownership: 'proven',
+        },
+      });
+      expect(processIsRunning(orphanProcessId)).toBe(false);
+    } finally {
+      await orphanContext.close().catch(() => undefined);
+    }
+  });
+
+  it('reconciles a transient DOM-readiness warning when the document completes during stabilization', async () => {
+    server = createServer((request, response) => {
+      if (request.url === '/slow.js') {
+        setTimeout(() => {
+          response.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8' });
+          response.end('document.body.dataset.ready = "true";');
+        }, 100);
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><head><title>Readiness reconciliation</title><script src="/slow.js"></script></head><body>Ready later</body></html>');
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-readiness-'));
+    const config = { ...browserConfig(temporaryRoot), readinessTimeoutMs: 10 };
+    controller = new BrowserController(config);
+
+    const opened = await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 250,
+      timeoutMs: 2_000,
+    });
+    expect(opened).toMatchObject({
+      readiness: 'domcontentloaded',
+      page: { readyState: 'complete' },
+      warnings: [],
+    });
   });
 
   it('bounds role resolution long enough for a transitioning control to appear', async () => {
@@ -344,6 +494,76 @@ describe('BrowserController', () => {
       },
       timeoutMs: 5_000,
     })).resolves.toMatchObject({ postcondition: { passed: true } });
+  });
+
+  it('dispatches OneTrust-style consent buttons exactly once through the shared role/ref engine', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Consent fixture</title></head><body>
+        <div id="onetrust-consent-sdk" role="dialog" aria-label="Privacy choices">
+          <button id="reject" type="button" aria-selected="false">Reject all</button>
+          <output id="result">click-count:0</output>
+        </div>
+        <script>
+          let clicks = 0;
+          document.querySelector('#reject').addEventListener('click', (event) => {
+            clicks += 1;
+            event.currentTarget.setAttribute('aria-selected', 'true');
+            document.querySelector('#result').textContent = 'click-count:' + clicks;
+          });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-consent-'));
+    for (const browser of ['chromium', 'firefox'] as const) {
+      const config = {
+        ...browserConfig(temporaryRoot),
+        browser,
+        profileDir: path.join(temporaryRoot, 'profiles', browser),
+      };
+      controller = new BrowserController(config, browser);
+      const url = `http://127.0.0.1:${port}/${browser}`;
+      await controller.open({ url, newTab: false, stabilizationMs: 0, timeoutMs: 5_000 });
+      await controller.clickByRole({
+        role: 'button',
+        name: 'Reject all',
+        exact: true,
+        frameId: null,
+        postcondition: {
+          expectedUrl: null,
+          expectedSelected: true,
+          expectedVisible: null,
+          timeoutMs: 1_000,
+        },
+        timeoutMs: 3_000,
+      });
+      expect((await controller.snapshot({ depth: 5, boxes: false, frameId: null, timeoutMs: 2_000 })).snapshot)
+        .toContain('click-count:1');
+
+      await controller.open({ url, newTab: false, stabilizationMs: 0, timeoutMs: 5_000 });
+      const observed = await controller.snapshot({ depth: 5, boxes: false, frameId: null, timeoutMs: 2_000 });
+      const rejectRef = observed.snapshot.match(/button "Reject all"[^\n]*\[ref=([^\]]+)\]/)?.[1];
+      expect(rejectRef).toBeDefined();
+      if (rejectRef === undefined) throw new Error('Consent fixture did not expose the Reject all ref.');
+      await controller.clickRef({
+        snapshotId: observed.snapshotId,
+        ref: rejectRef,
+        frameId: null,
+        postcondition: {
+          expectedUrl: null,
+          expectedSelected: true,
+          expectedVisible: null,
+          timeoutMs: 1_000,
+        },
+        timeoutMs: 3_000,
+      });
+      expect((await controller.snapshot({ depth: 5, boxes: false, frameId: null, timeoutMs: 2_000 })).snapshot)
+        .toContain('click-count:1');
+      await controller.stop();
+      controller = undefined;
+    }
   });
 
   it('recaptures a suspiciously uniform screenshot when semantic content exists', async () => {
@@ -1342,6 +1562,15 @@ describe('BrowserController', () => {
       timeoutMs: 5_000,
     });
     expect(clicked.postcondition).toMatchObject({ passed: true });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
+      dispatchEvidence: {
+        trustedEventObserved: true,
+        clickOnTarget: true,
+      },
+    });
     await expect(controller.clickRef({
       snapshotId: observed.snapshotId,
       ref: unnamedLink,
@@ -1917,6 +2146,7 @@ describe('BrowserController', () => {
           visible: true,
           enabled: true,
           receivesPointerEvents: false,
+          role: 'button',
           coveredBy: { tagName: 'span' },
         },
       },
@@ -2095,6 +2325,62 @@ describe('BrowserController', () => {
       verificationRequired: false,
       lastHandoffOutcome: { semanticStructureChanged: true },
     });
+  });
+
+  it('resumes a Firefox handoff after a delayed profile unlock without relaunching control', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><head><title>Firefox handoff</title></head><body><button>Continue</button></body></html>');
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-firefox-handoff-'));
+    const config = {
+      ...browserConfig(temporaryRoot),
+      browser: 'firefox' as const,
+      profileDir: path.join(temporaryRoot, 'profiles', 'firefox'),
+    };
+    humanLauncher = new FakeHumanBrowserLauncher();
+    controller = new BrowserController(config, 'firefox', humanLauncher);
+    await controller.open({
+      url: `http://127.0.0.1:${port}/private-step`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    config.headless = false;
+
+    const retainedLock = path.join(config.profileDir, 'lock');
+    await writeFile(retainedLock, 'delayed-firefox-unlock');
+    const firstAttemptAt = Date.now();
+    await expect(controller.requestLoginHandoff({
+      url: null,
+      timeoutMs: 1_500,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'AUTH_HANDOFF_REQUIRED',
+      details: {
+        reason: 'handoff_release_pending',
+        phase: 'process_exited',
+        ownershipRetained: true,
+        profileLockFiles: expect.arrayContaining(['lock']),
+      },
+    });
+    expect(Date.now() - firstAttemptAt).toBeLessThan(2_000);
+    expect(humanLauncher.launches).toHaveLength(0);
+    expect(await controller.authStatus()).toMatchObject({
+      state: 'releasing_control',
+      controlMode: 'human_bootstrap',
+      targetOrigin: `http://127.0.0.1:${port}`,
+    });
+
+    await rm(retainedLock);
+    expect(await waitForProfileUnlock(config.profileDir, 30_000)).toBe(true);
+    const resumed = await controller.requestLoginHandoff({ url: null, timeoutMs: 5_000 });
+    expect(resumed).toMatchObject({
+      state: 'awaiting_user',
+      userActionRequired: true,
+      humanBootstrap: { launchIdentity: { browser: 'firefox', engine: 'firefox' } },
+    });
+    expect(humanLauncher.launches).toHaveLength(1);
   });
 
   it('reattaches after a zero process exit even when Chromium retains a crashed marker', async () => {
@@ -2424,5 +2710,161 @@ describe('BrowserController', () => {
         controller.snapshot({ depth: 8, boxes: false, frameId: embedded.id, timeoutMs: 5_000 }),
       ).rejects.toMatchObject<Partial<Stage5BrowserError>>({ code: 'TARGET_NOT_FOUND' });
     }
+  });
+
+  it('reports sanitized lock-owner evidence and fails closed when automatic reattachment is unproven', async () => {
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-owned-lock-'));
+    const config = browserConfig(temporaryRoot);
+    config.readinessTimeoutMs = 10;
+    await mkdir(config.profileDir, { recursive: true });
+    await writeFile(path.join(config.profileDir, 'SingletonLock'), 'owned-browser-fixture');
+    const inspectOwner = vi.fn(async () => ({
+      evidence: {
+        classification: 'dedicated_browser_control_unavailable' as const,
+        ownership: 'proven' as const,
+        lockOwnerProcess: 'running' as const,
+        expectedApplication: 'Chromium',
+        applicationIdentity: 'matched' as const,
+        loopbackControl: 'absent' as const,
+        authenticationHandoff: 'unverified' as const,
+        recovery: 'close_dedicated_browser_normally' as const,
+        suggestedAction: 'Close only the dedicated Chromium application normally, then retry once.',
+      },
+      reconnectRecord: null,
+    }));
+    controller = new BrowserController(
+      config,
+      config.browser,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      inspectOwner,
+    );
+
+    const stopped = await controller.status();
+    expect(stopped).toMatchObject({
+      state: 'stopped',
+      profileLockState: 'possible_external_owner',
+      profileOwner: {
+        classification: 'dedicated_browser_control_unavailable',
+        ownership: 'proven',
+        expectedApplication: 'Chromium',
+        recovery: 'close_dedicated_browser_normally',
+      },
+    });
+    await expect(controller.start()).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'BROWSER_NOT_READY',
+      details: {
+        reason: 'profile_locked',
+        ownershipReason: 'dedicated_browser_control_unavailable',
+        profileOwner: {
+          loopbackControl: 'absent',
+          recovery: 'close_dedicated_browser_normally',
+        },
+        suggestedAction: 'Close only the dedicated Chromium application normally, then retry once.',
+      },
+    });
+    const diagnostic = await controller.diagnostics();
+    expect(diagnostic.profileOwner).toMatchObject({
+      classification: 'dedicated_browser_control_unavailable',
+      ownership: 'proven',
+      lockOwnerProcess: 'running',
+      applicationIdentity: 'matched',
+    });
+    expect(inspectOwner).toHaveBeenCalled();
+  });
+
+  it('reattaches through a reconstructed exact owned-process capability instead of launching into a lock', async () => {
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-reconnect-lock-'));
+    const config = browserConfig(temporaryRoot);
+    config.readinessTimeoutMs = 10;
+    await mkdir(config.profileDir, { recursive: true });
+    await writeFile(path.join(config.profileDir, 'SingletonLock'), 'owned-browser-fixture');
+    const reconnectRecord: NativeControlRecord = {
+      version: 1,
+      kind: 'chromium_cdp',
+      browser: 'chromium',
+      state: 'controlled',
+      processId: 42_424,
+      port: 29_123,
+      createdAt: '2026-08-25T04:00:00.000Z',
+    };
+    const inspectOwner = vi.fn(async () => ({
+      evidence: {
+        classification: 'reconnectable_stage5_browser' as const,
+        ownership: 'proven' as const,
+        lockOwnerProcess: 'running' as const,
+        expectedApplication: 'Google Chrome for Testing',
+        applicationIdentity: 'matched' as const,
+        loopbackControl: 'available' as const,
+        authenticationHandoff: 'absent' as const,
+        recovery: 'automatic_reattach' as const,
+        suggestedAction: 'Stage5 Browser can safely reattach automatically.',
+      },
+      reconnectRecord,
+    }));
+    controller = new BrowserController(
+      config,
+      config.browser,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      inspectOwner,
+    );
+    const internals = controller as unknown as {
+      attachToNativeChromium: (
+        record: NativeControlRecord,
+        identity: BrowserLaunchIdentity,
+        targetOrigin: string | null,
+      ) => Promise<BrowserStatus>;
+    };
+    const attach = vi.spyOn(internals, 'attachToNativeChromium').mockImplementation(async (
+      _record,
+      identity,
+    ) => ({
+      browser: 'chromium',
+      state: 'running',
+      workerPid: process.pid,
+      browserConnected: true,
+      pages: [],
+      activePageIndex: null,
+      lastKnownUrl: null,
+      launchIdentity: identity,
+      runtimeProfile: null,
+      profileLockState: 'owned_browser_running',
+      profileLockFiles: ['SingletonLock'],
+      profileOwner: {
+        classification: 'owned_active',
+        ownership: 'proven',
+        lockOwnerProcess: 'running',
+        expectedApplication: identity.applicationName,
+        applicationIdentity: 'matched',
+        loopbackControl: 'available',
+        authenticationHandoff: 'absent',
+        recovery: 'none',
+        suggestedAction: null,
+      },
+    }));
+
+    await expect(controller.start()).resolves.toMatchObject({
+      state: 'running',
+      browserConnected: true,
+      profileOwner: { classification: 'owned_active' },
+    });
+    expect(attach).toHaveBeenCalledWith(
+      reconnectRecord,
+      expect.objectContaining({
+        browser: 'chromium',
+        profile: expect.objectContaining({
+          userDataDir: config.profileDir,
+          profileDirectory: 'Default',
+        }),
+      }),
+      null,
+    );
   });
 });

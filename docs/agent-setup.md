@@ -1,4 +1,4 @@
-# Agent setup and authentication
+# Agent setup and private interaction
 
 ## Confirm the MCP connection
 
@@ -56,9 +56,9 @@ After reconnection, a natural-language instruction such as “Use the `stage5_br
 
 `browser_status` reports the MCP version, protocol version, process start time, build fingerprint, tool-catalog version, compatible-update state, and `restartRequired`. Rebuilds that preserve both the tool-catalog and worker-protocol versions load automatically on the next browser operation. Restart the MCP host only when `restartRequired` is true, which means one of those public contracts changed. `browser_recover` remains for failed browser workers; it is not an update mechanism.
 
-Do not terminate an old-looking MCP or worker PID without proving ownership; multiple concurrent agents can legitimately have separate Stage5 Browser processes. A missing tool is a host-catalog problem. A present tool returning a structured launch failure is a runtime problem. Keep those paths separate.
+Do not terminate an old-looking MCP, worker, or browser PID without proving ownership; multiple concurrent agents can legitimately have separate Stage5 Browser processes. Call `browser_available` before trial-starting backends. Its `profileState` distinguishes `startable`, `owned_active`, `owned_orphaned`, `busy_other_stage5_session`, and `external_owner` using the private atomic per-profile lease. Only the exact fingerprint-matched non-private orphan is automatically recoverable. A missing tool is a host-catalog problem; a present tool returning a structured launch failure is a runtime problem.
 
-After any `browser_start` failure, call `browser_diagnostics` before retrying. It reports the selected backend's executable preflight, profile writability and known lock files, sandbox policy, automation-control mode, `--enable-automation` policy, observed `navigator.webdriver` value when Playwright has a page, the last sanitized launch-failure category, and a safe suggested action. After an interaction failure, the same tool reports bounded console/network categories, success/redirect/error response counts, requests within the last click window, and the most recent click's actionability and dispatch facts. Raw browser errors, console or exception text, credentials, page contents, headers, bodies, query strings, fragments, form values, and full launch arguments are not included.
+After any `browser_start` failure, call `browser_diagnostics` before retrying. It reports durable lease classification/heartbeat/control phase, the selected backend's executable preflight, profile writability and active lock files, sandbox policy, automation-control mode, observed `navigator.webdriver`, the last sanitized launch-failure category, and a safe suggested action. After an interaction failure, it reports bounded console/network categories and the most recent action's exact dispatch facts. Raw browser errors, console or exception text, PIDs, credentials, page contents, headers, bodies, query strings, fragments, form values, and full launch arguments are not included.
 
 ## File attachment model
 
@@ -74,16 +74,17 @@ Attaching is not posting, and file-input confirmation is not upload completion. 
 
 For dynamic feeds, `browser_scroll.waitFor` can wait for `article_count_growth`, `loading_indicators_disappear`, or `either`, bounded by its own timeout and the overall operation timeout. The returned `wait` reports only aggregate article/loading counts and explicit evidence. A timeout, remaining loader, or stable boundary is not a feed end. Scroll geometry tolerates a one-CSS-pixel difference so fractional values such as `2443.5 / 2444` are correctly recognized as the current boundary. `browser_diagnostics.page.lastAction` records `scroll`, and `lastActionNetworkEvents` contains only sanitized requests correlated with that scroll window.
 
-## Authentication model
+## Private interaction and authentication model
 
 The normal mode is one isolated, persistent Stage5 Browser profile per browser backend:
 
 - Call `browser_auth_status` first. It reports profile/handoff state but deliberately returns `authenticated: "unknown"`; only the site's visible UI can prove that account state. Before a new login, explicitly select the intended backend instead of relying on a remembered default.
-- If login is needed, call `browser_request_login_handoff`, optionally with the absolute login URL. Stage5 Browser navigates while controlled, closes Playwright cleanly, and launches the same isolated profile as a normal native browser without Playwright automation flags. The response is `awaiting_user`, `browserConnected: false`, and `controlMode: "human_bootstrap"`. It also names the real browser application, exact executable/profile binding, target origin, and short handoff label.
+- If a password, passkey, CAPTCHA, OTP, EIN, identity document, selfie, or other private step is needed, call `browser_request_login_handoff`, optionally with its absolute URL. Stage5 Browser navigates while controlled, retains the exact `close_requested → process_exited → profile_unlocked` release phase, and launches the same isolated profile as a normal native browser without Playwright automation flags. A short request may first report `releasing_control`; call the same handoff request again to continue that phase, never to relaunch or repeat the private step. The ready response is `awaiting_user`, `browserConnected: false`, and `controlMode: "human_bootstrap"`.
 - While the handoff is `awaiting_user`, do not call tab, page, action, start, switch, recover, or stop tools. They intentionally fail with `AUTH_HANDOFF_REQUIRED`; the agent cannot inspect or steer the private window.
 - If a compatible build finishes during the private handoff, Stage5 Browser defers worker replacement. Resume through the existing worker first; the next operation rolls forward automatically. Do not reconnect or recover merely to load that compatible build.
-- The native window contains a static Stage5 marker tab next to the sign-in tab. The user should match that marker and the application name in the handoff result, then complete passwords, passkeys, CAPTCHAs, or OTPs privately. Never ask them to paste sensitive values into the conversation.
-- Follow the returned backend-specific instruction exactly. For Chromium, Chrome, Brave, and Edge, leave that application open and call `browser_resume_after_login`; Stage5 attaches to that same running process, preserving its in-memory session. For Firefox, quit the application normally, then resume through the existing unlocked-profile checks. Do not use a bare origin such as `https://example.com` as the URL expectation; use a non-root post-login route or pass `null`.
+- The native window contains a static Stage5 marker tab next to the private-action tab. The user should match that marker and the application name, then complete the sensitive step privately. Never ask them to paste a private value or send an identity document through the conversation.
+- Follow the returned backend-specific instruction exactly. For Chromium, Chrome, Brave, and Edge, leave that application open and call `browser_resume_after_login`; Stage5 attaches to that same running process, preserving its in-memory session. For Firefox, quit the application normally, then resume while Stage5 waits within the remaining operation budget for the exact process to exit and the profile to unlock. On macOS, a persistent `.parentlock` file is ignored only when the OS confirms no process holds it. Do not use a bare origin such as `https://example.com` as the URL expectation; use a non-root post-login route or pass `null`.
+- For bot-sensitive login or KYC, prefer Brave, Chrome, or Edge. The pinned Playwright Firefox binary currently reports `navigator.webdriver: true` in its uncontrolled native launch despite receiving no automation flags. Firefox keeps private values outside agent control and passes the shutdown/unlock/session-resume gate, but it does not currently promise automation invisibility.
 - Chromium resume reports the actual runtime profile and privacy-safe storage at first attachment and after target load. Its fixed ephemeral CDP port is loopback-only and never appears in tool output. Compatible worker replacement disconnects and reconnects without closing the browser. Firefox retains the offline-after-exit checkpoint and bounded clean-exit override. Exact human clicks and private-window network traffic remain deliberately unobserved.
 - Inspect `verificationPreview` immediately; if it still shows signed-out controls, stop. Then take a fresh full `browser_snapshot` and verify the site-specific account identity or signed-in affordance before acting. Storage continuity and a `lossBoundary` of `none` are evidence, not proof that the site accepted the login. Never request cookie values to resolve ambiguity.
 - A unique visible dialog automatically becomes the snapshot root. Check `scope`, `visibleModalCount`, and `warnings`; this keeps portal/modal fields and buttons within the bounded depth while retaining valid refs from one ARIA capture. If `ambiguous_visible_modals` appears, do not guess which dialog to use.
@@ -97,6 +98,10 @@ The handoff lifecycle is intentionally conservative:
 ```text
 browser_stopped / profile_ready
               │ browser_request_login_handoff
+              ▼
+       releasing_control
+              │ exact process exits and profile unlocks
+              │ call the same request again only when instructed
               ▼
         awaiting_user
               │ native browser; no agent control

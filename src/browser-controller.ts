@@ -21,9 +21,17 @@ import {
   playwrightBrowserType,
   resolveBrowserLaunchTarget,
   SUPPORTED_BROWSER_PRODUCTS,
+  type BrowserLaunchTarget,
   type BrowserProduct,
   type BrowserSelection,
 } from './browser-provider.js';
+import {
+  controlledProfileOwnerEvidence,
+  emptyProfileOwnerEvidence,
+  inspectChromiumProfileOwner,
+  type ChromiumProfileOwnerInspection,
+  type ProfileOwnerEvidence,
+} from './chromium-profile-owner.js';
 import { profileDirForBrowser, type Stage5BrowserConfig } from './config.js';
 import {
   browserLaunchPolicyDiagnostics,
@@ -32,6 +40,7 @@ import {
   suggestedActionForReason,
   type BrowserDiagnostics,
   type LaunchFailureDiagnostic,
+  type ProfileDiagnostics,
 } from './diagnostics.js';
 import { Stage5BrowserError } from './errors.js';
 import {
@@ -83,12 +92,25 @@ import {
   type ProfileStorageInspection,
   type RuntimeProfileObservation,
 } from './profile-binding.js';
+import {
+  inspectProfileOwnershipLease,
+  observeLaunchedBrowserProcess,
+  ownershipProfileUnlocked,
+  ProfileOwnershipLeaseController,
+  processStartedAtToken,
+  removeProfileOwnershipLease,
+  snapshotOwnedDescendants,
+  terminateProvenOrphan,
+  type ProfileOwnershipLeaseInspection,
+  type OwnedProcessObservation,
+} from './profile-ownership-lease.js';
 import type {
   AuthenticationBoundaryOutcome,
   BrowserCommandInput,
   BrowserCommandOutput,
   BrowserLifecycleState,
   BrowserStatus,
+  BrowserOperationalAvailability,
   AvailableBrowsers,
   AuthenticationStatus,
   ClickPostcondition,
@@ -190,6 +212,22 @@ interface AuthenticationHandoff {
   shutdownOverrideOffered: boolean;
 }
 
+interface PendingHandoffRelease {
+  mode: 'human_bootstrap';
+  state: 'releasing_control';
+  requestedAt: string;
+  launchTarget: BrowserLaunchTarget;
+  profileDir: string;
+  launchIdentity: BrowserLaunchIdentity;
+  handoffLabel: string;
+  targetUrl: string;
+  targetOrigin: string | null;
+  beforeUrl: string | null;
+  beforeSemanticFingerprint: string | null;
+  controlledBrowserProcess: OwnedProcessObservation;
+  closeRequestCompleted: boolean;
+}
+
 interface ControlledStartBoundaryObservation {
   targetOrigin: string;
   storage: ProfileStorageInspection;
@@ -249,6 +287,16 @@ interface ClickDispatchProbeController {
   finish: () => RawClickDispatchEvidence;
 }
 
+interface InstalledClickDispatchProbe {
+  controller: JSHandle<ClickDispatchProbeController>;
+  token: string;
+}
+
+interface ExternalClickDispatchObservation {
+  page: Page;
+  evidence: RawClickDispatchEvidence | null;
+}
+
 type VirtualizedClickResolution =
   | { kind: 'ambiguous' | 'missing' }
   | {
@@ -273,6 +321,8 @@ const CLICK_REF_NORMAL_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
 const CLICK_ROLE_RESOLUTION_TIMEOUT_MS = 1_000;
+const CLICK_RESULT_FINALIZATION_RESERVE_MS = 500;
+const HANDOFF_RESULT_FINALIZATION_RESERVE_MS = 500;
 const SCREENSHOT_RENDER_SETTLE_MS = 100;
 const NATIVE_WINDOW_ACTIVATION_TIMEOUT_MS = 1_000;
 const NATIVE_WINDOW_NORMALIZATION_WAIT_MS = 750;
@@ -282,6 +332,96 @@ const SCREENSHOT_MIN_COMPRESSED_BYTES_PER_PIXEL = 0.01;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
+
+function clickFinalizationReserve(timeoutMs: number): number {
+  return Math.min(
+    CLICK_RESULT_FINALIZATION_RESERVE_MS,
+    Math.max(50, Math.floor(timeoutMs * 0.15)),
+  );
+}
+
+function remainingUntil(deadlineAt: number): number {
+  return Math.max(0, deadlineAt - Date.now());
+}
+
+function remainingHandoffWorkBudget(deadlineAt: number): number {
+  const remaining = remainingUntil(deadlineAt);
+  const reserve = Math.min(
+    HANDOFF_RESULT_FINALIZATION_RESERVE_MS,
+    Math.max(25, Math.floor(remaining * 0.15)),
+  );
+  return Math.max(0, remaining - reserve);
+}
+
+function safeRawClickDispatchEvidence(value: unknown): RawClickDispatchEvidence | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const candidate = value as Partial<RawClickDispatchEvidence>;
+  const booleanFields: Array<keyof RawClickDispatchEvidence> = [
+    'guardExpired',
+    'targetConnectedBefore',
+    'targetConnectedAfter',
+    'trustedEventObserved',
+    'pointerDownOnTarget',
+    'mouseDownOnTarget',
+    'pointerUpOnTarget',
+    'mouseUpOnTarget',
+    'clickOnTarget',
+    'misdirectedEventBlocked',
+    'targetStateChangeBlocked',
+  ];
+  if (
+    candidate.strategy !== 'guarded_exact_handle'
+    || booleanFields.some((field) => typeof candidate[field] !== 'boolean')
+    || (candidate.targetConnectedAtFirstEvent !== null
+      && typeof candidate.targetConnectedAtFirstEvent !== 'boolean')
+    || (candidate.geometryChangedBeforeFirstEvent !== null
+      && typeof candidate.geometryChangedBeforeFirstEvent !== 'boolean')
+  ) {
+    return null;
+  }
+  return {
+    strategy: 'guarded_exact_handle',
+    guardExpired: candidate.guardExpired as boolean,
+    targetConnectedBefore: candidate.targetConnectedBefore as boolean,
+    targetConnectedAtFirstEvent: candidate.targetConnectedAtFirstEvent as boolean | null,
+    targetConnectedAfter: candidate.targetConnectedAfter as boolean,
+    geometryChangedBeforeFirstEvent: candidate.geometryChangedBeforeFirstEvent as boolean | null,
+    trustedEventObserved: candidate.trustedEventObserved as boolean,
+    pointerDownOnTarget: candidate.pointerDownOnTarget as boolean,
+    mouseDownOnTarget: candidate.mouseDownOnTarget as boolean,
+    pointerUpOnTarget: candidate.pointerUpOnTarget as boolean,
+    mouseUpOnTarget: candidate.mouseUpOnTarget as boolean,
+    clickOnTarget: candidate.clickOnTarget as boolean,
+    misdirectedEventBlocked: candidate.misdirectedEventBlocked as boolean,
+    targetStateChangeBlocked: candidate.targetStateChangeBlocked as boolean,
+  };
+}
+
+function mergeRawClickDispatchEvidence(
+  inPage: RawClickDispatchEvidence | null,
+  external: RawClickDispatchEvidence | null,
+): RawClickDispatchEvidence | null {
+  if (inPage === null) return external;
+  if (external === null) return inPage;
+  return {
+    strategy: 'guarded_exact_handle',
+    guardExpired: inPage.guardExpired || external.guardExpired,
+    targetConnectedBefore: inPage.targetConnectedBefore && external.targetConnectedBefore,
+    targetConnectedAtFirstEvent:
+      external.targetConnectedAtFirstEvent ?? inPage.targetConnectedAtFirstEvent,
+    targetConnectedAfter: inPage.targetConnectedAfter,
+    geometryChangedBeforeFirstEvent:
+      external.geometryChangedBeforeFirstEvent ?? inPage.geometryChangedBeforeFirstEvent,
+    trustedEventObserved: inPage.trustedEventObserved || external.trustedEventObserved,
+    pointerDownOnTarget: inPage.pointerDownOnTarget || external.pointerDownOnTarget,
+    mouseDownOnTarget: inPage.mouseDownOnTarget || external.mouseDownOnTarget,
+    pointerUpOnTarget: inPage.pointerUpOnTarget || external.pointerUpOnTarget,
+    mouseUpOnTarget: inPage.mouseUpOnTarget || external.mouseUpOnTarget,
+    clickOnTarget: inPage.clickOnTarget || external.clickOnTarget,
+    misdirectedEventBlocked: inPage.misdirectedEventBlocked || external.misdirectedEventBlocked,
+    targetStateChangeBlocked: inPage.targetStateChangeBlocked || external.targetStateChangeBlocked,
+  };
+}
 
 export class BrowserController {
   private context: BrowserContext | undefined;
@@ -298,6 +438,7 @@ export class BrowserController {
   private boundPages = new WeakSet<Page>();
   private lastLaunchFailure: LaunchFailureDiagnostic | null = null;
   private authenticationHandoff: AuthenticationHandoff | null = null;
+  private pendingHandoffRelease: PendingHandoffRelease | null = null;
   private lastHandoffOutcome: AuthenticationBoundaryOutcome | null = null;
   private controlledLaunchIdentity: BrowserLaunchIdentity | null = null;
   private runtimeProfileObservation: RuntimeProfileObservation | null = null;
@@ -305,6 +446,11 @@ export class BrowserController {
   private nativeAttachedBrowser: Browser | undefined;
   private nativeControlRecord: NativeControlRecord | null = null;
   private controlledBrowserProcessId: number | null = null;
+  private controlledBrowserProcess: OwnedProcessObservation | null = null;
+  private readonly ownershipLease = new ProfileOwnershipLeaseController();
+  private readonly clickDispatchBindingName = `__stage5BrowserClickProbe_${randomUUID().replaceAll('-', '')}`;
+  private readonly clickDispatchBindings = new WeakSet<Page>();
+  private readonly externalClickDispatchObservations = new Map<string, ExternalClickDispatchObservation>();
 
   constructor(
     private readonly config: Stage5BrowserConfig,
@@ -314,6 +460,7 @@ export class BrowserController {
     private readonly controlledProfileStorageInspector: typeof inspectControlledProfileStorage = inspectControlledProfileStorage,
     private readonly runtimeProfileInspector: typeof inspectRuntimeProfile = inspectRuntimeProfile,
     private readonly nativeWindowActivator: OwnedBrowserWindowActivator = new NativeOwnedBrowserWindowActivator(),
+    private readonly profileOwnerInspector: typeof inspectChromiumProfileOwner = inspectChromiumProfileOwner,
   ) {
     this.selectedBrowser = initialBrowser;
   }
@@ -321,8 +468,9 @@ export class BrowserController {
   async start(
     input: BrowserCommandInput<'start'> = {},
     authenticationProbeTargetOrigin: string | null = null,
+    resumeOwnedHumanHandoff = false,
   ): Promise<BrowserStatus> {
-    if (this.authenticationHandoff?.state === 'awaiting_user') {
+    if (this.pendingHandoffRelease !== null || this.authenticationHandoff?.state === 'awaiting_user') {
       throw this.humanBootstrapInProgressError();
     }
     if (this.context !== undefined && !this.context.isClosed()) {
@@ -350,16 +498,25 @@ export class BrowserController {
     }
 
     this.state = 'starting';
+    let ownershipClaimedForLaunch = false;
+    let attemptedProfileRoot: string | null = null;
     try {
       const launchTarget = await resolveBrowserLaunchTarget(this.selectionFor(this.selectedBrowser));
       const enableChromiumSandbox = launchTarget.engine === 'chromium' && process.platform === 'darwin';
       const profileDir = profileDirForBrowser(this.config, this.selectedBrowser);
+      attemptedProfileRoot = profileDir;
       const launchIdentity = launchIdentityForTarget(launchTarget, profileDir);
       await Promise.all([
         mkdir(profileDir, { recursive: true, mode: 0o700 }),
         mkdir(this.config.artifactsDir, { recursive: true, mode: 0o700 }),
         mkdir(path.join(this.config.artifactsDir, 'downloads'), { recursive: true, mode: 0o700 }),
       ]);
+
+      await this.prepareOwnershipLeaseForStart(
+        profileDir,
+        launchIdentity,
+        resumeOwnedHumanHandoff,
+      );
 
       if (launchTarget.engine === 'chromium') {
         const nativeRecord = await readNativeControlRecord(profileDir, this.selectedBrowser);
@@ -378,6 +535,11 @@ export class BrowserController {
                 },
               );
             }
+            await this.claimNativeControlLeaseIfNeeded(
+              profileDir,
+              launchIdentity,
+              resumeOwnedHumanHandoff,
+            );
             return await this.attachToNativeChromium(
               nativeRecord,
               launchIdentity,
@@ -393,15 +555,49 @@ export class BrowserController {
         if (!(await waitForProfileUnlock(profileDir, Math.min(this.config.readinessTimeoutMs, 2_000)))) {
           const lateNativeRecord = await readNativeControlRecord(profileDir, this.selectedBrowser);
           if (lateNativeRecord !== null && processIsRunning(lateNativeRecord.processId)) {
+            await this.claimNativeControlLeaseIfNeeded(
+              profileDir,
+              launchIdentity,
+              resumeOwnedHumanHandoff,
+            );
             return await this.attachToNativeChromium(
               lateNativeRecord,
               launchIdentity,
               authenticationProbeTargetOrigin,
             );
           }
+          const ownerInspection = await this.profileOwnerInspector(profileDir, launchIdentity);
+          if (ownerInspection.reconnectRecord !== null) {
+            await this.claimNativeControlLeaseIfNeeded(
+              profileDir,
+              launchIdentity,
+              resumeOwnedHumanHandoff,
+            );
+            return await this.attachToNativeChromium(
+              ownerInspection.reconnectRecord,
+              launchIdentity,
+              authenticationProbeTargetOrigin,
+            );
+          }
+          throw this.lockedProfileOwnerError(ownerInspection);
         }
       }
 
+      const leaseClaimed = await this.ownershipLease.claim({
+        profileRoot: profileDir,
+        identity: launchIdentity,
+        controlMode: 'playwright',
+      });
+      if (!leaseClaimed) {
+        const competingLease = await inspectProfileOwnershipLease(
+          profileDir,
+          launchIdentity,
+          this.ownershipLease.leaseId,
+        );
+        throw this.ownershipLeaseError(competingLease, launchIdentity);
+      }
+      ownershipClaimedForLaunch = true;
+      const baselineDescendants = await snapshotOwnedDescendants(process.pid);
       const context = await playwrightBrowserType(launchTarget.engine).launchPersistentContext(profileDir, {
         headless: this.config.headless,
         acceptDownloads: true,
@@ -415,13 +611,50 @@ export class BrowserController {
           ? {}
           : { executablePath: launchTarget.executablePath }),
       });
-      return await this.activateControlledContext(
+      await this.activateControlledContext(
         context,
         launchIdentity,
         launchTarget.engine,
         authenticationProbeTargetOrigin,
       );
+      const browserProcess = await observeLaunchedBrowserProcess(
+        launchIdentity,
+        baselineDescendants,
+        Math.min(this.config.readinessTimeoutMs, 2_000),
+      );
+      if (browserProcess === null) {
+        await context.close({ reason: 'Stage5 Browser could not establish exact durable process ownership.' })
+          .catch(() => undefined);
+        throw new Stage5BrowserError(
+          'BROWSER_NOT_READY',
+          'Stage5 Browser launched the profile but could not prove the exact browser process for its durable ownership lease.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'ownership_unverified',
+              suggestedAction: 'Call browser_diagnostics. Do not use, kill, or delete locks for the unverified browser process; close only the visibly identified dedicated Stage5 browser normally.',
+            },
+          },
+        );
+      }
+      await this.ownershipLease.establish({
+        profileRoot: profileDir,
+        identity: launchIdentity,
+        browserProcess,
+        controlMode: 'playwright',
+        phase: 'owned_active',
+      });
+      this.controlledBrowserProcess = browserProcess;
+      return this.status();
     } catch (error) {
+      if (
+        ownershipClaimedForLaunch
+        && attemptedProfileRoot !== null
+        && await waitForProfileUnlock(attemptedProfileRoot, Math.min(this.config.readinessTimeoutMs, 500))
+      ) {
+        await this.ownershipLease.updatePhase('profile_unlocked').catch(() => undefined);
+        await this.ownershipLease.release().catch(() => undefined);
+      }
       this.state = 'failed';
       const diagnostic = launchFailureDiagnostic(this.selectedBrowser, error);
       this.lastLaunchFailure = diagnostic;
@@ -450,13 +683,159 @@ export class BrowserController {
   async availableBrowsers(): Promise<AvailableBrowsers> {
     const browsers = await Promise.all(
       SUPPORTED_BROWSER_PRODUCTS.map(async (browser) =>
-        browserAvailability(this.selectionFor(browser)),
+        this.operationalBrowserAvailability(browser),
       ),
     );
     return {
       defaultBrowser: this.config.browser,
       currentBrowser: this.selectedBrowser,
       browsers,
+    };
+  }
+
+  private async operationalBrowserAvailability(
+    browser: BrowserProduct,
+  ): Promise<BrowserOperationalAvailability> {
+    const executableAvailability = await browserAvailability(this.selectionFor(browser));
+    if (!executableAvailability.available) {
+      return {
+        ...executableAvailability,
+        installed: false,
+        profileState: 'unavailable',
+        startable: false,
+        recoverable: false,
+        suggestedAction: suggestedActionForReason(executableAvailability.reason),
+      };
+    }
+
+    const target = await resolveBrowserLaunchTarget(this.selectionFor(browser));
+    const profileRoot = profileDirForBrowser(this.config, browser);
+    const identity = launchIdentityForTarget(target, profileRoot);
+    const profile = await inspectProfile(
+      profileRoot,
+      browser === this.selectedBrowser && (
+        this.usableContext() !== undefined
+        || this.authenticationHandoff?.session.state().running === true
+        || this.pendingHandoffRelease !== null
+      ),
+    );
+    const lease = await inspectProfileOwnershipLease(
+      profileRoot,
+      identity,
+      this.ownershipLease.leaseId,
+    );
+
+    if (lease.state === 'current_owner') {
+      const privateHandoff = lease.lease?.controlMode === 'human_handoff';
+      const releasePending = lease.lease?.phase === 'close_requested'
+        || lease.lease?.phase === 'process_exited'
+        || lease.lease?.phase === 'profile_unlocked';
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: !privateHandoff && !releasePending,
+        profileState: 'owned_active',
+        startable: !privateHandoff && !releasePending,
+        recoverable: privateHandoff || releasePending,
+        suggestedAction: privateHandoff
+          ? 'Complete the active private handoff, then call browser_resume_after_login. Do not start another backend or delete profile locks.'
+          : releasePending
+            ? 'Call browser_request_login_handoff once more to continue the retained release phase.'
+            : browser === this.selectedBrowser && this.usableContext() !== undefined
+              ? 'This backend is already controlled by the current Stage5 session.'
+              : 'Call browser_start once to reconnect the current Stage5-owned backend.',
+      };
+    }
+    if (lease.state === 'busy_other_stage5_session') {
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: false,
+        profileState: 'busy_other_stage5_session',
+        startable: false,
+        recoverable: false,
+        suggestedAction: `Continue in the live Stage5 session that owns ${identity.applicationName}, or ask it to call browser_stop. Do not retry, kill the browser, or delete locks.`,
+      };
+    }
+    if (lease.state === 'owned_orphaned') {
+      const privateHandoff = lease.lease?.controlMode === 'human_handoff';
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: !privateHandoff,
+        profileState: 'owned_orphaned',
+        startable: !privateHandoff,
+        recoverable: true,
+        suggestedAction: privateHandoff
+          ? `The private handoff outlived its worker. Ask the user to close only the dedicated ${identity.applicationName} normally; do not attach, terminate, or delete locks.`
+          : 'Call browser_start once. Stage5 will reattach or restart only after re-proving the exact orphaned ownership lease.',
+      };
+    }
+    if (lease.state === 'invalid') {
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: false,
+        profileState: 'external_owner',
+        startable: false,
+        recoverable: false,
+        suggestedAction: `The profile has an invalid or mismatched Stage5 ownership record. Do not overwrite it, kill a process, or delete locks; inspect ${identity.applicationName} ownership first.`,
+      };
+    }
+    if (lease.state === 'abandoned' && profile.lockFiles.length === 0) {
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: true,
+        profileState: 'startable',
+        startable: true,
+        recoverable: true,
+        suggestedAction: 'Call browser_start once; Stage5 can safely replace the abandoned record because the profile is unlocked.',
+      };
+    }
+    if (lease.state === 'abandoned') {
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: false,
+        profileState: 'external_owner',
+        startable: false,
+        recoverable: false,
+        suggestedAction: `The old record no longer proves ownership of the live lock. Close only the visibly identified dedicated ${identity.applicationName} normally; never delete locks or kill an unknown owner.`,
+      };
+    }
+    if (profile.lockFiles.length === 0) {
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: true,
+        profileState: 'startable',
+        startable: true,
+        recoverable: false,
+        suggestedAction: null,
+      };
+    }
+    if (target.engine === 'chromium') {
+      const owner = await this.profileOwnerInspector(profileRoot, identity);
+      const recoverable = owner.reconnectRecord !== null;
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: recoverable,
+        profileState: recoverable ? 'owned_orphaned' : 'external_owner',
+        startable: recoverable,
+        recoverable,
+        suggestedAction: owner.evidence.suggestedAction,
+      };
+    }
+    return {
+      ...executableAvailability,
+      installed: true,
+      available: false,
+      profileState: 'external_owner',
+      startable: false,
+      recoverable: false,
+      suggestedAction: `The ${identity.applicationName} profile is locked without a conclusive Stage5 lease. Close only that visibly identified dedicated browser normally; do not kill a process or delete lock files.`,
     };
   }
 
@@ -468,6 +847,7 @@ export class BrowserController {
       ?? profileBindingForBrowser(profilePath, availability.engine);
     const page = this.preferredPage();
     const humanBootstrapRunning = this.authenticationHandoff?.state === 'awaiting_user';
+    const handoffReleasePending = this.pendingHandoffRelease !== null;
     const controlMode = humanBootstrapRunning
       ? 'human_bootstrap'
       : this.usableContext() === undefined
@@ -478,6 +858,10 @@ export class BrowserController {
       : null;
     const nativeChromiumProcess = this.nativeAttachedBrowser !== undefined
       || this.authenticationHandoff?.session.controlChannel?.()?.kind === 'chromium_cdp';
+    const profile = await inspectProfile(
+      profilePath,
+      currentStatus.browserConnected || humanBootstrapRunning || handoffReleasePending,
+    );
     return {
       browser: this.selectedBrowser,
       engine: availability.engine,
@@ -485,7 +869,12 @@ export class BrowserController {
       preflightSuggestedAction: availability.available
         ? null
         : suggestedActionForReason(availability.reason),
-      profile: await inspectProfile(profilePath, currentStatus.browserConnected || humanBootstrapRunning),
+      profile,
+      profileOwner: await this.profileOwnerEvidence(
+        profile,
+        currentStatus.launchIdentity,
+        humanBootstrapRunning || handoffReleasePending,
+      ),
       profileBinding,
       launchIdentity: currentStatus.launchIdentity,
       runtimeProfile: currentStatus.runtimeProfile,
@@ -532,6 +921,11 @@ export class BrowserController {
   }
 
   async stop(): Promise<BrowserStatus> {
+    if (this.pendingHandoffRelease !== null) {
+      throw this.humanBootstrapInProgressError(
+        'The private interaction handoff is still releasing the exact owned profile and must be resumed before Stage5 Browser can stop or switch it.',
+      );
+    }
     if (
       this.authenticationHandoff?.state === 'awaiting_user' &&
       this.authenticationHandoff.session.state().running
@@ -543,6 +937,11 @@ export class BrowserController {
     const context = this.context;
     const nativeBrowser = this.nativeAttachedBrowser;
     const nativeRecord = this.nativeControlRecord;
+    const profileRoot = profileDirForBrowser(this.config, this.selectedBrowser);
+    const browserWasOwned = nativeBrowser !== undefined || context !== undefined;
+    if (browserWasOwned) {
+      await this.ownershipLease.updatePhase('close_requested');
+    }
     this.context = undefined;
     this.activePage = undefined;
     this.framesById.clear();
@@ -557,23 +956,71 @@ export class BrowserController {
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
     this.controlledBrowserProcessId = null;
+    this.controlledBrowserProcess = null;
     this.state = 'stopped';
 
     if (nativeBrowser !== undefined && nativeRecord !== null) {
       await this.closeOwnedNativeBrowser(context, nativeBrowser, nativeRecord);
-      await removeNativeControlRecord(profileDirForBrowser(this.config, this.selectedBrowser));
+      await removeNativeControlRecord(profileRoot);
     } else if (context !== undefined && !context.isClosed()) {
       await context.close({ reason: 'Stage5 Browser stopped the owned browser context.' });
+    }
+
+    if (browserWasOwned) {
+      await this.ownershipLease.updatePhase('process_exited');
+      let unlocked = await waitForProfileUnlock(
+        profileRoot,
+        Math.min(this.config.operationTimeoutMs, 10_000),
+      );
+      if (!unlocked) {
+        const releaseProfile = await inspectProfile(profileRoot, false);
+        unlocked = releaseProfile.lockFiles.length === 0;
+        if (unlocked) {
+          await this.ownershipLease.updatePhase('profile_unlocked');
+          await this.ownershipLease.release();
+        }
+      }
+      if (!unlocked) {
+        const releaseProfile = await inspectProfile(profileRoot, false);
+        throw new Stage5BrowserError(
+          'BROWSER_NOT_READY',
+          'The owned browser close completed, but the dedicated profile has not released its lock.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'profile_locked',
+              ownershipReason: 'owned_release_pending',
+              profileLockFiles: releaseProfile.lockFiles,
+              suggestedAction: 'Wait for the exact dedicated Stage5 browser process to finish exiting, then call browser_status once. Do not delete profile locks or launch another backend as a workaround.',
+            },
+          },
+        );
+      }
+      await this.ownershipLease.updatePhase('profile_unlocked');
+      await this.ownershipLease.release();
     }
 
     return this.status();
   }
 
   async detachForWorkerShutdown(): Promise<void> {
+    if (this.pendingHandoffRelease !== null || this.authenticationHandoff?.state === 'awaiting_user') {
+      await this.ownershipLease.detach();
+      return;
+    }
     const nativeBrowser = this.nativeAttachedBrowser;
     if (nativeBrowser === undefined) {
       await this.stop();
       return;
+    }
+
+    const nativeRecord = this.nativeControlRecord;
+    if (nativeRecord !== null) {
+      await writeNativeControlRecord(
+        profileDirForBrowser(this.config, this.selectedBrowser),
+        { ...nativeRecord, state: 'controlled' },
+      ).catch(() => undefined);
+      await this.ownershipLease.updatePhase('owned_active').catch(() => undefined);
     }
 
     this.context = undefined;
@@ -581,7 +1028,9 @@ export class BrowserController {
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
     this.controlledBrowserProcessId = null;
+    this.controlledBrowserProcess = null;
     this.state = 'stopped';
+    await this.ownershipLease.detach();
     await nativeBrowser.close().catch(() => undefined);
   }
 
@@ -592,10 +1041,13 @@ export class BrowserController {
       if (this.state !== 'failed' && this.state !== 'recovering') {
         this.state = 'stopped';
       }
-      const profile = await inspectProfile(
-        profilePath,
-        this.authenticationHandoff?.session.state().running === true,
-      );
+      const handoffProcessRunning = this.authenticationHandoff?.session.state().running === true
+        || (this.pendingHandoffRelease !== null
+          && processIsRunning(this.pendingHandoffRelease.controlledBrowserProcess.processId));
+      const handoffIdentity = this.authenticationHandoff?.launchIdentity
+        ?? this.pendingHandoffRelease?.launchIdentity
+        ?? this.controlledLaunchIdentity;
+      const profile = await inspectProfile(profilePath, handoffProcessRunning);
       return {
         browser: this.selectedBrowser,
         state: this.state,
@@ -604,10 +1056,15 @@ export class BrowserController {
         pages: [],
         activePageIndex: null,
         lastKnownUrl: this.lastKnownUrl,
-        launchIdentity: this.authenticationHandoff?.launchIdentity ?? this.controlledLaunchIdentity,
+        launchIdentity: handoffIdentity,
         runtimeProfile: null,
         profileLockState: profile.lockState,
         profileLockFiles: profile.lockFiles,
+        profileOwner: await this.profileOwnerEvidence(
+          profile,
+          handoffIdentity,
+          handoffProcessRunning,
+        ),
       };
     }
 
@@ -631,6 +1088,11 @@ export class BrowserController {
       runtimeProfile: this.runtimeProfileObservation,
       profileLockState: profile.lockState,
       profileLockFiles: profile.lockFiles,
+      profileOwner: await this.profileOwnerEvidence(
+        profile,
+        this.controlledLaunchIdentity,
+        false,
+      ),
     };
   }
 
@@ -706,6 +1168,18 @@ export class BrowserController {
     );
     if (stabilizationMs > 0) {
       await page.waitForTimeout(stabilizationMs);
+    }
+    if (warnings.some((warning) => warning.code === 'dom_readiness_timeout')) {
+      const reconciledReadyState = await boundedValue(
+        page.evaluate(() => document.readyState),
+        Math.min(250, Math.max(1, input.timeoutMs - (Date.now() - startedAt))),
+        'loading',
+      );
+      if (reconciledReadyState === 'interactive' || reconciledReadyState === 'complete') {
+        readiness = 'domcontentloaded';
+        const staleWarningIndex = warnings.findIndex((warning) => warning.code === 'dom_readiness_timeout');
+        if (staleWarningIndex >= 0) warnings.splice(staleWarningIndex, 1);
+      }
     }
     page.off('framenavigated', onFrameNavigated);
     recordObservedUrl(page.url());
@@ -937,45 +1411,104 @@ export class BrowserController {
     const page = await this.ensureActivePage(await this.ensureContext());
     const frame = this.resolveFrame(page, input.frameId);
     const locator = frame.getByRole(input.role, { name: input.name, exact: input.exact });
-    const targetState = await this.requireUniqueClickTarget(
-      page,
-      locator,
-      'click_by_role',
-      input.role,
-      input.name,
-      input.timeoutMs,
-    );
     const startedAt = Date.now();
+    const deadlineAt = startedAt + input.timeoutMs;
+    const actionDeadlineAt = deadlineAt - clickFinalizationReserve(input.timeoutMs);
     const actionStartedAt = new Date(startedAt).toISOString();
     this.pageDiagnostics.beginAction(page, actionStartedAt);
+    let preparedTarget: PreparedObservedClickTarget | null = null;
+    let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
     try {
-      await locator.click({ timeout: input.timeoutMs });
-    } catch (error) {
-      const diagnostic = actionDiagnosticForFailure(
-        'click_by_role',
+      const initialTargetState = await this.requireUniqueClickTarget(
         page,
-        error,
-        await inspectTargetState(locator) ?? targetState,
-        actionStartedAt,
+        locator,
+        'click_by_role',
+        input.role,
+        input.name,
+        remainingUntil(actionDeadlineAt),
       );
-      this.pageDiagnostics.recordAction(page, diagnostic);
-      throw this.clickFailureError(diagnostic, error);
-    }
-    try {
+      const handle = await boundedValue(
+        locator.elementHandle(),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      );
+      if (handle === null) {
+        this.failClickBeforeDispatch(
+          page,
+          actionStartedAt,
+          initialTargetState,
+          'detached',
+          'detached',
+          'The uniquely matched role target detached before exact-target dispatch began.',
+          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no click was dispatched.',
+          'TARGET_NOT_FOUND',
+          'click_by_role',
+        );
+      }
+      try {
+        await locator.scrollIntoViewIfNeeded({
+          timeout: Math.max(1, remainingUntil(actionDeadlineAt)),
+        });
+      } catch {
+        // The exact handle is inspected below; failure remains pre-dispatch.
+      }
+      const targetState = await boundedValue(
+        inspectTargetState(handle),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      );
+      const failure = targetState === null
+        ? { diagnostic: 'detached' as const, reason: 'role_target_detached_before_dispatch' }
+        : !targetState.visible || !targetState.inViewport
+          ? { diagnostic: 'not_visible' as const, reason: 'role_target_not_actionable_in_viewport' }
+          : !targetState.enabled
+            ? { diagnostic: 'not_enabled' as const, reason: 'role_target_not_enabled' }
+            : targetState.receivesPointerEvents === false
+              ? { diagnostic: 'pointer_intercepted' as const, reason: 'role_target_covered' }
+              : null;
+      if (failure !== null || targetState === null) {
+        await handle.dispose().catch(() => undefined);
+        this.failClickBeforeDispatch(
+          page,
+          actionStartedAt,
+          targetState,
+          failure?.diagnostic ?? 'detached',
+          failure?.diagnostic ?? 'detached',
+          'The uniquely matched role target was not safely actionable before exact-target dispatch.',
+          'Take a fresh semantic snapshot and resolve the reported target state before another click.',
+          targetState === null ? 'TARGET_NOT_FOUND' : 'OPERATION_FAILED',
+          'click_by_role',
+        );
+      }
+      preparedTarget = { locator, handle, targetState };
+      dispatchEvidence = await this.dispatchPreparedObservedClick(
+        page,
+        preparedTarget,
+        actionStartedAt,
+        actionDeadlineAt,
+        deadlineAt,
+        'click_by_role',
+      );
       const postcondition = await this.verifyClickPostcondition(
         page,
         frame,
         locator,
         input.postcondition,
-        Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
+        remainingUntil(actionDeadlineAt),
       );
       this.pageDiagnostics.recordAction(
         page,
-        this.successfulActionDiagnostic('click_by_role', page, targetState, actionStartedAt),
+        this.successfulActionDiagnostic(
+          'click_by_role',
+          page,
+          preparedTarget.targetState,
+          actionStartedAt,
+          dispatchEvidence,
+        ),
       );
       this.lastKnownUrl = page.url();
       return {
-        page: await this.pageSummary(page),
+        page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
         frame: this.frameSummary(frame, page),
         postcondition,
       };
@@ -983,11 +1516,18 @@ export class BrowserController {
       if (error instanceof Stage5BrowserError && error.code === 'POSTCONDITION_FAILED') {
         this.pageDiagnostics.recordAction(
           page,
-          this.postconditionFailureDiagnostic('click_by_role', page, targetState, actionStartedAt),
+          this.postconditionFailureDiagnostic(
+            'click_by_role',
+            page,
+            preparedTarget?.targetState ?? null,
+            actionStartedAt,
+            dispatchEvidence,
+          ),
         );
       }
       throw error;
     } finally {
+      await preparedTarget?.handle.dispose().catch(() => undefined);
       this.discardObservedSnapshot(frame);
     }
   }
@@ -1021,6 +1561,8 @@ export class BrowserController {
 
     const locator = frame.locator(`aria-ref=${input.ref}`);
     const startedAt = Date.now();
+    const deadlineAt = startedAt + input.timeoutMs;
+    const actionDeadlineAt = deadlineAt - clickFinalizationReserve(input.timeoutMs);
     const actionStartedAt = new Date(startedAt).toISOString();
     let preparedTarget: PreparedObservedClickTarget | null = null;
     let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
@@ -1028,7 +1570,11 @@ export class BrowserController {
     try {
       let count: number;
       try {
-        count = await locator.count();
+        count = await boundedValue(
+          locator.count(),
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+          -1,
+        );
       } catch {
         this.failClickBeforeDispatch(
           page,
@@ -1039,6 +1585,18 @@ export class BrowserController {
           'The observed reference could not be resolved before click preparation.',
           'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
           'TARGET_NOT_FOUND',
+        );
+      }
+      if (count === -1) {
+        this.failClickBeforeDispatch(
+          page,
+          actionStartedAt,
+          null,
+          'timeout',
+          'reference_resolution_deadline_expired',
+          'The observed reference could not be resolved before the shared click deadline.',
+          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no click was dispatched.',
+          'OPERATION_FAILED',
         );
       }
       if (count !== 1) {
@@ -1060,13 +1618,15 @@ export class BrowserController {
         frame,
         locator,
         actionStartedAt,
-        input.timeoutMs,
+        actionDeadlineAt,
       );
       dispatchEvidence = await this.dispatchPreparedObservedClick(
         page,
         preparedTarget,
         actionStartedAt,
-        Math.max(1, input.timeoutMs - (Date.now() - startedAt)),
+        actionDeadlineAt,
+        deadlineAt,
+        'click_by_ref',
       );
       try {
         const postcondition = await this.verifyClickPostcondition(
@@ -1074,7 +1634,7 @@ export class BrowserController {
           frame,
           preparedTarget.locator,
           input.postcondition,
-          Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
+          remainingUntil(actionDeadlineAt),
         );
         this.pageDiagnostics.recordAction(
           page,
@@ -1088,7 +1648,7 @@ export class BrowserController {
         );
         this.lastKnownUrl = page.url();
         return {
-          page: await this.pageSummary(page),
+          page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
           frame: this.frameSummary(frame, page),
           postcondition,
         };
@@ -1651,6 +2211,10 @@ export class BrowserController {
   async requestLoginHandoff(
     input: BrowserCommandInput<'requestLoginHandoff'>,
   ): Promise<BrowserCommandOutput<'requestLoginHandoff'>> {
+    const deadlineAt = Date.now() + input.timeoutMs;
+    if (this.pendingHandoffRelease !== null) {
+      return this.continuePendingHandoffRelease(deadlineAt);
+    }
     if (this.config.headless) {
       throw new Stage5BrowserError(
         'AUTH_HANDOFF_UNAVAILABLE',
@@ -1723,7 +2287,11 @@ export class BrowserController {
 
     let page = await this.ensureActivePage(await this.ensureContext());
     if (input.url !== null) {
-      await this.open({ url: input.url, newTab: false, stabilizationMs: 750, timeoutMs: input.timeoutMs });
+      const navigationBudgetMs = remainingHandoffWorkBudget(deadlineAt);
+      if (navigationBudgetMs === 0) {
+        throw this.handoffReleasePendingError('close_requested', []);
+      }
+      await this.open({ url: input.url, newTab: false, stabilizationMs: 750, timeoutMs: navigationBudgetMs });
       page = await this.ensureActivePage(await this.ensureContext());
     }
     await page.bringToFront();
@@ -1737,49 +2305,138 @@ export class BrowserController {
       throw new Stage5BrowserError('BROWSER_NOT_READY', 'The controlled profile disappeared before handoff.');
     }
 
-    await context.close({ reason: 'Stage5 Browser released the profile for private human authentication.' });
-    this.clearControlledBrowserState();
-    if (!(await waitForProfileUnlock(profileDir, Math.min(input.timeoutMs, 5_000)))) {
+    const handoffLabel = this.authenticationHandoffLabel(launchIdentity, targetOrigin);
+    const controlledBrowserProcess = this.controlledBrowserProcess;
+    if (controlledBrowserProcess === null) {
       throw new Stage5BrowserError(
         'BROWSER_NOT_READY',
-        'The dedicated profile did not unlock after Stage5 Browser released control.',
+        'Stage5 Browser cannot release this profile for private input without an exact durable browser-process identity.',
         {
           recoverable: true,
           details: {
-            reason: 'profile_locked',
-            browser: this.selectedBrowser,
-            suggestedAction: 'Wait for the previous dedicated browser process to finish closing, then request the handoff once.',
+            reason: 'ownership_unverified',
+            suggestedAction: 'Stop before entering private information. Run browser_diagnostics and correct the ownership evidence before requesting a private handoff.',
           },
         },
       );
     }
-    const beforeStorage = await this.profileStorageInspector(
-      launchIdentity.profile,
-      launchIdentity.engine,
-      targetOrigin,
-    );
-    const beforeProfileShutdown = await inspectProfileShutdown(
+    this.pendingHandoffRelease = {
+      mode: 'human_bootstrap',
+      state: 'releasing_control',
+      requestedAt: new Date().toISOString(),
+      launchTarget,
       profileDir,
-      this.selectedBrowser,
-      launchIdentity.profile.profileDirectory,
+      launchIdentity,
+      handoffLabel,
+      targetUrl,
+      targetOrigin,
+      beforeUrl,
+      beforeSemanticFingerprint,
+      controlledBrowserProcess,
+      closeRequestCompleted: false,
+    };
+    await this.ownershipLease.updatePhase('close_requested');
+    const closeBudgetMs = remainingHandoffWorkBudget(deadlineAt);
+    const closeCompleted = closeBudgetMs > 0 && await boundedValue(
+      context.close({ reason: 'Stage5 Browser released the profile for private human interaction.' })
+        .then(() => true),
+      closeBudgetMs,
+      false,
     );
-    const handoffLabel = this.authenticationHandoffLabel(launchIdentity, targetOrigin);
+    if (this.pendingHandoffRelease !== null) {
+      this.pendingHandoffRelease.closeRequestCompleted = closeCompleted;
+    }
+    this.clearControlledBrowserState();
+    return this.continuePendingHandoffRelease(deadlineAt);
+  }
+
+  private async continuePendingHandoffRelease(
+    deadlineAt: number,
+  ): Promise<BrowserCommandOutput<'requestLoginHandoff'>> {
+    const pending = this.pendingHandoffRelease;
+    if (pending === null) {
+      throw new Stage5BrowserError('AUTH_HANDOFF_REQUIRED', 'No private handoff release is pending.', {
+        recoverable: true,
+        details: {
+          reason: 'no_pending_handoff',
+          suggestedAction: 'Request the private interaction handoff from the exact page that needs user input.',
+        },
+      });
+    }
+
+    const processBudgetMs = remainingHandoffWorkBudget(deadlineAt);
+    const processExited = processBudgetMs > 0 && await this.waitForExactOwnedProcessExit(
+      pending.controlledBrowserProcess,
+      processBudgetMs,
+    );
+    if (!processExited) {
+      const profile = await inspectProfile(pending.profileDir, false);
+      throw this.handoffReleasePendingError('close_requested', profile.lockFiles, pending);
+    }
+    await this.ownershipLease.updatePhase('process_exited');
+
+    const unlockBudgetMs = remainingHandoffWorkBudget(deadlineAt);
+    let profileUnlocked = unlockBudgetMs > 0
+      && await waitForProfileUnlock(pending.profileDir, unlockBudgetMs);
+    if (!profileUnlocked) {
+      const profile = await inspectProfile(pending.profileDir, false);
+      profileUnlocked = profile.lockFiles.length === 0;
+      if (!profileUnlocked) {
+        throw this.handoffReleasePendingError('process_exited', profile.lockFiles, pending);
+      }
+    }
+    await this.ownershipLease.updatePhase('profile_unlocked');
+
+    if (remainingHandoffWorkBudget(deadlineAt) === 0) {
+      throw this.handoffReleasePendingError('profile_unlocked', [], pending);
+    }
+    const [beforeStorage, beforeProfileShutdown] = await Promise.all([
+      this.profileStorageInspector(
+        pending.launchIdentity.profile,
+        pending.launchIdentity.engine,
+        pending.targetOrigin,
+      ),
+      inspectProfileShutdown(
+        pending.profileDir,
+        this.selectedBrowser,
+        pending.launchIdentity.profile.profileDirectory,
+      ),
+    ]);
+    await this.ownershipLease.release();
+
+    const humanLeaseClaimed = await this.ownershipLease.claim({
+      profileRoot: pending.profileDir,
+      identity: pending.launchIdentity,
+      controlMode: 'human_handoff',
+    });
+    if (!humanLeaseClaimed) {
+      const competingLease = await inspectProfileOwnershipLease(
+        pending.profileDir,
+        pending.launchIdentity,
+        this.ownershipLease.leaseId,
+      );
+      throw this.ownershipLeaseError(competingLease, pending.launchIdentity);
+    }
 
     let session: HumanBrowserSession;
     try {
       session = await this.humanBrowserLauncher.launch({
-        target: launchTarget,
-        profileDir,
-        handoffLabel,
-        url: targetUrl,
+        target: pending.launchTarget,
+        profileDir: pending.profileDir,
+        handoffLabel: pending.handoffLabel,
+        url: pending.targetUrl,
       });
     } catch (error) {
+      if (await ownershipProfileUnlocked(pending.profileDir)) {
+        await this.ownershipLease.updatePhase('profile_unlocked').catch(() => undefined);
+        await this.ownershipLease.release().catch(() => undefined);
+      }
       this.state = 'failed';
       const diagnostic = launchFailureDiagnostic(this.selectedBrowser, error);
       this.lastLaunchFailure = diagnostic;
       throw new Stage5BrowserError(
         'BROWSER_NOT_READY',
-        'The private human authentication browser could not be launched.',
+        'The private human-interaction browser could not be launched.',
         {
           recoverable: true,
           details: {
@@ -1795,55 +2452,139 @@ export class BrowserController {
     }
 
     const humanLaunchIdentity = session.identity();
-    if (!sameLaunchIdentity(launchIdentity, humanLaunchIdentity)) {
+    const humanProcessState = session.state();
+    const humanProcessStartedAt = humanProcessState.processId === null
+      ? null
+      : await processStartedAtToken(humanProcessState.processId);
+    if (humanProcessState.processId === null || humanProcessStartedAt === null) {
       throw new Stage5BrowserError(
-        'AUTH_NOT_PERSISTED',
-        'The native authentication browser did not launch with the controlled browser identity.',
+        'BROWSER_NOT_READY',
+        'The private browser launched, but Stage5 could not establish its exact durable ownership identity.',
         {
           recoverable: true,
           details: {
-            reason: 'auth_launch_identity_mismatch',
-            controlledIdentity: launchIdentity,
-            humanIdentity: humanLaunchIdentity,
-            suggestedAction: 'Do not enter credentials in the opened window. Quit it normally and correct the configured backend before requesting another handoff.',
+            reason: 'ownership_unverified',
+            suggestedAction: `Do not enter private information. Close only the newly opened ${humanLaunchIdentity.applicationName} normally, wait for it to exit, then request the handoff once.`,
           },
         },
       );
     }
+    await this.ownershipLease.establish({
+      profileRoot: pending.profileDir,
+      identity: humanLaunchIdentity,
+      browserProcess: {
+        processId: humanProcessState.processId,
+        startedAt: humanProcessStartedAt,
+        executablePath: humanLaunchIdentity.executablePath,
+      },
+      controlMode: 'human_handoff',
+      phase: 'human_input',
+    });
 
     this.authenticationHandoff = {
       mode: 'human_bootstrap',
       state: 'awaiting_user',
-      targetOrigin,
-      requestedAt: new Date().toISOString(),
+      targetOrigin: pending.targetOrigin,
+      requestedAt: pending.requestedAt,
       resumedAt: null,
       page: null,
-      profileDir,
+      profileDir: pending.profileDir,
       launchIdentity: humanLaunchIdentity,
-      handoffLabel,
-      targetUrl,
-      beforeUrl,
-      beforeSemanticFingerprint,
+      handoffLabel: pending.handoffLabel,
+      targetUrl: pending.targetUrl,
+      beforeUrl: pending.beforeUrl,
+      beforeSemanticFingerprint: pending.beforeSemanticFingerprint,
       beforeStorage,
       beforeProfileShutdown,
       session,
       profileShutdown: null,
       shutdownOverrideOffered: false,
     };
+    this.pendingHandoffRelease = null;
     this.state = 'stopped';
+
+    if (!sameLaunchIdentity(pending.launchIdentity, humanLaunchIdentity)) {
+      throw new Stage5BrowserError(
+        'AUTH_NOT_PERSISTED',
+        'The native private-interaction browser did not launch with the controlled browser identity.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'auth_launch_identity_mismatch',
+            controlledIdentity: pending.launchIdentity,
+            humanIdentity: humanLaunchIdentity,
+            suggestedAction: 'Do not enter private information. Quit only the newly opened browser normally and correct the configured backend before requesting another handoff.',
+          },
+        },
+      );
+    }
+
     const continuousAttachment = session.controlChannel?.()?.kind === 'chromium_cdp';
     return {
       ...(await this.authenticationStatus(undefined)),
       userActionRequired: true,
       instructions: continuousAttachment
-        ? `Authenticate only in the newly opened ${humanLaunchIdentity.applicationName} window identified as “${handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${targetOrigin ?? 'the requested page'}. Leave that exact browser application open after login and tell the agent to call browser_resume_after_login; Stage5 Browser will attach to the same running process without restarting it. Do not send credentials, passkeys, CAPTCHAs, or OTPs to the agent.`
-        : `Authenticate only in the newly opened ${humanLaunchIdentity.applicationName} window identified as “${handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${targetOrigin ?? 'the requested page'}. Then quit ${humanLaunchIdentity.applicationName} normally so its process exits. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Do not send credentials, passkeys, CAPTCHAs, or OTPs to the agent. After it has quit, tell the agent to call browser_resume_after_login.`,
+        ? `Use only the newly opened ${humanLaunchIdentity.applicationName} window identified as “${pending.handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${pending.targetOrigin ?? 'the requested page'}. Complete only the private step yourself—such as a password, passkey, OTP, EIN, identity document, or selfie—then leave that exact browser application open and tell the agent to call browser_resume_after_login. Never send private values or documents to the agent.`
+        : `Use only the newly opened ${humanLaunchIdentity.applicationName} window identified as “${pending.handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${pending.targetOrigin ?? 'the requested page'}. Complete only the private step yourself—such as a password, passkey, OTP, EIN, identity document, or selfie—then quit ${humanLaunchIdentity.applicationName} normally so its process exits. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Never send private values or documents to the agent. After it exits, tell the agent to call browser_resume_after_login.`,
     };
+  }
+
+  private async waitForExactOwnedProcessExit(
+    processObservation: OwnedProcessObservation,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const deadlineAt = Date.now() + Math.max(1, timeoutMs);
+    do {
+      if (!(await this.exactOwnedProcessStillRunning(processObservation))) return true;
+      if (Date.now() >= deadlineAt) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadlineAt - Date.now())));
+    } while (Date.now() < deadlineAt);
+    return !(await this.exactOwnedProcessStillRunning(processObservation));
+  }
+
+  private async exactOwnedProcessStillRunning(
+    processObservation: OwnedProcessObservation,
+  ): Promise<boolean> {
+    if (!processIsRunning(processObservation.processId)) return false;
+    const observedStart = await boundedValue(
+      processStartedAtToken(processObservation.processId),
+      500,
+      null,
+    );
+    return observedStart === null || observedStart === processObservation.startedAt;
+  }
+
+  private handoffReleasePendingError(
+    phase: 'close_requested' | 'process_exited' | 'profile_unlocked',
+    profileLockFiles: string[],
+    pending = this.pendingHandoffRelease,
+  ): Stage5BrowserError {
+    const applicationName = pending?.launchIdentity.applicationName ?? 'the dedicated browser';
+    return new Stage5BrowserError(
+      'AUTH_HANDOFF_REQUIRED',
+      phase === 'close_requested'
+        ? `Stage5 requested ${applicationName} to close, but its exact owned process has not exited within this operation budget.`
+        : phase === 'process_exited'
+          ? `The exact owned ${applicationName} process exited, but its profile has not unlocked within this operation budget.`
+          : `The exact owned ${applicationName} process exited and its profile unlocked; Stage5 retained the handoff so it can continue safely.`,
+      {
+        recoverable: true,
+        details: {
+          reason: 'handoff_release_pending',
+          phase,
+          closeRequestCompleted: pending?.closeRequestCompleted ?? null,
+          profileLockFiles,
+          ownershipRetained: true,
+          suggestedAction: 'Do not reopen the browser, repeat authentication, delete profile locks, or switch backends. Call browser_request_login_handoff once more; Stage5 will resume this exact release phase instead of relaunching the controlled browser.',
+        },
+      },
+    );
   }
 
   async resumeAfterLogin(
     input: BrowserCommandInput<'resumeAfterLogin'>,
   ): Promise<BrowserCommandOutput<'resumeAfterLogin'>> {
+    const deadlineAt = Date.now() + input.timeoutMs;
     if (this.authenticationHandoff?.state !== 'awaiting_user') {
       throw new Stage5BrowserError('AUTH_HANDOFF_REQUIRED', 'No login handoff is currently awaiting the user.', {
         recoverable: true,
@@ -1859,11 +2600,16 @@ export class BrowserController {
     }
 
     const handoff = this.authenticationHandoff;
-    const processState = handoff.session.state();
+    let processState = handoff.session.state();
     const continuousChromiumHandoff = handoff.launchIdentity.engine === 'chromium'
       && handoff.session.controlChannel?.()?.kind === 'chromium_cdp';
     if (continuousChromiumHandoff && !processState.running) {
       await removeNativeControlRecord(handoff.profileDir);
+      await this.ownershipLease.updatePhase('process_exited').catch(() => undefined);
+      if (await ownershipProfileUnlocked(handoff.profileDir)) {
+        await this.ownershipLease.updatePhase('profile_unlocked').catch(() => undefined);
+        await this.ownershipLease.release().catch(() => undefined);
+      }
       this.authenticationHandoff = null;
       this.state = 'stopped';
       throw new Stage5BrowserError(
@@ -1879,22 +2625,39 @@ export class BrowserController {
       );
     }
     if (!continuousChromiumHandoff && processState.running) {
-      throw new Stage5BrowserError(
-        'AUTH_HANDOFF_REQUIRED',
-        'The private human authentication browser is still running.',
-        {
-          recoverable: true,
-          details: {
-            reason: 'human_browser_still_running',
-            suggestedAction: `Finish authentication and quit ${handoff.launchIdentity.applicationName} normally so its process exits, then call browser_resume_after_login once. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running.`,
+      const exitBudgetMs = remainingHandoffWorkBudget(deadlineAt);
+      if (exitBudgetMs > 0) {
+        await handoff.session.waitForExit(exitBudgetMs);
+        processState = handoff.session.state();
+      }
+      if (processState.running) {
+        throw new Stage5BrowserError(
+          'AUTH_HANDOFF_REQUIRED',
+          'The private human-interaction browser is still running.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'human_browser_still_running',
+              phase: 'human_input',
+              ownershipRetained: true,
+              suggestedAction: `Complete the private step and quit ${handoff.launchIdentity.applicationName} normally so its process exits, then call browser_resume_after_login once. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running.`,
+            },
           },
-        },
-      );
+        );
+      }
     }
 
     let afterHumanStorage: ProfileStorageInspection | null = null;
     if (!continuousChromiumHandoff) {
-      if (!(await waitForProfileUnlock(handoff.profileDir, Math.min(input.timeoutMs, 5_000)))) {
+      await this.ownershipLease.updatePhase('process_exited');
+      const unlockBudgetMs = remainingHandoffWorkBudget(deadlineAt);
+      let profileUnlocked = unlockBudgetMs > 0
+        && await waitForProfileUnlock(handoff.profileDir, unlockBudgetMs);
+      if (!profileUnlocked) {
+        profileUnlocked = (await inspectProfile(handoff.profileDir, false)).lockFiles.length === 0;
+      }
+      if (!profileUnlocked) {
+        const profile = await inspectProfile(handoff.profileDir, false);
         throw new Stage5BrowserError(
           'AUTH_HANDOFF_REQUIRED',
           'The private browser process exited, but its profile is still locked.',
@@ -1902,7 +2665,29 @@ export class BrowserController {
             recoverable: true,
             details: {
               reason: 'profile_locked_after_handoff',
-              suggestedAction: 'Wait for the dedicated browser to finish closing, then call browser_resume_after_login once. Do not delete profile lock files.',
+              phase: 'process_exited',
+              profileLockFiles: profile.lockFiles,
+              ownershipRetained: true,
+              suggestedAction: 'Do not reopen the browser, repeat the private step, or delete profile locks. Call browser_resume_after_login once more; Stage5 will continue waiting on this same handoff instead of relaunching it.',
+            },
+          },
+        );
+      }
+
+      await this.ownershipLease.updatePhase('profile_unlocked');
+      await this.ownershipLease.release();
+
+      if (remainingHandoffWorkBudget(deadlineAt) === 0) {
+        throw new Stage5BrowserError(
+          'AUTH_HANDOFF_REQUIRED',
+          'The private browser exited and its profile unlocked, but this operation budget ended before controlled reattachment.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'handoff_resume_pending',
+              phase: 'profile_unlocked',
+              profileLockFiles: [],
+              suggestedAction: 'Do not reopen the browser or repeat the private step. Call browser_resume_after_login once more to continue with the same unlocked profile.',
             },
           },
         );
@@ -2023,7 +2808,7 @@ export class BrowserController {
     handoff.state = 'ready_for_agent_verification';
     let page: Page;
     try {
-      await this.start({}, handoff.targetOrigin);
+      await this.start({}, handoff.targetOrigin, continuousChromiumHandoff);
       if (
         this.controlledLaunchIdentity === null
         || !sameLaunchIdentity(handoff.launchIdentity, this.controlledLaunchIdentity)
@@ -2207,6 +2992,304 @@ export class BrowserController {
     };
   }
 
+  private lockedProfileOwnerError(
+    inspection: ChromiumProfileOwnerInspection,
+  ): Stage5BrowserError {
+    const authenticationHandoffPending =
+      inspection.evidence.classification === 'authentication_handoff_pending';
+    return new Stage5BrowserError(
+      authenticationHandoffPending ? 'AUTH_HANDOFF_REQUIRED' : 'BROWSER_NOT_READY',
+      authenticationHandoffPending
+        ? 'The dedicated Chromium profile appears to be in a private authentication handoff.'
+        : 'The dedicated Chromium profile is locked and Stage5 Browser cannot safely reattach to its owner.',
+      {
+        recoverable: true,
+        details: {
+          reason: 'profile_locked',
+          ownershipReason: inspection.evidence.classification,
+          profileOwner: inspection.evidence,
+          suggestedAction: inspection.evidence.suggestedAction,
+        },
+      },
+    );
+  }
+
+  private safeLeaseEvidence(
+    inspection: ProfileOwnershipLeaseInspection,
+    applicationName: string,
+  ): Record<string, unknown> {
+    return {
+      classification: inspection.state,
+      ownershipProven: inspection.ownershipProven,
+      expectedApplication: applicationName,
+      ownerWorkerRunning: inspection.ownerWorkerRunning,
+      heartbeat: inspection.heartbeat,
+      browserProcess: inspection.browserProcess,
+      controlMode: inspection.lease?.controlMode ?? null,
+      phase: inspection.lease?.phase ?? null,
+    };
+  }
+
+  private leaseSuggestedAction(
+    inspection: ProfileOwnershipLeaseInspection,
+    applicationName: string,
+  ): string {
+    if (inspection.state === 'busy_other_stage5_session') {
+      return `Another live Stage5 worker owns the dedicated ${applicationName} profile. Continue in that agent session or ask it to call browser_stop; do not retry, terminate the browser, or delete locks.`;
+    }
+    if (inspection.state === 'owned_orphaned' && inspection.lease?.controlMode === 'human_handoff') {
+      return `A private interaction handoff owns the dedicated ${applicationName}. Return to the requesting agent and resume it; if that session is unavailable, ask the user to close only that dedicated application normally. Do not attach, terminate, or delete locks.`;
+    }
+    if (inspection.state === 'invalid') {
+      return `Stage5 found an invalid ownership record for the dedicated ${applicationName} profile. Do not overwrite it, delete browser locks, or kill a process; stop and inspect the profile ownership record before retrying.`;
+    }
+    return `Do not delete profile locks or kill an unverified process. Close only the visibly identified dedicated ${applicationName} normally, wait for it to exit, then call browser_start once.`;
+  }
+
+  private ownershipLeaseError(
+    inspection: ProfileOwnershipLeaseInspection,
+    identity: BrowserLaunchIdentity,
+  ): Stage5BrowserError {
+    const handoffPending = inspection.state === 'owned_orphaned'
+      && inspection.lease?.controlMode === 'human_handoff';
+    const suggestedAction = this.leaseSuggestedAction(inspection, identity.applicationName);
+    return new Stage5BrowserError(
+      handoffPending ? 'AUTH_HANDOFF_REQUIRED' : 'BROWSER_NOT_READY',
+      inspection.state === 'busy_other_stage5_session'
+        ? 'The dedicated browser profile is busy in another live Stage5 session.'
+        : handoffPending
+          ? 'A private interaction handoff survived its Stage5 worker and must not be taken over automatically.'
+          : 'The dedicated browser profile ownership state cannot be recovered automatically.',
+      {
+        recoverable: true,
+        details: {
+          reason: 'profile_locked',
+          ownershipReason: inspection.state,
+          profileOwner: this.safeLeaseEvidence(inspection, identity.applicationName),
+          suggestedAction,
+        },
+      },
+    );
+  }
+
+  private async prepareOwnershipLeaseForStart(
+    profileRoot: string,
+    identity: BrowserLaunchIdentity,
+    resumeOwnedHumanHandoff = false,
+  ): Promise<void> {
+    const inspection = await inspectProfileOwnershipLease(
+      profileRoot,
+      identity,
+      this.ownershipLease.leaseId,
+    );
+    if (inspection.state === 'none') return;
+    if (inspection.state === 'busy_other_stage5_session' || inspection.state === 'invalid') {
+      throw this.ownershipLeaseError(inspection, identity);
+    }
+    if (inspection.state === 'current_owner') {
+      if (
+        inspection.lease?.controlMode === 'native_cdp'
+        && (inspection.ownershipProven || inspection.lease.phase === 'launching')
+      ) return;
+      if (
+        inspection.ownershipProven
+        && resumeOwnedHumanHandoff
+        && inspection.lease?.controlMode === 'human_handoff'
+      ) return;
+      throw this.ownershipLeaseError(inspection, identity);
+    }
+    if (inspection.state === 'owned_orphaned') {
+      if (inspection.lease?.controlMode === 'native_cdp') {
+        const claimed = await this.ownershipLease.takeOverProvenOrphan({
+          profileRoot,
+          identity,
+          controlMode: 'native_cdp',
+          inspection,
+        });
+        if (!claimed) {
+          const competingLease = await inspectProfileOwnershipLease(
+            profileRoot,
+            identity,
+            this.ownershipLease.leaseId,
+          );
+          throw this.ownershipLeaseError(competingLease, identity);
+        }
+        return;
+      }
+      if (inspection.lease?.controlMode === 'human_handoff') {
+        throw this.ownershipLeaseError(inspection, identity);
+      }
+      const terminated = await terminateProvenOrphan(
+        inspection,
+        Math.min(this.config.readinessTimeoutMs, 2_000),
+      );
+      const unlocked = terminated === 'process_exited'
+        && await waitForProfileUnlock(profileRoot, Math.min(this.config.readinessTimeoutMs, 2_000));
+      if (!unlocked) {
+        throw this.ownershipLeaseError(inspection, identity);
+      }
+      if (inspection.lease !== null) {
+        await removeProfileOwnershipLease(profileRoot, inspection.lease.leaseId);
+      }
+      return;
+    }
+    if (inspection.state === 'abandoned' && await ownershipProfileUnlocked(profileRoot)) {
+      if (inspection.lease !== null) {
+        await removeProfileOwnershipLease(profileRoot, inspection.lease.leaseId);
+      }
+      return;
+    }
+    throw this.ownershipLeaseError(inspection, identity);
+  }
+
+  private async claimNativeControlLeaseIfNeeded(
+    profileRoot: string,
+    identity: BrowserLaunchIdentity,
+    resumeOwnedHumanHandoff = false,
+  ): Promise<void> {
+    const inspection = await inspectProfileOwnershipLease(
+      profileRoot,
+      identity,
+      this.ownershipLease.leaseId,
+    );
+    if (
+      inspection.state === 'current_owner'
+      && inspection.lease?.controlMode === 'native_cdp'
+      && (inspection.ownershipProven || inspection.lease.phase === 'launching')
+    ) {
+      return;
+    }
+    if (
+      resumeOwnedHumanHandoff
+      && inspection.state === 'current_owner'
+      && inspection.ownershipProven
+      && inspection.lease?.controlMode === 'human_handoff'
+    ) {
+      return;
+    }
+    if (inspection.state !== 'none') {
+      throw this.ownershipLeaseError(inspection, identity);
+    }
+    const claimed = await this.ownershipLease.claim({
+      profileRoot,
+      identity,
+      controlMode: 'native_cdp',
+    });
+    if (claimed) return;
+    const competingLease = await inspectProfileOwnershipLease(
+      profileRoot,
+      identity,
+      this.ownershipLease.leaseId,
+    );
+    throw this.ownershipLeaseError(competingLease, identity);
+  }
+
+  private async profileOwnerEvidence(
+    profile: ProfileDiagnostics,
+    launchIdentity: BrowserLaunchIdentity | null,
+    humanBootstrapRunning: boolean,
+  ): Promise<ProfileOwnerEvidence> {
+    let identity = launchIdentity;
+    if (identity === null) {
+      try {
+        const target = await resolveBrowserLaunchTarget(this.selectionFor(this.selectedBrowser));
+        identity = launchIdentityForTarget(target, profile.path);
+      } catch {
+        if (profile.lockFiles.length === 0) return emptyProfileOwnerEvidence();
+        return {
+          classification: 'unknown_lock_owner',
+          ownership: 'not_proven',
+          lockOwnerProcess: 'not_running_or_unreadable',
+          expectedApplication: null,
+          applicationIdentity: 'unverified',
+          loopbackControl: 'unverified',
+          authenticationHandoff: 'unverified',
+          recovery: 'do_not_modify_locks',
+          suggestedAction: 'Do not retry, delete profile locks, or kill an unknown owner. Resolve the selected browser executable first, then run browser_diagnostics again.',
+        };
+      }
+    }
+    const leaseInspection = await inspectProfileOwnershipLease(
+      profile.path,
+      identity,
+      this.ownershipLease.leaseId,
+    );
+    if (leaseInspection.state !== 'none') {
+      const controlMode = leaseInspection.lease?.controlMode ?? null;
+      const humanHandoff = controlMode === 'human_handoff';
+      const classification = leaseInspection.state === 'current_owner'
+        ? humanHandoff ? 'authentication_handoff_pending' : 'owned_active'
+        : leaseInspection.state === 'busy_other_stage5_session'
+          ? 'busy_other_stage5_session'
+          : leaseInspection.state === 'owned_orphaned'
+            ? 'owned_orphaned'
+            : 'external_owner';
+      const recovery = leaseInspection.state === 'owned_orphaned'
+        ? humanHandoff
+          ? 'return_to_authentication_handoff'
+          : controlMode === 'native_cdp'
+            ? 'automatic_reattach'
+            : 'automatic_owned_restart'
+        : leaseInspection.state === 'current_owner' && !humanHandoff
+          ? 'none'
+          : 'do_not_modify_locks';
+      return {
+        classification,
+        ownership: leaseInspection.ownershipProven ? 'proven' : 'not_proven',
+        lockOwnerProcess: leaseInspection.browserProcess === 'matched'
+          ? 'running'
+          : leaseInspection.browserProcess === 'not_running'
+            ? 'not_running_or_unreadable'
+            : 'not_running_or_unreadable',
+        expectedApplication: identity.applicationName,
+        applicationIdentity: leaseInspection.browserProcess === 'matched'
+          ? 'matched'
+          : leaseInspection.browserProcess === 'mismatched'
+            ? 'mismatched'
+            : 'unverified',
+        loopbackControl: controlMode === 'native_cdp' ? 'available' : 'unverified',
+        authenticationHandoff: humanHandoff ? 'present' : 'absent',
+        recovery,
+        suggestedAction: leaseInspection.state === 'owned_orphaned' && !humanHandoff
+          ? controlMode === 'native_cdp'
+            ? 'Call browser_start once; Stage5 will verify and reattach to the exact orphaned native process automatically. Do not close the browser or delete locks.'
+            : 'Call browser_start once; Stage5 will terminate only the exact fingerprint-matched orphan, wait for profile unlock, and relaunch it. Do not close the browser or delete locks manually.'
+          : this.leaseSuggestedAction(leaseInspection, identity.applicationName),
+        lease: {
+          state: leaseInspection.state,
+          ownerWorkerRunning: leaseInspection.ownerWorkerRunning,
+          heartbeat: leaseInspection.heartbeat,
+          browserProcess: leaseInspection.browserProcess,
+          controlMode,
+          phase: leaseInspection.lease?.phase ?? null,
+        },
+      };
+    }
+    if (profile.lockFiles.length === 0) {
+      return emptyProfileOwnerEvidence();
+    }
+    if (humanBootstrapRunning) {
+      return controlledProfileOwnerEvidence(identity.applicationName, true);
+    }
+    if (this.usableContext() !== undefined) {
+      return controlledProfileOwnerEvidence(identity.applicationName);
+    }
+    if (BROWSER_ENGINES[this.selectedBrowser] !== 'chromium') {
+      return {
+        classification: 'external_owner',
+        ownership: 'not_proven',
+        lockOwnerProcess: 'not_running_or_unreadable',
+        expectedApplication: identity.applicationName,
+        applicationIdentity: 'unverified',
+        loopbackControl: 'unverified',
+        authenticationHandoff: 'unverified',
+        recovery: 'do_not_modify_locks',
+        suggestedAction: 'Do not delete profile locks or force-close an unknown process. Ask the user to close only the visibly identified dedicated Stage5 browser normally, wait for it to exit, then call browser_start once.',
+      };
+    }
+    return (await this.profileOwnerInspector(profile.path, identity)).evidence;
+  }
+
   private async attachToNativeChromium(
     record: NativeControlRecord,
     launchIdentity: BrowserLaunchIdentity,
@@ -2265,7 +3348,50 @@ export class BrowserController {
           },
         );
       }
-      return status;
+      const durableRecord = { ...record, state: 'controlled' as const };
+      const profileRoot = launchIdentity.profile.userDataDir;
+      if (profileRoot === null) {
+        throw new Stage5BrowserError(
+          'BROWSER_NOT_READY',
+          'The native Chromium control record has no configured user-data directory.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'profile_locked',
+              suggestedAction: 'Stop before attaching and inspect the configured Chromium profile binding.',
+            },
+          },
+        );
+      }
+      await writeNativeControlRecord(profileRoot, durableRecord);
+      this.nativeControlRecord = durableRecord;
+      const browserProcess = await observeLaunchedBrowserProcess(
+        launchIdentity,
+        new Set<number>(),
+        Math.min(this.config.readinessTimeoutMs, 1_000),
+      );
+      if (browserProcess === null || browserProcess.processId !== durableRecord.processId) {
+        throw new Stage5BrowserError(
+          'BROWSER_NOT_READY',
+          'The native control endpoint connected, but its exact process identity could not be bound to the durable Stage5 ownership lease.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'ownership_unverified',
+              suggestedAction: 'Leave the dedicated browser open and call browser_diagnostics. Do not delete locks or attach to another process.',
+            },
+          },
+        );
+      }
+      await this.ownershipLease.establish({
+        profileRoot,
+        identity: launchIdentity,
+        browserProcess,
+        controlMode: 'native_cdp',
+        phase: 'owned_active',
+      });
+      this.controlledBrowserProcess = browserProcess;
+      return this.status();
     } catch (error) {
       await browser.close().catch(() => undefined);
       if (this.nativeAttachedBrowser === browser) {
@@ -2392,6 +3518,7 @@ export class BrowserController {
 
     context.on('close', () => {
       if (this.context === context) {
+        void this.ownershipLease.updatePhase('process_exited');
         this.context = undefined;
         this.activePage = undefined;
         this.framesById.clear();
@@ -2403,6 +3530,7 @@ export class BrowserController {
         this.runtimeProfileObservation = null;
         this.controlledStartBoundary = null;
         this.controlledBrowserProcessId = null;
+        this.controlledBrowserProcess = null;
         if (this.state !== 'recovering') {
           this.state = 'stopped';
         }
@@ -2446,7 +3574,7 @@ export class BrowserController {
   }
 
   private async ensureContext(): Promise<BrowserContext> {
-    if (this.authenticationHandoff?.state === 'awaiting_user') {
+    if (this.pendingHandoffRelease !== null || this.authenticationHandoff?.state === 'awaiting_user') {
       throw this.humanBootstrapInProgressError();
     }
     const context = this.usableContext();
@@ -3911,12 +5039,14 @@ export class BrowserController {
     const context = this.usableContext();
     const connected = context !== undefined;
     const handoff = this.authenticationHandoff;
+    const pendingRelease = this.pendingHandoffRelease;
     const targetPageIndex = page === undefined || context === undefined
       ? -1
       : context.pages().filter((candidate) => !candidate.isClosed()).indexOf(page);
-    const state = handoff?.state ?? (connected ? 'profile_ready' : 'browser_stopped');
+    const state = handoff?.state ?? pendingRelease?.state ?? (connected ? 'profile_ready' : 'browser_stopped');
     const processState = handoff?.session.state() ?? null;
     const profileBinding = handoff?.launchIdentity.profile
+      ?? pendingRelease?.launchIdentity.profile
       ?? this.controlledLaunchIdentity?.profile
       ?? profileBindingForBrowser(
         profileDirForBrowser(this.config, this.selectedBrowser),
@@ -3929,14 +5059,16 @@ export class BrowserController {
       authenticated: 'unknown',
       persistentProfile: true,
       profileBinding,
-      targetOrigin: handoff?.targetOrigin ?? (page === undefined ? null : this.urlOrigin(page.url())),
-      requestedAt: handoff?.requestedAt ?? null,
+      targetOrigin: handoff?.targetOrigin
+        ?? pendingRelease?.targetOrigin
+        ?? (page === undefined ? null : this.urlOrigin(page.url())),
+      requestedAt: handoff?.requestedAt ?? pendingRelease?.requestedAt ?? null,
       resumedAt: handoff?.resumedAt ?? null,
       targetPageIndex: targetPageIndex < 0 ? null : targetPageIndex,
       targetPageAvailable: targetPageIndex >= 0,
       page: page === undefined ? null : await this.pageSummary(page),
       verificationRequired: state === 'ready_for_agent_verification',
-      controlMode: handoff?.state === 'awaiting_user'
+      controlMode: handoff?.state === 'awaiting_user' || pendingRelease !== null
         ? 'human_bootstrap'
         : connected
           ? 'playwright'
@@ -3962,17 +5094,23 @@ export class BrowserController {
   }
 
   private humanBootstrapInProgressError(
-    message = 'Private human authentication is in progress in the dedicated Stage5 browser window.',
+    message = 'A private human interaction is in progress for the dedicated Stage5 browser profile.',
   ): Stage5BrowserError {
-    const applicationName = this.authenticationHandoff?.launchIdentity.applicationName ?? 'the dedicated browser';
+    const applicationName = this.authenticationHandoff?.launchIdentity.applicationName
+      ?? this.pendingHandoffRelease?.launchIdentity.applicationName
+      ?? 'the dedicated browser';
     const continuousAttachment = this.authenticationHandoff?.session.controlChannel?.()?.kind === 'chromium_cdp';
+    const releasePending = this.pendingHandoffRelease !== null;
     return new Stage5BrowserError('AUTH_HANDOFF_REQUIRED', message, {
       recoverable: true,
       details: {
-        reason: 'human_authentication_in_progress',
-        suggestedAction: continuousAttachment
+        reason: releasePending ? 'handoff_release_pending' : 'human_authentication_in_progress',
+        phase: this.pendingHandoffRelease?.state ?? this.authenticationHandoff?.state ?? null,
+        suggestedAction: releasePending
+          ? 'Call browser_request_login_handoff once more to resume the retained close → process exit → profile unlock phase. Do not relaunch the browser, switch backends, or delete profile locks.'
+          : continuousAttachment
           ? `Finish authentication in ${applicationName}, leave that exact application open, then call browser_resume_after_login. Stage5 Browser will attach only after that explicit call.`
-          : `Finish authentication and quit ${applicationName} normally so its process exits, then call browser_resume_after_login. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Stage5 Browser will not control or force-close it.`,
+          : `Finish the private interaction and quit ${applicationName} normally so its process exits, then call browser_resume_after_login. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Stage5 Browser will not control or force-close it.`,
       },
     });
   }
@@ -3990,6 +5128,7 @@ export class BrowserController {
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
     this.controlledBrowserProcessId = null;
+    this.controlledBrowserProcess = null;
     this.state = 'stopped';
   }
 
@@ -4104,14 +5243,23 @@ export class BrowserController {
     }
   }
 
-  private async pageSummary(page: Page, suppliedIndex?: number): Promise<PageSummary> {
+  private async pageSummary(
+    page: Page,
+    suppliedIndex?: number,
+    timeoutMs = 1_000,
+  ): Promise<PageSummary> {
     const context = this.usableContext();
     const pages = context?.pages().filter((candidate) => !candidate.isClosed()) ?? [];
     const index = suppliedIndex ?? Math.max(0, pages.indexOf(page));
-    const title = await boundedValue(page.title(), 1_000, '<unavailable>');
+    const deadlineAt = Date.now() + Math.max(1, timeoutMs);
+    const title = await boundedValue(
+      page.title(),
+      Math.max(1, remainingUntil(deadlineAt)),
+      '<unavailable>',
+    );
     const readyState = await boundedValue(
       page.evaluate(() => document.readyState),
-      1_000,
+      Math.max(1, remainingUntil(deadlineAt)),
       'unknown',
     );
 
@@ -4133,10 +5281,33 @@ export class BrowserController {
   ): Promise<SafeTargetState | null> {
     const startedAt = Date.now();
     const deadline = startedAt + Math.min(timeoutMs, CLICK_ROLE_RESOLUTION_TIMEOUT_MS);
-    let count = await locator.count();
+    const countWithinDeadline = (): Promise<number> => boundedValue(
+      locator.count(),
+      Math.max(1, deadline - Date.now()),
+      -1,
+    );
+    let count = await countWithinDeadline();
     while (count === 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())));
-      count = await locator.count();
+      count = await countWithinDeadline();
+    }
+    if (count === -1) {
+      this.pageDiagnostics.recordAction(
+        page,
+        this.targetingFailureDiagnostic(action, page, 'target_missing'),
+      );
+      throw new Stage5BrowserError('OPERATION_FAILED', 'Role resolution exceeded the shared click deadline before any input was dispatched.', {
+        recoverable: true,
+        details: {
+          role,
+          name,
+          reason: 'role_resolution_deadline_expired',
+          actionDispatched: false,
+          clickDispatched: false,
+          resolutionWaitMs: Date.now() - startedAt,
+          suggestedAction: 'Take one fresh semantic snapshot; Stage5 Browser confirmed that no click was dispatched.',
+        },
+      });
     }
     if (count === 0) {
       this.pageDiagnostics.recordAction(
@@ -4164,7 +5335,11 @@ export class BrowserController {
         details: { role, name, matchCount: count },
       });
     }
-    return inspectTargetState(locator);
+    return boundedValue(
+      inspectTargetState(locator),
+      Math.max(1, timeoutMs - (Date.now() - startedAt)),
+      null,
+    );
   }
 
   private screenshotArtifactClassification(data: Buffer): 'contentful' | 'possibly_uniform' {
@@ -4188,10 +5363,14 @@ export class BrowserController {
     frame: Frame,
     locator: Locator,
     startedAt: string,
-    timeoutMs: number,
+    actionDeadlineAt: number,
   ): Promise<PreparedObservedClickTarget> {
     let preparedLocator = locator;
-    let handle = await locator.elementHandle();
+    let handle = await boundedValue(
+      locator.elementHandle(),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      null,
+    );
     if (handle === null) {
       this.failClickBeforeDispatch(
         page,
@@ -4205,7 +5384,11 @@ export class BrowserController {
       );
     }
 
-    let targetState = await inspectTargetState(handle);
+    let targetState = await boundedValue(
+      inspectTargetState(handle),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      null,
+    );
     if (targetState === null) {
       await handle.dispose().catch(() => undefined);
       this.failClickBeforeDispatch(
@@ -4222,12 +5405,15 @@ export class BrowserController {
 
     const identity = targetState.inViewport
       ? null
-      : await this.observeClickTargetIdentity(handle);
-    const preparationBudgetMs = Math.min(
-      CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS,
-      Math.max(100, timeoutMs <= 1_000 ? Math.floor(timeoutMs / 2) : timeoutMs - 1_000),
+      : await boundedValue(
+        this.observeClickTargetIdentity(handle),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      );
+    const preparationDeadline = Math.min(
+      actionDeadlineAt,
+      Date.now() + CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS,
     );
-    const preparationDeadline = Date.now() + preparationBudgetMs;
 
     for (
       let step = 0;
@@ -4236,7 +5422,11 @@ export class BrowserController {
         Date.now() < preparationDeadline;
       step += 1
     ) {
-      const movement = await this.incrementalScrollTowardClickTarget(handle);
+      const movement = await boundedValue(
+        this.incrementalScrollTowardClickTarget(handle),
+        Math.max(1, remainingUntil(preparationDeadline)),
+        null,
+      );
       if (movement === null) {
         const rebound = await this.waitForVirtualizedClickTarget(
           frame,
@@ -4260,7 +5450,11 @@ export class BrowserController {
         await page.waitForTimeout(Math.min(CLICK_REF_INCREMENTAL_SETTLE_MS, remaining));
       }
       const priorTargetState = targetState;
-      targetState = await inspectTargetState(handle);
+      targetState = await boundedValue(
+        inspectTargetState(handle),
+        Math.max(1, remainingUntil(preparationDeadline)),
+        null,
+      );
       if (targetState === null) {
         const rebound = await this.waitForVirtualizedClickTarget(
           frame,
@@ -4275,7 +5469,11 @@ export class BrowserController {
         await handle.dispose().catch(() => undefined);
         handle = rebound.handle;
         preparedLocator = rebound.locator;
-        targetState = await inspectTargetState(handle);
+        targetState = await boundedValue(
+          inspectTargetState(handle),
+          Math.max(1, remainingUntil(preparationDeadline)),
+          null,
+        );
         if (targetState === null) {
           await handle.dispose().catch(() => undefined);
           this.failClickBeforeDispatch(
@@ -4292,7 +5490,11 @@ export class BrowserController {
       }
     }
 
-    targetState = await inspectTargetState(handle);
+    targetState = await boundedValue(
+      inspectTargetState(handle),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      null,
+    );
     if (targetState === null) {
       await handle.dispose().catch(() => undefined);
       this.failClickBeforeDispatch(
@@ -4332,22 +5534,36 @@ export class BrowserController {
     page: Page,
     preparedTarget: PreparedObservedClickTarget,
     startedAt: string,
-    timeoutMs: number,
-  ): Promise<SanitizedClickDispatchEvidence | null> {
-    const dispatchStartedAt = Date.now();
-    const probe = await this.installExactClickDispatchProbe(
-      preparedTarget.handle,
-      timeoutMs + CLICK_REF_DISPATCH_PROBE_GRACE_MS,
+    actionDeadlineAt: number,
+    finalizationDeadlineAt: number,
+    action: SanitizedActionDiagnostic['action'],
+  ): Promise<SanitizedClickDispatchEvidence> {
+    const targetStateWithinDeadline = (fallback: SafeTargetState | null): Promise<SafeTargetState | null> =>
+      boundedValue(
+        inspectTargetState(preparedTarget.handle),
+        Math.max(1, remainingUntil(finalizationDeadlineAt)),
+        fallback,
+      );
+    const probe = await boundedValue(
+      this.installExactClickDispatchProbe(
+        page,
+        preparedTarget.handle,
+        remainingUntil(finalizationDeadlineAt) + CLICK_REF_DISPATCH_PROBE_GRACE_MS,
+      ),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      null,
     );
     if (probe === null) {
       this.failClickBeforeDispatch(
         page,
         startedAt,
-        await inspectTargetState(preparedTarget.handle) ?? preparedTarget.targetState,
+        await targetStateWithinDeadline(preparedTarget.targetState),
         'unknown',
         'dispatch_probe_install_failed',
         'Stage5 Browser could not install the exact-target dispatch guard before clicking.',
         'Take one fresh semantic snapshot; Stage5 Browser did not dispatch the click.',
+        'OPERATION_FAILED',
+        action,
       );
     }
 
@@ -4371,10 +5587,26 @@ export class BrowserController {
         return finalEvidence;
       }
       try {
-        const raw = await probe.evaluate((controller, shouldFinish) =>
-          shouldFinish ? controller.finish() : controller.snapshot(), finish);
+        const raw = await boundedValue(
+          probe.controller.evaluate((controller, shouldFinish) =>
+            shouldFinish ? controller.finish() : controller.snapshot(), finish),
+          Math.max(1, remainingUntil(finish ? finalizationDeadlineAt : actionDeadlineAt)),
+          null,
+        );
+        if (raw === null) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        const external = this.externalClickDispatchObservations.get(probe.token)?.evidence ?? null;
+        const retained = mergeRawClickDispatchEvidence(raw, external);
+        if (retained === null) {
+          if (finish) {
+            probeFinished = true;
+            finalEvidence = null;
+          }
+          return null;
+        }
         const evidence: SanitizedClickDispatchEvidence = {
-          ...raw,
+          ...retained,
           forcedFallbackUsed,
           pageMouseFallbackUsed,
           pageActivation,
@@ -4392,32 +5624,53 @@ export class BrowserController {
         return null;
       } finally {
         if (finish) {
-          await probe.dispose().catch(() => undefined);
+          this.externalClickDispatchObservations.delete(probe.token);
+          await probe.controller.dispose().catch(() => undefined);
         }
       }
     };
 
     try {
-      pageActivation = await this.activateSelectedPageForInput(
-        page,
-        pageActivation.attemptCount + 1,
-        pageActivation.nativeWindow,
+      pageActivation = await boundedValue(
+        this.activateSelectedPageForInput(
+          page,
+          pageActivation.attemptCount + 1,
+          pageActivation.nativeWindow,
+        ),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        {
+          ...pageActivation,
+          attemptCount: pageActivation.attemptCount + 1,
+          bringToFrontAttempted: true,
+        },
       );
       if (!this.pageIsActivatedForInput(pageActivation)) {
         const evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
           page,
           new Error('The controller-selected page did not become the visible input target.'),
-          await inspectTargetState(preparedTarget.handle) ?? preparedTarget.targetState,
+          await targetStateWithinDeadline(preparedTarget.targetState),
           startedAt,
           evidence,
+          action,
+        );
+      }
+      if (remainingUntil(actionDeadlineAt) <= 0) {
+        const evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The click preparation deadline expired before input dispatch.'),
+          await targetStateWithinDeadline(preparedTarget.targetState),
+          startedAt,
+          evidence,
+          action,
         );
       }
       const normalAttemptTimeoutMs = Math.max(
         1,
         Math.min(
           CLICK_REF_NORMAL_DISPATCH_TIMEOUT_MS,
-          Math.max(1, Math.floor(timeoutMs * 0.35)),
+          Math.max(1, Math.floor(remainingUntil(actionDeadlineAt) * 0.35)),
         ),
       );
       let normalError: unknown = null;
@@ -4433,13 +5686,30 @@ export class BrowserController {
       let evidence = await readProbe(false);
       if (normalError === null) {
         evidence = await readProbe(true);
-        return evidence;
+        if (evidence?.clickOnTarget === true) return evidence;
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The exact-target click returned without a confirmed trusted target click event.'),
+          await targetStateWithinDeadline(preparedTarget.targetState),
+          startedAt,
+          evidence,
+          action,
+        );
       }
       if (evidence?.clickOnTarget === true) {
-        return await readProbe(true);
+        const completedEvidence = await readProbe(true);
+        if (completedEvidence !== null) return completedEvidence;
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The target click was observed, but final dispatch evidence could not be retained.'),
+          await targetStateWithinDeadline(preparedTarget.targetState),
+          startedAt,
+          null,
+          action,
+        );
       }
 
-      const targetState = await inspectTargetState(preparedTarget.handle);
+      const targetState = await targetStateWithinDeadline(null);
       if (!this.canUseForcedClickFallback(evidence, targetState, normalError)) {
         evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
@@ -4448,22 +5718,43 @@ export class BrowserController {
           targetState ?? preparedTarget.targetState,
           startedAt,
           evidence,
+          action,
+        );
+      }
+      if (remainingUntil(actionDeadlineAt) <= 0) {
+        evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          normalError,
+          targetState ?? preparedTarget.targetState,
+          startedAt,
+          evidence,
+          action,
         );
       }
 
-      pageActivation = await this.activateSelectedPageForInput(
-        page,
-        pageActivation.attemptCount + 1,
-        pageActivation.nativeWindow,
+      pageActivation = await boundedValue(
+        this.activateSelectedPageForInput(
+          page,
+          pageActivation.attemptCount + 1,
+          pageActivation.nativeWindow,
+        ),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        {
+          ...pageActivation,
+          attemptCount: pageActivation.attemptCount + 1,
+          bringToFrontAttempted: true,
+        },
       );
       if (!this.pageIsActivatedForInput(pageActivation)) {
         evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
           page,
           new Error('The controller-selected page lost visible activation before guarded fallback input.'),
-          await inspectTargetState(preparedTarget.handle) ?? targetState ?? preparedTarget.targetState,
+          await targetStateWithinDeadline(targetState ?? preparedTarget.targetState),
           startedAt,
           evidence,
+          action,
         );
       }
       forcedFallbackUsed = true;
@@ -4471,7 +5762,7 @@ export class BrowserController {
         1,
         Math.min(
           CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS,
-          timeoutMs - (Date.now() - dispatchStartedAt),
+          remainingUntil(actionDeadlineAt),
         ),
       );
       let forcedError: unknown = null;
@@ -4487,14 +5778,30 @@ export class BrowserController {
 
       evidence = await readProbe(false);
       if (evidence?.clickOnTarget === true) {
-        return await readProbe(true);
+        const completedEvidence = await readProbe(true);
+        if (completedEvidence !== null) return completedEvidence;
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The guarded fallback click was observed, but final dispatch evidence could not be retained.'),
+          await targetStateWithinDeadline(preparedTarget.targetState),
+          startedAt,
+          null,
+          action,
+        );
       }
       if (forcedError === null && evidence === null) {
-        await readProbe(true);
-        return null;
+        const completedEvidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The guarded fallback returned without definite dispatch evidence.'),
+          await targetStateWithinDeadline(preparedTarget.targetState),
+          startedAt,
+          completedEvidence,
+          action,
+        );
       }
 
-      const directTargetState = await inspectTargetState(preparedTarget.handle);
+      const directTargetState = await targetStateWithinDeadline(null);
       if (!this.canUsePageMouseFallback(evidence, directTargetState)) {
         evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
@@ -4503,36 +5810,68 @@ export class BrowserController {
           directTargetState ?? targetState ?? preparedTarget.targetState,
           startedAt,
           evidence,
+          action,
+        );
+      }
+      if (remainingUntil(actionDeadlineAt) <= 0) {
+        evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          forcedError ?? new Error('The guarded fallback deadline expired before page-level input.'),
+          directTargetState ?? targetState ?? preparedTarget.targetState,
+          startedAt,
+          evidence,
+          action,
         );
       }
 
-      pageActivation = await this.activateSelectedPageForInput(
-        page,
-        pageActivation.attemptCount + 1,
-        pageActivation.nativeWindow,
+      pageActivation = await boundedValue(
+        this.activateSelectedPageForInput(
+          page,
+          pageActivation.attemptCount + 1,
+          pageActivation.nativeWindow,
+        ),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        {
+          ...pageActivation,
+          attemptCount: pageActivation.attemptCount + 1,
+          bringToFrontAttempted: true,
+        },
       );
       const point = this.pageIsActivatedForInput(pageActivation)
-        ? await this.freshMainFrameTargetPoint(page, preparedTarget.handle)
+        ? await boundedValue(
+          this.freshMainFrameTargetPoint(page, preparedTarget.handle),
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+          null,
+        )
         : null;
       if (point === null) {
         evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
           page,
           new Error('The controller-selected page or exact main-frame target was not ready for guarded page input.'),
-          await inspectTargetState(preparedTarget.handle) ?? directTargetState ?? preparedTarget.targetState,
+          await targetStateWithinDeadline(directTargetState ?? preparedTarget.targetState),
           startedAt,
           evidence,
+          action,
         );
       }
 
       pageMouseFallbackUsed = true;
       let pageMouseError: unknown = null;
       try {
-        await page.mouse.click(point.x, point.y, {
-          button: 'left',
-          clickCount: 1,
-          delay: 0,
-        });
+        const completed = await boundedValue(
+          page.mouse.click(point.x, point.y, {
+            button: 'left',
+            clickCount: 1,
+            delay: 0,
+          }).then(() => true),
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+          false,
+        );
+        if (!completed) {
+          pageMouseError = new Error('Page-level input exceeded the action deadline.');
+        }
       } catch (error) {
         pageMouseError = error;
       }
@@ -4542,14 +5881,22 @@ export class BrowserController {
         return evidence;
       }
       if (pageMouseError === null && evidence === null) {
-        return null;
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('Page-level input returned without definite dispatch evidence.'),
+          await targetStateWithinDeadline(preparedTarget.targetState),
+          startedAt,
+          null,
+          action,
+        );
       }
       return this.throwObservedClickDispatchFailure(
         page,
         pageMouseError ?? new Error('The guarded page-level fallback did not emit a target click event.'),
-        await inspectTargetState(preparedTarget.handle) ?? directTargetState ?? targetState ?? preparedTarget.targetState,
+        await targetStateWithinDeadline(directTargetState ?? targetState ?? preparedTarget.targetState),
         startedAt,
         evidence,
+        action,
       );
     } finally {
       if (!probeFinished) {
@@ -4859,11 +6206,28 @@ export class BrowserController {
   }
 
   private async installExactClickDispatchProbe(
+    page: Page,
     handle: ElementHandle<HTMLElement | SVGElement>,
     lifetimeMs: number,
-  ): Promise<JSHandle<ClickDispatchProbeController> | null> {
+  ): Promise<InstalledClickDispatchProbe | null> {
+    const token = randomUUID();
     try {
-      return await handle.evaluateHandle((element, boundedLifetimeMs) => {
+      if (!this.clickDispatchBindings.has(page)) {
+        await page.exposeBinding(
+          this.clickDispatchBindingName,
+          (source, observedToken: unknown, observedEvidence: unknown) => {
+            if (typeof observedToken !== 'string') return;
+            const retained = this.externalClickDispatchObservations.get(observedToken);
+            if (retained === undefined || source.page !== retained.page) return;
+            const evidence = safeRawClickDispatchEvidence(observedEvidence);
+            if (evidence !== null) retained.evidence = evidence;
+          },
+        );
+        this.clickDispatchBindings.add(page);
+      }
+      this.externalClickDispatchObservations.set(token, { page, evidence: null });
+      const controller = await handle.evaluateHandle((element, input) => {
+        const { bindingName, boundedLifetimeMs, observationToken } = input;
         const initialRect = element.getBoundingClientRect();
         const state: RawClickDispatchEvidence = {
           strategy: 'guarded_exact_handle',
@@ -4908,6 +6272,18 @@ export class BrowserController {
           if (eventType === 'mouseup') state.mouseUpOnTarget = true;
           if (eventType === 'click') state.clickOnTarget = true;
         };
+        const snapshot = (): RawClickDispatchEvidence => ({
+          ...state,
+          targetConnectedAfter: element.isConnected,
+        });
+        const report = (): void => {
+          const binding = (globalThis as unknown as Record<string, unknown>)[bindingName];
+          if (typeof binding !== 'function') return;
+          void (binding as (token: string, evidence: RawClickDispatchEvidence) => Promise<unknown>)(
+            observationToken,
+            snapshot(),
+          ).catch(() => undefined);
+        };
         const listener = (event: Event): void => {
           if (!event.isTrusted) return;
           const eventType = event.type as typeof eventTypes[number];
@@ -4925,17 +6301,20 @@ export class BrowserController {
           if (!exactTarget) {
             state.misdirectedEventBlocked = true;
             block(event);
+            report();
             return;
           }
           if (!targetIsActionable()) {
             state.targetStateChangeBlocked = true;
             block(event);
+            report();
             return;
           }
           recordExactEvent(eventType);
           if (eventType === 'click') {
             cleanup();
           }
+          report();
         };
         const cleanup = (): void => {
           if (cleaned) return;
@@ -4943,14 +6322,11 @@ export class BrowserController {
           if (expirationTimer !== null) window.clearTimeout(expirationTimer);
           eventTypes.forEach((eventType) => window.removeEventListener(eventType, listener, true));
         };
-        const snapshot = (): RawClickDispatchEvidence => ({
-          ...state,
-          targetConnectedAfter: element.isConnected,
-        });
         eventTypes.forEach((eventType) => window.addEventListener(eventType, listener, true));
         expirationTimer = window.setTimeout(() => {
           state.guardExpired = true;
           cleanup();
+          report();
         }, Math.max(1, boundedLifetimeMs));
         return {
           snapshot,
@@ -4959,8 +6335,14 @@ export class BrowserController {
             return snapshot();
           },
         };
-      }, lifetimeMs);
+      }, {
+        bindingName: this.clickDispatchBindingName,
+        boundedLifetimeMs: lifetimeMs,
+        observationToken: token,
+      });
+      return { controller, token };
     } catch {
+      this.externalClickDispatchObservations.delete(token);
       return null;
     }
   }
@@ -5019,6 +6401,7 @@ export class BrowserController {
     targetState: SafeTargetState | null,
     startedAt: string,
     evidence: SanitizedClickDispatchEvidence | null,
+    action: SanitizedActionDiagnostic['action'],
   ): never {
     const diagnostic = this.observedClickDispatchFailureDiagnostic(
       page,
@@ -5026,6 +6409,7 @@ export class BrowserController {
       targetState,
       startedAt,
       evidence,
+      action,
     );
     this.pageDiagnostics.recordAction(page, diagnostic);
     throw this.clickFailureError(diagnostic, error);
@@ -5037,9 +6421,10 @@ export class BrowserController {
     targetState: SafeTargetState | null,
     startedAt: string,
     evidence: SanitizedClickDispatchEvidence | null,
+    action: SanitizedActionDiagnostic['action'],
   ): SanitizedActionDiagnostic {
     const fallback = actionDiagnosticForFailure(
-      'click_by_ref',
+      action,
       page,
       error,
       targetState,
@@ -5484,9 +6869,10 @@ export class BrowserController {
     message: string,
     suggestedAction: string,
     code: 'AMBIGUOUS_TARGET' | 'OPERATION_FAILED' | 'TARGET_NOT_FOUND' = 'OPERATION_FAILED',
+    action: SanitizedActionDiagnostic['action'] = 'click_by_ref',
   ): never {
     const diagnostic: SanitizedActionDiagnostic = {
-      action: 'click_by_ref',
+      action,
       outcome: 'blocked',
       reason: diagnosticReason,
       actionDispatched: false,
@@ -5501,6 +6887,7 @@ export class BrowserController {
       recoverable: true,
       details: {
         reason,
+        actionOutcome: 'blocked',
         actionDispatched: false,
         clickDispatched: false,
         targetState,
