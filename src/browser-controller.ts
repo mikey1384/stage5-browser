@@ -196,6 +196,17 @@ interface ScrollHistory {
   dynamicGrowthObserved: boolean;
 }
 
+interface ScrollContentObservationSurface {
+  handle: ElementHandle<HTMLElement> | null;
+  ownsHandle: boolean;
+}
+
+interface ScrollContentSample extends ScrollContentObservation {
+  semanticLoadingIndicatorCount: number;
+  animationLoadingIndicatorCount: number;
+  animationObservationComplete: boolean;
+}
+
 interface AuthenticationHandoff {
   mode: 'human_bootstrap';
   state: 'awaiting_user' | 'ready_for_agent_verification';
@@ -326,6 +337,7 @@ const CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
 const CLICK_ROLE_RESOLUTION_TIMEOUT_MS = 1_000;
 const CLICK_RESULT_FINALIZATION_RESERVE_MS = 500;
+const SCROLL_RESULT_FINALIZATION_RESERVE_MS = 750;
 const HANDOFF_RESULT_FINALIZATION_RESERVE_MS = 500;
 const SCREENSHOT_RENDER_SETTLE_MS = 100;
 const NATIVE_WINDOW_ACTIVATION_TIMEOUT_MS = 1_000;
@@ -344,6 +356,13 @@ function clickFinalizationReserve(timeoutMs: number): number {
   );
 }
 
+function scrollFinalizationReserve(timeoutMs: number): number {
+  return Math.min(
+    SCROLL_RESULT_FINALIZATION_RESERVE_MS,
+    Math.max(100, Math.floor(timeoutMs * 0.2)),
+  );
+}
+
 function remainingUntil(deadlineAt: number): number {
   return Math.max(0, deadlineAt - Date.now());
 }
@@ -355,6 +374,263 @@ function remainingHandoffWorkBudget(deadlineAt: number): number {
     Math.max(25, Math.floor(remaining * 0.15)),
   );
   return Math.max(0, remaining - reserve);
+}
+
+function observeScrollContentForRoot(rootElement: HTMLElement | null): ScrollContentSample {
+  if (rootElement !== null && !rootElement.isConnected) {
+    throw new Error('The pinned scroll observation root is detached.');
+  }
+  const MAX_ARTICLES = 500;
+  const MAX_LOADERS = 1_000;
+  const MAX_STATUSES = 1_000;
+  const MAX_ANIMATION_CANDIDATES = 5_000;
+  const MAX_TEXT_NODES_PER_ARTICLE = 2_000;
+  const MAX_SEMANTIC_ELEMENTS_PER_ARTICLE = 500;
+  let semanticObservationIncomplete = false;
+  let animationObservationComplete = true;
+  const observationRoot: Document | HTMLElement = rootElement ?? document;
+  const surfaceRect = rootElement === null
+    ? { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 }
+    : rootElement.getBoundingClientRect();
+  const clip = {
+    top: Math.max(0, surfaceRect.top),
+    right: Math.min(window.innerWidth, surfaceRect.right),
+    bottom: Math.min(window.innerHeight, surfaceRect.bottom),
+    left: Math.max(0, surfaceRect.left),
+  };
+  const visible = (candidate: Element): boolean => {
+    const rect = candidate.getBoundingClientRect();
+    const style = getComputedStyle(candidate);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none'
+      && style.visibility !== 'hidden' && style.opacity !== '0'
+      && rect.bottom > clip.top && rect.right > clip.left
+      && rect.top < clip.bottom && rect.left < clip.right;
+  };
+  const withRootMatch = (
+    selector: string,
+    limit: number,
+    evidence: 'semantic' | 'animation' = 'semantic',
+  ): Element[] => {
+    const candidates = observationRoot.querySelectorAll(selector);
+    const rootMatches = rootElement?.matches(selector) === true;
+    if (candidates.length + (rootMatches ? 1 : 0) > limit) {
+      if (evidence === 'semantic') {
+        semanticObservationIncomplete = true;
+      } else {
+        animationObservationComplete = false;
+      }
+    }
+    const matches: Element[] = [];
+    for (let index = 0; index < candidates.length && matches.length < limit; index += 1) {
+      const candidate = candidates.item(index);
+      if (candidate !== null) {
+        matches.push(candidate);
+      }
+    }
+    if (rootMatches) {
+      if (matches.length >= limit) {
+        matches.pop();
+      }
+      matches.unshift(rootElement);
+    }
+    return matches;
+  };
+  const articleCandidates = withRootMatch('article, [role="article"]', MAX_ARTICLES);
+  const articleSet = new Set(articleCandidates);
+  const loaderCandidates = new Set<Element>(withRootMatch(
+    '[aria-busy="true"], [role="progressbar"], progress, [class*="skeleton" i], [class*="placeholder" i], [class*="shimmer" i], [class*="loading" i]',
+    MAX_LOADERS,
+  ));
+  const statusCandidates = withRootMatch('[role="status"]', MAX_STATUSES);
+  const isExcludedBy = (node: Node, excluded: Set<Element>): boolean => {
+    for (const candidate of excluded) {
+      if (candidate === node || candidate.contains(node)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const renderedWithin = (candidate: Element, container: Element): boolean => {
+    let current: Element | null = candidate;
+    while (current !== null) {
+      const style = getComputedStyle(current);
+      if (
+        current.hasAttribute('hidden') ||
+        current.getAttribute('aria-hidden') === 'true' ||
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.visibility === 'collapse' ||
+        style.opacity === '0'
+      ) {
+        return false;
+      }
+      if (current === container) {
+        break;
+      }
+      current = current.parentElement;
+    }
+    if (current !== container) {
+      return false;
+    }
+    const rect = candidate.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const hasSubstantiveContentOutside = (
+    container: Element,
+    excluded: Set<Element>,
+  ): boolean => {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    let textNodesObserved = 0;
+    while (current !== null && textNodesObserved < MAX_TEXT_NODES_PER_ARTICLE) {
+      textNodesObserved += 1;
+      const parent = current.parentElement;
+      let renderedText = false;
+      if (parent !== null && renderedWithin(parent, container)) {
+        const range = document.createRange();
+        range.selectNodeContents(current);
+        const rect = range.getBoundingClientRect();
+        renderedText = rect.width > 0 && rect.height > 0;
+      }
+      if (
+        (current.textContent ?? '').replaceAll(/\s+/g, ' ').trim().length > 0 &&
+        !isExcludedBy(parent ?? current, excluded) &&
+        renderedText
+      ) {
+        return true;
+      }
+      current = walker.nextNode();
+    }
+    if (current !== null) {
+      semanticObservationIncomplete = true;
+    }
+    const semanticCandidates = container.querySelectorAll(
+      'a[href], button, input, select, textarea, img, picture, video, audio, canvas, iframe, [role="button"], [role="link"], [role="heading"], [role="textbox"], [role="img"]',
+    );
+    for (
+      let index = 0;
+      index < semanticCandidates.length && index < MAX_SEMANTIC_ELEMENTS_PER_ARTICLE;
+      index += 1
+    ) {
+      const candidate = semanticCandidates.item(index);
+      if (
+        candidate !== null &&
+        !isExcludedBy(candidate, excluded) &&
+        renderedWithin(candidate, container)
+      ) {
+        return true;
+      }
+    }
+    if (semanticCandidates.length > MAX_SEMANTIC_ELEMENTS_PER_ARTICLE) {
+      semanticObservationIncomplete = true;
+    }
+    return false;
+  };
+
+  const closestObservedArticle = (candidate: Element): Element | null => {
+    const article = candidate.matches('article, [role="article"]')
+      ? candidate
+      : candidate.closest('article, [role="article"]');
+    return article !== null && articleSet.has(article) ? article : null;
+  };
+  const baseLoadersByArticle = new Map<Element, Set<Element>>();
+  for (const loader of loaderCandidates) {
+    const article = closestObservedArticle(loader);
+    if (article === null) continue;
+    const contained = baseLoadersByArticle.get(article) ?? new Set<Element>();
+    contained.add(loader);
+    baseLoadersByArticle.set(article, contained);
+  }
+  const statusesByArticle = new Map<Element, Set<Element>>();
+
+  for (const status of statusCandidates) {
+    const descriptor = [
+      status.getAttribute('aria-label'),
+      status.getAttribute('title'),
+      status.textContent,
+    ].filter((value): value is string => value !== null)
+      .join(' ')
+      .replaceAll(/\s+/g, ' ')
+      .trim()
+      .toLocaleLowerCase();
+    const namedAsLoading = /\b(?:loading|fetching|please\s+wait|waiting)\b/u.test(descriptor);
+    const article = closestObservedArticle(status);
+    if (article === null) {
+      if (namedAsLoading) {
+        loaderCandidates.add(status);
+      }
+      continue;
+    }
+    const statuses = statusesByArticle.get(article) ?? new Set<Element>();
+    statuses.add(status);
+    statusesByArticle.set(article, statuses);
+  }
+  for (const [article, statuses] of statusesByArticle) {
+    const excluded = new Set<Element>([
+      ...(baseLoadersByArticle.get(article) ?? []),
+      ...statuses,
+    ]);
+    if (!hasSubstantiveContentOutside(article, excluded)) {
+      for (const status of statuses) {
+        loaderCandidates.add(status);
+      }
+    }
+  }
+
+  const semanticLoadingIndicatorCount = [...loaderCandidates].filter(visible).length;
+  const animationLoaderCandidates = new Set<Element>();
+  if (semanticLoadingIndicatorCount === 0) {
+    for (const candidate of withRootMatch('*', MAX_ANIMATION_CANDIDATES, 'animation')) {
+      if (!visible(candidate) || (candidate.textContent ?? '').trim().length > 0) {
+        continue;
+      }
+      const style = getComputedStyle(candidate);
+      const rect = candidate.getBoundingClientRect();
+      if (
+        style.animationName !== 'none' &&
+        style.animationDuration !== '0s' &&
+        rect.width >= 8 &&
+        rect.height >= 8
+      ) {
+        loaderCandidates.add(candidate);
+        animationLoaderCandidates.add(candidate);
+      }
+    }
+  }
+  const animationLoadingIndicatorCount = [...animationLoaderCandidates].filter(visible).length;
+  const loadingIndicatorCount = semanticLoadingIndicatorCount + animationLoadingIndicatorCount;
+
+  const loadersByArticle = new Map<Element, Set<Element>>();
+  for (const loader of loaderCandidates) {
+    const article = closestObservedArticle(loader);
+    if (article === null) continue;
+    const contained = loadersByArticle.get(article) ?? new Set<Element>();
+    contained.add(loader);
+    loadersByArticle.set(article, contained);
+  }
+  const articleCount = articleCandidates.filter((article) => {
+    const containedLoaders = loadersByArticle.get(article) ?? new Set<Element>();
+    return hasSubstantiveContentOutside(article, containedLoaders);
+  }).length;
+
+  if (semanticObservationIncomplete) {
+    throw new Error('scroll_content_observation_incomplete');
+  }
+
+  return {
+    articleCount,
+    loadingIndicatorCount,
+    semanticLoadingIndicatorCount,
+    animationLoadingIndicatorCount,
+    animationObservationComplete,
+  };
+}
+
+function publicScrollContentObservation(sample: ScrollContentSample): ScrollContentObservation {
+  return {
+    articleCount: sample.articleCount,
+    loadingIndicatorCount: sample.loadingIndicatorCount,
+  };
 }
 
 function safeRawClickDispatchEvidence(value: unknown): RawClickDispatchEvidence | null {
@@ -1906,34 +2182,115 @@ export class BrowserController {
         },
       );
     }
-    const before = await this.scrollPosition(frame, targetHandle);
-    const contentBefore = await this.scrollContentObservation(frame, targetHandle);
     const startedAt = Date.now();
+    const operationDeadlineAt = startedAt + input.timeoutMs;
+    const actionDeadlineAt = operationDeadlineAt - scrollFinalizationReserve(input.timeoutMs);
     const actionStartedAt = new Date(startedAt).toISOString();
     this.pageDiagnostics.beginAction(page, actionStartedAt);
     if (targetHandle !== null) {
       this.consumeObservedSnapshot(frame, targetHandle);
     }
+    let observationSurface: ScrollContentObservationSurface | null = null;
     let stepsCompleted = 0;
-    let previous = before;
     let contentGrew = false;
     let finalStepMoved = false;
     let finalStepGrew = false;
     let actionDispatched: boolean | 'unknown' = false;
 
+    const activateBeforeScroll = async (attemptCount: number): Promise<void> => {
+      const activationFallback: SanitizedPageActivationEvidence = {
+        attemptCount,
+        controllerSelected: this.preferredPage() === page,
+        bringToFrontAttempted: true,
+        bringToFrontSucceeded: false,
+        visibilityBefore: 'unknown',
+        visibilityAfter: 'unknown',
+        documentFocusedBefore: null,
+        documentFocusedAfter: null,
+        nativeWindow: this.nativeWindowActivationNotRequired(),
+      };
+      const pageActivation = await boundedValue(
+        this.activateSelectedPageForInput(page, attemptCount),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        activationFallback,
+      );
+      if (this.pageIsActivatedForInput(pageActivation)) {
+        return;
+      }
+      const priorScrollDispatched = stepsCompleted > 0 || actionDispatched === true;
+      throw new Stage5BrowserError(
+        'OPERATION_FAILED',
+        'The controller-selected page could not become the visible scroll target.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'page_not_active',
+            actionDispatched: priorScrollDispatched,
+            clickDispatched: null,
+            stepsCompleted,
+            pageActivation,
+            suggestedAction: priorScrollDispatched
+              ? 'Inspect one fresh snapshot before continuing. Earlier scroll steps completed and Stage5 Browser did not replay them.'
+              : 'Explicitly select the intended tab, obtain one fresh snapshot, and scroll only after the renderer can become visible.',
+          },
+        },
+      );
+    };
+
     try {
+      await activateBeforeScroll(1);
+      observationSurface = await this.resolveScrollContentObservationSurface(frame, targetHandle);
+      const before = await this.scrollPosition(frame, targetHandle);
+      let contentBefore = await this.scrollContentObservation(frame, observationSurface);
+      if (contentBefore === null && observationSurface.ownsHandle) {
+        await observationSurface.handle?.dispose().catch(() => undefined);
+        observationSurface = { handle: null, ownsHandle: false };
+        contentBefore = await this.scrollContentObservation(frame, observationSurface);
+      }
+      if (contentBefore === null) {
+        throw new Stage5BrowserError(
+          'OPERATION_FAILED',
+          'The selected scroll observation surface was unavailable before dispatch.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'scroll_observation_surface_unavailable',
+              actionDispatched: false,
+              stepsCompleted: 0,
+              suggestedAction: 'Take one fresh snapshot and select the intended current scroll surface before another attempt.',
+            },
+          },
+        );
+      }
+      let previous = before;
       for (let step = 0; step < input.count; step += 1) {
-        if (Date.now() - startedAt + input.settleMs >= input.timeoutMs) {
+        if (remainingUntil(actionDeadlineAt) <= input.settleMs) {
+          break;
+        }
+        await activateBeforeScroll(step + 2);
+        if (remainingUntil(actionDeadlineAt) <= 0) {
           break;
         }
         actionDispatched = 'unknown';
         await this.performScrollStep(frame, input.direction, input.amount, targetHandle);
         actionDispatched = true;
         stepsCompleted += 1;
-        if (input.settleMs > 0) {
-          await page.waitForTimeout(input.settleMs);
+        const settleBudgetMs = Math.min(input.settleMs, remainingUntil(actionDeadlineAt));
+        if (settleBudgetMs > 0) {
+          await page.waitForTimeout(settleBudgetMs);
         }
-        const current = await this.scrollPosition(frame, targetHandle);
+        const positionBudgetMs = remainingUntil(actionDeadlineAt);
+        if (positionBudgetMs <= 0) {
+          break;
+        }
+        const current = await boundedValue<ScrollPosition | null>(
+          this.scrollPosition(frame, targetHandle),
+          positionBudgetMs,
+          null,
+        );
+        if (current === null) {
+          break;
+        }
         finalStepMoved = previous.x !== current.x || previous.y !== current.y;
         finalStepGrew =
           current.contentHeight > previous.contentHeight ||
@@ -1948,12 +2305,16 @@ export class BrowserController {
       const wait = await this.waitForScrollContent(
         page,
         frame,
-        targetHandle,
+        observationSurface,
         contentBefore,
         input.waitFor,
-        Math.max(0, input.timeoutMs - (Date.now() - startedAt)),
+        remainingUntil(actionDeadlineAt),
       );
-      const after = await this.scrollPosition(frame, targetHandle);
+      const after = await boundedValue(
+        this.scrollPosition(frame, targetHandle),
+        Math.max(1, remainingUntil(operationDeadlineAt)),
+        previous,
+      );
       finalStepMoved ||= previous.x !== after.x || previous.y !== after.y;
       finalStepGrew ||=
         after.contentHeight > previous.contentHeight ||
@@ -1981,7 +2342,11 @@ export class BrowserController {
       }
       const endMarkerObserved = input.endMarker === null
         ? false
-        : await this.visibleExpectationObserved(page, input.endMarker);
+        : await boundedValue(
+          this.visibleExpectationObserved(page, input.endMarker),
+          Math.max(1, remainingUntil(operationDeadlineAt)),
+          false,
+        );
       const waitUnmet = wait.requested && !wait.satisfied;
       const dynamicContentStalled =
         targetBoundaryReached &&
@@ -2005,7 +2370,11 @@ export class BrowserController {
         endState === 'confirmed_by_marker' ||
         endState === 'confirmed_document_start' ||
         endState === 'confirmed_container_start';
-      const nestedScrollContainerCandidateCount = await this.countNestedScrollContainerCandidates(frame);
+      const nestedScrollContainerCandidateCount = await boundedValue(
+        this.countNestedScrollContainerCandidates(frame),
+        Math.max(1, remainingUntil(operationDeadlineAt)),
+        0,
+      );
       const warnings: BrowserCommandOutput<'scroll'>['warnings'] = [];
       if (!moved && !contentGrew) {
         warnings.push({
@@ -2047,7 +2416,7 @@ export class BrowserController {
         this.scrollActionDiagnostic(page, actionStartedAt, actionDispatched, 'succeeded'),
       );
       return {
-        page: await this.pageSummary(page),
+        page: await this.pageSummary(page, undefined, remainingUntil(operationDeadlineAt)),
         frame: this.frameSummary(frame, page),
         target: observedTarget === null
           ? { kind: 'document', ref: null }
@@ -2066,12 +2435,58 @@ export class BrowserController {
         warnings,
       };
     } catch (error) {
+      const pageNotActive = error instanceof Stage5BrowserError &&
+        error.details?.reason === 'page_not_active';
+      const observationSurfaceUnavailable = error instanceof Stage5BrowserError &&
+        error.details?.reason === 'scroll_observation_surface_unavailable';
+      const observationIncomplete = error instanceof Stage5BrowserError &&
+        error.details?.reason === 'scroll_observation_incomplete';
+      const priorScrollDispatched = stepsCompleted > 0 || actionDispatched === true;
+      const knownObservationFailure = observationSurfaceUnavailable || observationIncomplete;
+      const reportedError = knownObservationFailure
+        ? new Stage5BrowserError(
+          'OPERATION_FAILED',
+          error.message,
+          {
+            recoverable: true,
+            details: {
+              ...error.details,
+              actionDispatched: priorScrollDispatched,
+              clickDispatched: null,
+              stepsCompleted,
+              suggestedAction: priorScrollDispatched
+                ? observationSurfaceUnavailable
+                  ? 'Inspect one fresh snapshot before continuing. The completed scroll steps were not replayed, and Stage5 Browser will not compare the detached root with its replacement.'
+                  : 'Inspect one fresh snapshot before continuing. The completed scroll steps were not replayed, and Stage5 Browser will not infer content state from a truncated observation.'
+                : observationSurfaceUnavailable
+                  ? 'Take one fresh snapshot and select the intended current scroll surface before another attempt.'
+                  : 'Use one fresh snapshot to target a smaller observed scroll container; Stage5 Browser will not infer growth or loader disappearance from a truncated sample.',
+            },
+            cause: error,
+          },
+        )
+        : error;
       this.pageDiagnostics.recordAction(
         page,
-        this.scrollActionDiagnostic(page, actionStartedAt, actionDispatched, 'failed'),
+        this.scrollActionDiagnostic(
+          page,
+          actionStartedAt,
+          actionDispatched,
+          (pageNotActive || knownObservationFailure) && actionDispatched === false
+            ? 'blocked'
+            : 'failed',
+          pageNotActive
+            ? 'page_not_active'
+            : observationSurfaceUnavailable
+              ? 'detached'
+              : 'unknown',
+        ),
       );
-      throw error;
+      throw reportedError;
     } finally {
+      if (observationSurface?.ownsHandle === true) {
+        await observationSurface.handle?.dispose().catch(() => undefined);
+      }
       if (targetHandle !== null) {
         await targetHandle.dispose().catch(() => undefined);
       } else {
@@ -4863,55 +5278,47 @@ export class BrowserController {
 
   private async scrollContentObservation(
     frame: Frame,
-    target: ElementHandle<HTMLElement> | null,
-  ): Promise<ScrollContentObservation> {
-    if (target !== null) {
-      return target.evaluate((element) => {
-        const surfaceRect = element.getBoundingClientRect();
-        const clip = {
-          top: Math.max(0, surfaceRect.top),
-          right: Math.min(window.innerWidth, surfaceRect.right),
-          bottom: Math.min(window.innerHeight, surfaceRect.bottom),
-          left: Math.max(0, surfaceRect.left),
-        };
-        const visible = (candidate: Element): boolean => {
-          const rect = candidate.getBoundingClientRect();
-          const style = getComputedStyle(candidate);
-          return rect.width > 0 && rect.height > 0 && style.display !== 'none'
-            && style.visibility !== 'hidden' && style.opacity !== '0'
-            && rect.bottom > clip.top && rect.right > clip.left
-            && rect.top < clip.bottom && rect.left < clip.right;
-        };
-        const articleCount = element.querySelectorAll('article, [role="article"]').length
-          + (element.matches('article, [role="article"]') ? 1 : 0);
-        const known = new Set<Element>(element.querySelectorAll(
-          '[aria-busy="true"], [role="progressbar"], progress, [class*="skeleton" i], [class*="placeholder" i], [class*="shimmer" i], [class*="loading" i]',
-        ));
-        if (element.matches('[aria-busy="true"], [role="progressbar"], progress')) {
-          known.add(element);
+    surface: ScrollContentObservationSurface,
+  ): Promise<ScrollContentSample | null> {
+    try {
+      if (surface.handle !== null) {
+        return await surface.handle.evaluate(observeScrollContentForRoot);
+      }
+      return await frame.evaluate(observeScrollContentForRoot, null);
+    } catch (error) {
+      if (surface.handle !== null) {
+        const stillConnected = await surface.handle.evaluate((element) => element.isConnected)
+          .catch(() => false);
+        if (!stillConnected) {
+          return null;
         }
-        let loadingIndicatorCount = [...known].filter(visible).length;
-        if (loadingIndicatorCount === 0) {
-          for (const candidate of Array.from(element.querySelectorAll('*')).slice(0, 5_000)) {
-            if (!visible(candidate) || (candidate.textContent ?? '').trim().length > 0) {
-              continue;
-            }
-            const style = getComputedStyle(candidate);
-            const rect = candidate.getBoundingClientRect();
-            if (
-              style.animationName !== 'none' &&
-              style.animationDuration !== '0s' &&
-              rect.width >= 8 &&
-              rect.height >= 8
-            ) {
-              loadingIndicatorCount += 1;
-            }
-          }
-        }
-        return { articleCount, loadingIndicatorCount };
-      });
+      }
+      if (error instanceof Error && error.message.includes('scroll_content_observation_incomplete')) {
+        throw new Stage5BrowserError(
+          'OPERATION_FAILED',
+          'The selected scroll surface exceeded the bounded semantic observation limits.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'scroll_observation_incomplete',
+              suggestedAction: 'Use one fresh snapshot to target a smaller observed scroll container; Stage5 Browser will not infer growth or loader disappearance from a truncated sample.',
+            },
+            cause: error,
+          },
+        );
+      }
+      throw error;
     }
-    return frame.evaluate(() => {
+  }
+
+  private async resolveScrollContentObservationSurface(
+    frame: Frame,
+    target: ElementHandle<HTMLElement> | null,
+  ): Promise<ScrollContentObservationSurface> {
+    if (target !== null) {
+      return { handle: target, ownsHandle: false };
+    }
+    const candidate = await frame.evaluateHandle(() => {
       const viewportIntersects = (candidate: Element): boolean => {
         const rect = candidate.getBoundingClientRect();
         const style = getComputedStyle(candidate);
@@ -4920,115 +5327,133 @@ export class BrowserController {
           && rect.bottom > 0 && rect.right > 0
           && rect.top < window.innerHeight && rect.left < window.innerWidth;
       };
-      const visibleFeeds = Array.from(document.querySelectorAll('[role="feed"]'))
+      const visible = Array.from(document.querySelectorAll('[role="feed"]'))
         .filter(viewportIntersects);
-      const observationRoot: Document | Element = visibleFeeds.length === 1
-        ? visibleFeeds[0] ?? document
-        : document;
-      const surfaceRect = observationRoot instanceof Element
-        ? observationRoot.getBoundingClientRect()
-        : { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 };
-      const clip = {
-        top: Math.max(0, surfaceRect.top),
-        right: Math.min(window.innerWidth, surfaceRect.right),
-        bottom: Math.min(window.innerHeight, surfaceRect.bottom),
-        left: Math.max(0, surfaceRect.left),
-      };
-      const visible = (candidate: Element): boolean => {
-        const rect = candidate.getBoundingClientRect();
-        const style = getComputedStyle(candidate);
-        return rect.width > 0 && rect.height > 0 && style.display !== 'none'
-          && style.visibility !== 'hidden' && style.opacity !== '0'
-          && rect.bottom > clip.top && rect.right > clip.left
-          && rect.top < clip.bottom && rect.left < clip.right;
-      };
-      const articleCount = observationRoot.querySelectorAll('article, [role="article"]').length
-        + (observationRoot instanceof Element && observationRoot.matches('article, [role="article"]') ? 1 : 0);
-      const known = new Set<Element>(observationRoot.querySelectorAll(
-        '[aria-busy="true"], [role="progressbar"], progress, [class*="skeleton" i], [class*="placeholder" i], [class*="shimmer" i], [class*="loading" i]',
-      ));
-      if (observationRoot instanceof Element && observationRoot.matches('[aria-busy="true"], [role="progressbar"], progress')) {
-        known.add(observationRoot);
-      }
-      let loadingIndicatorCount = [...known].filter(visible).length;
-      if (loadingIndicatorCount === 0) {
-        for (const candidate of Array.from(observationRoot.querySelectorAll('*')).slice(0, 5_000)) {
-          if (!visible(candidate) || (candidate.textContent ?? '').trim().length > 0) {
-            continue;
-          }
-          const style = getComputedStyle(candidate);
-          const rect = candidate.getBoundingClientRect();
-          if (
-            style.animationName !== 'none' &&
-            style.animationDuration !== '0s' &&
-            rect.width >= 8 &&
-            rect.height >= 8
-          ) {
-            loadingIndicatorCount += 1;
-          }
-        }
-      }
-      return { articleCount, loadingIndicatorCount };
+      return visible.length === 1 ? visible[0] ?? null : null;
     });
+    const handle = candidate.asElement();
+    if (handle === null) {
+      await candidate.dispose().catch(() => undefined);
+      return { handle: null, ownsHandle: false };
+    }
+    return { handle: handle as ElementHandle<HTMLElement>, ownsHandle: true };
   }
 
   private async waitForScrollContent(
     page: Page,
     frame: Frame,
-    target: ElementHandle<HTMLElement> | null,
-    before: ScrollContentObservation,
+    surface: ScrollContentObservationSurface,
+    before: ScrollContentSample,
     expectation: BrowserCommandInput<'scroll'>['waitFor'],
     remainingTimeoutMs: number,
   ): Promise<ScrollWaitResult> {
+    const observationSurfaceUnavailable = (): Stage5BrowserError => new Stage5BrowserError(
+      'OPERATION_FAILED',
+      'The pinned scroll observation surface was replaced before comparable content evidence could be collected.',
+      {
+        recoverable: true,
+        details: {
+          reason: 'scroll_observation_surface_unavailable',
+          suggestedAction: 'Inspect one fresh snapshot before continuing; Stage5 Browser will not compare or replay against a replacement surface.',
+        },
+      },
+    );
     if (expectation === null || expectation === undefined) {
+      const after = await this.scrollContentObservation(frame, surface);
+      if (after === null) {
+        throw observationSurfaceUnavailable();
+      }
       return {
         requested: false,
         condition: null,
         satisfied: false,
         evidence: 'not_requested',
         waitedMs: 0,
-        before,
-        after: await this.scrollContentObservation(frame, target),
+        before: publicScrollContentObservation(before),
+        after: publicScrollContentObservation(after),
       };
     }
     const startedAt = Date.now();
     const budgetMs = Math.max(0, Math.min(expectation.timeoutMs, remainingTimeoutMs));
-    let loadingObserved = before.loadingIndicatorCount > 0;
-    let after = await this.scrollContentObservation(frame, target);
+    const initialObservation = await this.scrollContentObservation(frame, surface);
+    if (initialObservation === null) {
+      throw observationSurfaceUnavailable();
+    }
+    let after = initialObservation;
+    let loadingObserved = before.loadingIndicatorCount > 0 || after.loadingIndicatorCount > 0;
+    let semanticLoadingObserved = before.semanticLoadingIndicatorCount > 0 ||
+      after.semanticLoadingIndicatorCount > 0;
+    let animationObservationComplete = before.animationObservationComplete &&
+      after.animationObservationComplete;
     while (true) {
-      loadingObserved ||= after.loadingIndicatorCount > 0;
+      const elapsed = Date.now() - startedAt;
       const articleGrew = after.articleCount > before.articleCount;
-      const loadingDisappeared = loadingObserved && after.loadingIndicatorCount === 0;
+      const loadingDisappeared = loadingObserved &&
+        after.loadingIndicatorCount === 0 &&
+        (semanticLoadingObserved || animationObservationComplete);
       const satisfied = expectation.condition === 'article_count_growth'
         ? articleGrew
         : expectation.condition === 'loading_indicators_disappear'
           ? loadingDisappeared
           : articleGrew || loadingDisappeared;
-      if (satisfied) {
+      if (satisfied && elapsed <= budgetMs) {
         return {
           requested: true,
           condition: expectation.condition,
           satisfied: true,
-          evidence: articleGrew ? 'article_count_growth' : 'loading_indicators_disappeared',
-          waitedMs: Date.now() - startedAt,
-          before,
-          after,
+          evidence: expectation.condition === 'article_count_growth'
+            ? 'article_count_growth'
+            : expectation.condition === 'loading_indicators_disappear'
+              ? 'loading_indicators_disappeared'
+              : articleGrew
+                ? 'article_count_growth'
+                : 'loading_indicators_disappeared',
+          waitedMs: elapsed,
+          before: publicScrollContentObservation(before),
+          after: publicScrollContentObservation(after),
         };
       }
-      const elapsed = Date.now() - startedAt;
       if (elapsed >= budgetMs) {
+        const loadingEvidenceRequested = expectation.condition === 'loading_indicators_disappear' ||
+          expectation.condition === 'either';
+        if (
+          loadingEvidenceRequested &&
+          !semanticLoadingObserved &&
+          loadingObserved &&
+          after.loadingIndicatorCount === 0 &&
+          !animationObservationComplete
+        ) {
+          throw new Stage5BrowserError(
+            'OPERATION_FAILED',
+            'The selected scroll surface exceeded the bounded animated-loader observation limit.',
+            {
+              recoverable: true,
+              details: {
+                reason: 'scroll_observation_incomplete',
+                suggestedAction: 'Use one fresh snapshot to target a smaller observed scroll container; Stage5 Browser will not infer disappearance from a truncated animated-loader sample.',
+              },
+            },
+          );
+        }
         return {
           requested: true,
           condition: expectation.condition,
           satisfied: false,
           evidence: 'timeout',
           waitedMs: elapsed,
-          before,
-          after,
+          before: publicScrollContentObservation(before),
+          after: publicScrollContentObservation(after),
         };
       }
       await page.waitForTimeout(Math.min(100, Math.max(1, budgetMs - elapsed)));
-      after = await this.scrollContentObservation(frame, target);
+      const observed = await this.scrollContentObservation(frame, surface);
+      if (observed === null) {
+        throw observationSurfaceUnavailable();
+      }
+      after = observed;
+      loadingObserved ||= after.loadingIndicatorCount > 0;
+      semanticLoadingObserved ||= after.semanticLoadingIndicatorCount > 0;
+      animationObservationComplete &&= after.animationObservationComplete;
     }
   }
 
@@ -7008,12 +7433,13 @@ export class BrowserController {
     page: Page,
     startedAt: string,
     actionDispatched: boolean | 'unknown',
-    outcome: 'failed' | 'succeeded',
+    outcome: 'blocked' | 'failed' | 'succeeded',
+    reason: SanitizedActionDiagnostic['reason'] = outcome === 'succeeded' ? null : 'unknown',
   ): SanitizedActionDiagnostic {
     return {
       action: 'scroll',
       outcome,
-      reason: outcome === 'failed' ? 'unknown' : null,
+      reason,
       actionDispatched,
       clickDispatched: null,
       targetState: null,

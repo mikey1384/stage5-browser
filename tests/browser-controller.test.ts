@@ -1919,6 +1919,761 @@ describe('BrowserController', () => {
     expect(scrolled.warnings).not.toContainEqual(expect.objectContaining({ code: 'content_wait_timed_out' }));
   });
 
+  it('pins feed observation scope and treats loading-only status articles as unresolved placeholders', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Stable loading observation</title><style>
+        body { margin: 0; min-height: 1800px; }
+        #placeholders { position: fixed; top: 20px; left: 20px; width: 320px; }
+        #late-feed { position: fixed; top: 180px; left: 20px; width: 320px; height: 120px; }
+      </style></head><body>
+        <section id="placeholders" aria-label="Other posts">
+          <article>
+            <span hidden>Cached post text</span>
+            <button aria-hidden="true" style="display:none">Hidden template action</button>
+            <div role="status">Loading...</div>
+          </article>
+          <article>
+            <span aria-hidden="true">Assistive placeholder text</span>
+            <div role="status">Loading...</div>
+          </article>
+        </section>
+        <section id="late-feed" aria-label="Unrelated feed"></section>
+        <script>
+          addEventListener('scroll', () => {
+            document.querySelector('#late-feed')?.setAttribute('role', 'feed');
+          }, { once: true });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-stable-loading-observation-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const scrolled = await controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'article_count_growth', timeoutMs: 1_000 },
+      timeoutMs: 1_000,
+    });
+
+    expect(scrolled.wait).toMatchObject({
+      requested: true,
+      satisfied: false,
+      evidence: 'timeout',
+      before: { articleCount: 0, loadingIndicatorCount: 2 },
+      after: { articleCount: 0, loadingIndicatorCount: 2 },
+    });
+    expect(scrolled).toMatchObject({ stepsCompleted: 1, moved: true });
+    expect(scrolled.wait.waitedMs).toBeLessThan(900);
+    expect(scrolled.warnings).toContainEqual(expect.objectContaining({ code: 'content_wait_timed_out' }));
+  });
+
+  it('does not treat an in-post status as a feed loader when the article has substantive content', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Substantive post status</title><style>
+        body { margin: 0; min-height: 1800px; }
+      </style></head><body>
+        <section role="feed" aria-label="Posts">
+          <article><p>Rendered Stage5 post</p><div role="status">Loading comments...</div></article>
+        </section>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-substantive-post-status-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const scrolled = await controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'loading_indicators_disappear', timeoutMs: 150 },
+      timeoutMs: 5_000,
+    });
+    expect(scrolled.wait).toMatchObject({
+      satisfied: false,
+      evidence: 'timeout',
+      before: { articleCount: 1, loadingIndicatorCount: 0 },
+      after: { articleCount: 1, loadingIndicatorCount: 0 },
+    });
+  });
+
+  it('fails closed before dispatch when a scroll observation would truncate semantic candidates', async () => {
+    const articles = Array.from(
+      { length: 501 },
+      (_, index) => `<article>Rendered post ${index + 1}</article>`,
+    ).join('');
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Bounded feed observation</title><style>
+        body { margin: 0; min-height: 1800px; }
+        [role="feed"] { position: fixed; inset: 0; overflow: hidden; }
+      </style></head><body><section role="feed" aria-label="Posts">${articles}</section></body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-bounded-feed-observation-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const internals = controller as unknown as {
+      performScrollStep: (...args: unknown[]) => Promise<void>;
+    };
+    const performScrollStep = vi.spyOn(internals, 'performScrollStep');
+    await expect(controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'article_count_growth', timeoutMs: 1_000 },
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'scroll_observation_incomplete',
+        actionDispatched: false,
+        stepsCompleted: 0,
+      },
+    });
+    expect(performScrollStep).not.toHaveBeenCalled();
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'scroll',
+      outcome: 'blocked',
+      reason: 'unknown',
+      actionDispatched: false,
+      clickDispatched: null,
+    });
+  });
+
+  it('does not let an optional animation-scan cap block explicit loader disappearance', async () => {
+    const complexMarkup = Array.from({ length: 5_001 }, () => '<span></span>').join('');
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Complex feed observation</title><style>
+        body { margin: 0; min-height: 1800px; }
+        [role="feed"] { position: fixed; inset: 0; overflow: hidden; }
+      </style></head><body>
+        <section role="feed" aria-label="Posts">
+          <article id="post"><div role="status">Loading...</div></article>
+          <div aria-hidden="true">${complexMarkup}</div>
+        </section>
+        <script>
+          addEventListener('scroll', () => {
+            document.querySelector('#post').innerHTML = '<p>Rendered post</p>';
+          }, { once: true });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-complex-feed-observation-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const scrolled = await controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'loading_indicators_disappear', timeoutMs: 1_000 },
+      timeoutMs: 5_000,
+    });
+    expect(scrolled.wait).toMatchObject({
+      requested: true,
+      satisfied: true,
+      evidence: 'loading_indicators_disappeared',
+      before: { articleCount: 0, loadingIndicatorCount: 1 },
+      after: { articleCount: 1, loadingIndicatorCount: 0 },
+    });
+    expect(scrolled.stepsCompleted).toBe(1);
+  });
+
+  it('allows substantive article growth when only the optional animation scan is capped', async () => {
+    const complexMarkup = Array.from({ length: 5_001 }, () => '<span></span>').join('');
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Animated complex feed</title><style>
+        body { margin: 0; min-height: 1800px; }
+        [role="feed"] { position: fixed; inset: 0; overflow: hidden; }
+        #animated-loader { width: 20px; height: 20px; animation: pulse 1s linear infinite; }
+        @keyframes pulse { from { opacity: .5; } to { opacity: 1; } }
+      </style></head><body>
+        <section role="feed" aria-label="Posts">
+          <article id="post"><div id="animated-loader"></div></article>
+          <div aria-hidden="true">${complexMarkup}</div>
+        </section>
+        <script>
+          addEventListener('scroll', () => {
+            document.querySelector('#post').innerHTML = '<p>Rendered post</p>';
+          }, { once: true });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-animated-complex-feed-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const scrolled = await controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'article_count_growth', timeoutMs: 1_000 },
+      timeoutMs: 5_000,
+    });
+    expect(scrolled.wait).toMatchObject({
+      requested: true,
+      satisfied: true,
+      evidence: 'article_count_growth',
+      before: { articleCount: 0, loadingIndicatorCount: 1 },
+      after: { articleCount: 1, loadingIndicatorCount: 0 },
+    });
+  });
+
+  it('fails closed when animation-only disappearance depends on a capped scan', async () => {
+    const complexMarkup = Array.from({ length: 5_001 }, () => '<span></span>').join('');
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Incomplete animated disappearance</title><style>
+        body { margin: 0; min-height: 1800px; }
+        [role="feed"] { position: fixed; inset: 0; overflow: hidden; }
+        #animated-loader { width: 20px; height: 20px; animation: pulse 1s linear infinite; }
+        @keyframes pulse { from { opacity: .5; } to { opacity: 1; } }
+      </style></head><body>
+        <section role="feed" aria-label="Posts">
+          <article id="post"><div id="animated-loader"></div></article>
+          <div aria-hidden="true">${complexMarkup}</div>
+        </section>
+        <script>
+          addEventListener('scroll', () => {
+            document.querySelector('#post').innerHTML = '<p>Rendered post</p>';
+          }, { once: true });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-incomplete-animation-disappearance-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    await expect(controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'loading_indicators_disappear', timeoutMs: 150 },
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'scroll_observation_incomplete',
+        actionDispatched: true,
+        stepsCompleted: 1,
+      },
+    });
+  });
+
+  it('does not mistake a detached pinned feed for loading-indicator disappearance', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Detached feed observation</title><style>
+        body { margin: 0; min-height: 1800px; }
+        #feed { position: fixed; top: 20px; left: 20px; width: 320px; height: 120px; }
+        [role="progressbar"] { width: 120px; height: 20px; }
+      </style></head><body>
+        <section id="feed" role="feed" aria-label="Posts">
+          <article>Rendered post</article>
+          <div role="progressbar" aria-label="Loading more posts"></div>
+        </section>
+        <script>
+          addEventListener('scroll', () => {
+            const feed = document.querySelector('#feed');
+            feed?.replaceWith(feed.cloneNode(true));
+          }, { once: true });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-detached-feed-observation-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const startedAt = Date.now();
+    await expect(controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: { condition: 'loading_indicators_disappear', timeoutMs: 10_000 },
+      timeoutMs: 15_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'scroll_observation_surface_unavailable',
+        actionDispatched: true,
+        stepsCompleted: 1,
+      },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'scroll',
+      outcome: 'failed',
+      reason: 'detached',
+      actionDispatched: true,
+      clickDispatched: null,
+    });
+  });
+
+  it('does not dispatch after page activation consumes the remaining scroll action budget', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Activation budget</title><style>
+        body { margin: 0; min-height: 1800px; }
+      </style></head><body><article>Budgeted scroll</article></body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-scroll-activation-budget-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const nativeWindow = {
+      required: false,
+      attempted: false,
+      supported: false,
+      ownedProcessAvailable: false,
+      ownedProcessRunning: null,
+      targetWindowResolved: null,
+      windowStateBefore: 'unknown',
+      normalizationAttempted: false,
+      normalizationSucceeded: null,
+      applicationActivationAttempted: false,
+      applicationActivationSucceeded: null,
+      applicationHiddenBefore: null,
+      unhideAttempted: false,
+      unhideSucceeded: null,
+      activationRequestAccepted: null,
+      frontProcessFallbackAttempted: false,
+      frontProcessFallbackProcessResolved: null,
+      frontProcessFallbackRequestSucceeded: null,
+      applicationFrontmostAfter: null,
+      applicationHiddenAfter: null,
+      result: 'not_required',
+    };
+    const internals = controller as unknown as {
+      activateSelectedPageForInput: () => Promise<{
+        attemptCount: number;
+        controllerSelected: boolean;
+        bringToFrontAttempted: boolean;
+        bringToFrontSucceeded: boolean;
+        visibilityBefore: 'visible';
+        visibilityAfter: 'visible';
+        documentFocusedBefore: boolean;
+        documentFocusedAfter: boolean;
+        nativeWindow: typeof nativeWindow;
+      }>;
+      performScrollStep: (...args: unknown[]) => Promise<void>;
+    };
+    const actualNow = Date.now.bind(Date);
+    let clockOffsetMs = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => actualNow() + clockOffsetMs);
+    let activationCalls = 0;
+    vi.spyOn(internals, 'activateSelectedPageForInput').mockImplementation(async () => {
+      activationCalls += 1;
+      if (activationCalls === 2) {
+        clockOffsetMs = 4_400;
+      }
+      return {
+        attemptCount: activationCalls,
+        controllerSelected: true,
+        bringToFrontAttempted: true,
+        bringToFrontSucceeded: true,
+        visibilityBefore: 'visible',
+        visibilityAfter: 'visible',
+        documentFocusedBefore: true,
+        documentFocusedAfter: true,
+        nativeWindow,
+      };
+    });
+    const performScrollStep = vi.spyOn(internals, 'performScrollStep');
+
+    try {
+      const result = await controller.scroll({
+        direction: 'down',
+        amount: 'half_viewport',
+        count: 1,
+        settleMs: 0,
+        frameId: null,
+        endMarker: null,
+        target: null,
+        waitFor: null,
+        timeoutMs: 5_000,
+      });
+      expect(result.stepsCompleted).toBe(0);
+      expect(performScrollStep).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not accept content evidence observed after the bounded wait deadline', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Late content observation</title><style>
+        body { margin: 0; min-height: 1800px; }
+        [role="feed"] { position: fixed; inset: 0; }
+      </style></head><body>
+        <section role="feed" aria-label="Posts"></section>
+        <script>
+          addEventListener('scroll', () => {
+            document.querySelector('[role="feed"]').innerHTML = '<article>Late rendered post</article>';
+          }, { once: true });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-late-content-observation-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const internals = controller as unknown as {
+      scrollContentObservation: (frame: unknown, surface: unknown) => Promise<unknown>;
+    };
+    const originalObservation = internals.scrollContentObservation.bind(controller);
+    const actualNow = Date.now.bind(Date);
+    let clockOffsetMs = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => actualNow() + clockOffsetMs);
+    let observationCalls = 0;
+    vi.spyOn(internals, 'scrollContentObservation').mockImplementation(async (frame, surface) => {
+      observationCalls += 1;
+      const observation = await originalObservation(frame, surface);
+      if (observationCalls === 2) {
+        clockOffsetMs = 1_500;
+        return {
+          ...(observation as Record<string, unknown>),
+          articleCount: 1,
+        };
+      }
+      return observation;
+    });
+
+    try {
+      const result = await controller.scroll({
+        direction: 'down',
+        amount: 'half_viewport',
+        count: 1,
+        settleMs: 0,
+        frameId: null,
+        endMarker: null,
+        target: null,
+        waitFor: { condition: 'article_count_growth', timeoutMs: 1_000 },
+        timeoutMs: 5_000,
+      });
+      expect(result.wait).toMatchObject({
+        requested: true,
+        satisfied: false,
+        evidence: 'timeout',
+        before: { articleCount: 0 },
+        after: { articleCount: 1 },
+      });
+      expect(result.wait.waitedMs).toBeGreaterThan(1_000);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('fails scroll closed before dispatch when the controller-selected renderer cannot become visible', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Hidden scroll target</title><style>
+        body { margin: 0; min-height: 1800px; }
+      </style></head><body><article>Never scrolled</article></body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-hidden-scroll-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const internals = controller as unknown as {
+      activateSelectedPageForInput: () => Promise<{
+        attemptCount: number;
+        controllerSelected: boolean;
+        bringToFrontAttempted: boolean;
+        bringToFrontSucceeded: boolean;
+        visibilityBefore: 'hidden';
+        visibilityAfter: 'hidden';
+        documentFocusedBefore: boolean;
+        documentFocusedAfter: boolean;
+        nativeWindow: Record<string, unknown>;
+      }>;
+      performScrollStep: (...args: unknown[]) => Promise<void>;
+      scrollPosition: (...args: unknown[]) => Promise<unknown>;
+    };
+    vi.spyOn(internals, 'activateSelectedPageForInput').mockResolvedValue({
+      attemptCount: 1,
+      controllerSelected: true,
+      bringToFrontAttempted: true,
+      bringToFrontSucceeded: true,
+      visibilityBefore: 'hidden',
+      visibilityAfter: 'hidden',
+      documentFocusedBefore: true,
+      documentFocusedAfter: true,
+      nativeWindow: {
+        required: true,
+        attempted: true,
+        supported: true,
+        ownedProcessAvailable: true,
+        ownedProcessRunning: true,
+        targetWindowResolved: true,
+        windowStateBefore: 'normal',
+        normalizationAttempted: false,
+        normalizationSucceeded: null,
+        applicationActivationAttempted: true,
+        applicationActivationSucceeded: false,
+        applicationHiddenBefore: false,
+        unhideAttempted: false,
+        unhideSucceeded: null,
+        activationRequestAccepted: true,
+        frontProcessFallbackAttempted: true,
+        frontProcessFallbackProcessResolved: true,
+        frontProcessFallbackRequestSucceeded: true,
+        applicationFrontmostAfter: false,
+        applicationHiddenAfter: false,
+        result: 'visibility_unchanged',
+      },
+    });
+    const performScrollStep = vi.spyOn(internals, 'performScrollStep');
+    const scrollPosition = vi.spyOn(internals, 'scrollPosition');
+
+    await expect(controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 1,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'page_not_active',
+        actionDispatched: false,
+        stepsCompleted: 0,
+        pageActivation: {
+          visibilityBefore: 'hidden',
+          visibilityAfter: 'hidden',
+        },
+      },
+    });
+    expect(performScrollStep).not.toHaveBeenCalled();
+    expect(scrollPosition).not.toHaveBeenCalled();
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'scroll',
+      outcome: 'blocked',
+      reason: 'page_not_active',
+      actionDispatched: false,
+      clickDispatched: null,
+    });
+  });
+
+  it('does not replay a completed scroll step when renderer visibility is lost before the next step', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Visibility lost between scrolls</title><style>
+        body { margin: 0; min-height: 2700px; }
+      </style></head><body><article>One bounded step</article></body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-scroll-visibility-loss-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const nativeWindow = {
+      required: false,
+      attempted: false,
+      supported: false,
+      ownedProcessAvailable: false,
+      ownedProcessRunning: null,
+      targetWindowResolved: null,
+      windowStateBefore: 'unknown',
+      normalizationAttempted: false,
+      normalizationSucceeded: null,
+      applicationActivationAttempted: false,
+      applicationActivationSucceeded: null,
+      applicationHiddenBefore: null,
+      unhideAttempted: false,
+      unhideSucceeded: null,
+      activationRequestAccepted: null,
+      frontProcessFallbackAttempted: false,
+      frontProcessFallbackProcessResolved: null,
+      frontProcessFallbackRequestSucceeded: null,
+      applicationFrontmostAfter: null,
+      applicationHiddenAfter: null,
+      result: 'not_required',
+    };
+    const internals = controller as unknown as {
+      activateSelectedPageForInput: () => Promise<{
+        attemptCount: number;
+        controllerSelected: boolean;
+        bringToFrontAttempted: boolean;
+        bringToFrontSucceeded: boolean;
+        visibilityBefore: 'hidden' | 'visible';
+        visibilityAfter: 'hidden' | 'visible';
+        documentFocusedBefore: boolean;
+        documentFocusedAfter: boolean;
+        nativeWindow: typeof nativeWindow;
+      }>;
+      performScrollStep: (...args: unknown[]) => Promise<void>;
+    };
+    vi.spyOn(internals, 'activateSelectedPageForInput')
+      .mockResolvedValueOnce({
+        attemptCount: 1,
+        controllerSelected: true,
+        bringToFrontAttempted: true,
+        bringToFrontSucceeded: true,
+        visibilityBefore: 'visible',
+        visibilityAfter: 'visible',
+        documentFocusedBefore: true,
+        documentFocusedAfter: true,
+        nativeWindow,
+      })
+      .mockResolvedValueOnce({
+        attemptCount: 2,
+        controllerSelected: true,
+        bringToFrontAttempted: true,
+        bringToFrontSucceeded: true,
+        visibilityBefore: 'visible',
+        visibilityAfter: 'visible',
+        documentFocusedBefore: true,
+        documentFocusedAfter: true,
+        nativeWindow,
+      })
+      .mockResolvedValueOnce({
+        attemptCount: 3,
+        controllerSelected: true,
+        bringToFrontAttempted: true,
+        bringToFrontSucceeded: true,
+        visibilityBefore: 'hidden',
+        visibilityAfter: 'hidden',
+        documentFocusedBefore: true,
+        documentFocusedAfter: true,
+        nativeWindow,
+      });
+    const performScrollStep = vi.spyOn(internals, 'performScrollStep');
+
+    await expect(controller.scroll({
+      direction: 'down',
+      amount: 'half_viewport',
+      count: 2,
+      settleMs: 0,
+      frameId: null,
+      endMarker: null,
+      target: null,
+      waitFor: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'OPERATION_FAILED',
+      details: {
+        reason: 'page_not_active',
+        actionDispatched: true,
+        stepsCompleted: 1,
+        pageActivation: {
+          visibilityAfter: 'hidden',
+        },
+      },
+    });
+    expect(performScrollStep).toHaveBeenCalledTimes(1);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'scroll',
+      outcome: 'failed',
+      reason: 'page_not_active',
+      actionDispatched: true,
+      clickDispatched: null,
+    });
+  });
+
   it('discovers hidden file inputs and sets only fresh snapshot-bound regular files', async () => {
     server = createServer((request, response) => {
       if (request.url === '/upload' && request.method === 'POST') {

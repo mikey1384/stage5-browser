@@ -497,7 +497,7 @@ function createServer(): McpServer {
     {
       title: 'Scroll observed surface',
       description:
-        'Perform bounded viewport or document scrolling on the frame document or on one nested scroll container observed by the latest semantic snapshot. Container refs are exact, document-bound, and consumed once; selectors are never guessed. An optional semantic wait observes article-count growth, loading-indicator disappearance, or either condition. Reports sub-pixel-tolerant target geometry separately from a confirmed semantic end, exposes nested-container candidates, and correlates bounded network activity through browser_diagnostics.',
+        'Perform bounded viewport or document scrolling on the frame document or on one nested scroll container observed by the latest semantic snapshot. Container refs are exact, document-bound, and consumed once; selectors are never guessed. The selected renderer must be visible before every step, and one observation root stays pinned throughout an optional substantive-article/loading-indicator wait. Reports sub-pixel-tolerant target geometry separately from a confirmed semantic end, exposes nested-container candidates, and correlates bounded network activity through browser_diagnostics.',
       inputSchema: z.object({
         direction: z.enum(['up', 'down']).default('down'),
         amount: z.enum(['half_viewport', 'viewport', 'document_start', 'document_end']).default('viewport'),
