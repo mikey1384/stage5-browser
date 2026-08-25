@@ -163,7 +163,7 @@ function createServer(): McpServer {
     { name: 'stage5-browser', version: STAGE5_BROWSER_VERSION },
     {
       instructions:
-        'For exact snapshot-ref clicks, use the returned dispatchEvidence: one guarded forced exact-handle attempt is allowed only after the normal stability attempt emitted zero trusted events and the same node remains fully actionable; never repeat partial, misdirected, detached, or unknown dispatch. ' +
+        'For exact snapshot-ref clicks, use the returned dispatchEvidence: Stage5 activates the controller-selected page immediately before input; one guarded forced exact-handle attempt is allowed only after the normal stability attempt emitted zero trusted events and the same node remains fully actionable; if both handle paths emit zero events, one guarded page-level mouse dispatch may target the fresh exact main-frame hit point. Never repeat partial, misdirected, detached, inactive-page, cross-frame, or unknown dispatch. ' +
         'Use this local browser only when an API or CLI cannot complete the task. Begin with browser_status and browser_available. Compatible runtime fixes load automatically; stop browser work only if browser_status reports restartRequired, which means the MCP tool or worker protocol contract changed. Use browser_diagnostics after any launch or interaction failure and follow its sanitized evidence rather than blind retrying. Use browser_start for a stopped profile or browser_switch only when replacing a running profile. Each browser has its own isolated persistent profile: browser storage survives agent restarts but never comes from the user\'s everyday browser or another backend. Use browser_auth_status and the request/resume login handoff for sign-in; explicitly select the intended backend and never ask the user to send credentials or OTPs to the agent. The request handoff releases Playwright and launches a private native browser without automation flags, returning the real application name, exact profile binding, and a label matching its Stage5 marker tab. While state is awaiting_user, do not call browser-control, recovery, or stop tools. Follow the returned handoff instructions exactly: Chromium-family browsers stay open so Stage5 can attach to that same authenticated process; Firefox must exit normally before restart-based resume. Never force-close the private browser, delete profile locks, or rewrite shutdown preferences. On resume, reject a bare-origin URL expectation, inspect the actual runtime profile and privacy-safe storage continuity, then inspect the bounded verification preview and verify signed-in state with a fresh full snapshot. Storage continuity and automation correlation are evidence, not proof of authentication or causality. A unique visible modal is automatically used as the snapshot root so portal controls are not lost to document depth. Call browser_frames before targeting embedded applications and pass only an observed frameId. Inspect with semantic snapshots before acting. A snapshot may expose hidden fileInputs and nested scrollContainers with opaque refs. browser_set_input_files accepts only the latest snapshot capability, transfers explicitly authorized local files without opening a native picker, consumes the ref once, and never claims processing completion without explicit evidence. Its observationMs quick-sampling window is 0–5,000 ms; use a semantic completion timeout of up to 60,000 ms for longer bounded processing checks. browser_scroll may target one latest scrollContainers ref and can wait for article growth, loading-indicator disappearance, or either; loader evidence is limited to the visible selected surface and a stalled or geometric boundary is never proof that an infinite feed ended. Scroll becomes browser_diagnostics.lastAction so bounded network activity can be correlated. Use browser_click_ref only with the latest snapshotId and a ref from that exact snapshot; offscreen refs receive bounded incremental scrolling, retain their exact DOM node, and may rebind after virtualization only to one uniquely proven same-article semantic replacement before actionability revalidation and dispatch. Use click postconditions for requested state changes, browser_wait_for_url for deferred redirects, and structured navigation warnings instead of blind retries. Never guess between ambiguous targets. Consequential actions are not retried automatically after a timeout.',
     },
   );
@@ -172,7 +172,7 @@ function createServer(): McpServer {
     'browser_status',
     {
       title: 'Browser status',
-      description: 'Report MCP/build freshness, worker build, dedicated browser context, tabs, actual runtime profile when observable, and current recovery state. A stale build reports restartRequired without starting a worker.',
+      description: 'Report MCP/build freshness, worker build, dedicated browser context, tabs, actual runtime profile when observable, controller state, profile-lock ownership state, and current recovery state. A stopped controller may still report a profile owned externally or awaiting release. A stale build reports restartRequired without starting a worker.',
       inputSchema: z.object({}),
       annotations: {
         readOnlyHint: true,
@@ -382,7 +382,7 @@ function createServer(): McpServer {
     'browser_screenshot',
     {
       title: 'Capture page screenshot',
-      description: 'Explicitly capture the active page to the private artifacts directory and return the PNG.',
+      description: 'Activate and explicitly capture the selected page to the private artifacts directory, then return the PNG plus privacy-safe artifact evidence. A suspiciously uniform artifact with semantic page content receives one bounded recapture; inspect the returned source path before treating a managed image-rendering failure as a black page.',
       inputSchema: z.object({
         fullPage: z.boolean().default(false),
         timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
@@ -422,7 +422,7 @@ function createServer(): McpServer {
     {
       title: 'Click unique semantic target',
       description:
-        'Click exactly one element matched by ARIA role and accessible name. Fails instead of choosing an ambiguous match. Optional postconditions distinguish a dispatched click from a successful state change; failures record sanitized visibility, enabled-state, viewport, and pointer-interception evidence.',
+        'Click exactly one element matched by ARIA role and accessible name. A zero match receives a bounded one-second transition wait, then reports explicit false dispatch evidence; the tool never attributes earlier or autonomous UI changes to that miss. It fails instead of choosing an ambiguous match. Optional postconditions distinguish a dispatched click from a successful state change; failures record sanitized visibility, enabled-state, viewport, and pointer-interception evidence.',
       inputSchema: clickByRoleInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -439,7 +439,7 @@ function createServer(): McpServer {
     {
       title: 'Click observed snapshot reference',
       description:
-        'Click one Playwright reference from the latest semantic snapshot of the same document and frame. A fresh offscreen ref receives bounded incremental nested/document scrolling while retaining the exact DOM node. If feed virtualization detaches it, only one uniquely proven same-article semantic replacement may be rebound before actionability revalidation. Exact-target dispatch records sanitized trusted-event evidence; one guarded forced attempt is allowed only after a normal stability timeout with zero input events and unchanged full actionability. Stale, reused, changed, partial, uncertain, or ambiguous references fail closed. Optional postconditions verify the requested state change.',
+        'Click one Playwright reference from the latest semantic snapshot of the same document and frame. A fresh offscreen ref receives bounded incremental nested/document scrolling while retaining the exact DOM node. If feed virtualization detaches it, only one uniquely proven same-article semantic replacement may be rebound before actionability revalidation. Exact-target dispatch records sanitized page-activation and trusted-event evidence. One guarded forced attempt is allowed only after a normal stability timeout with zero input events and unchanged full actionability; if both handle paths emit zero events, one guarded page-level mouse dispatch may use the fresh exact main-frame hit point without exposing coordinates. Stale, reused, changed, partial, inactive-page, cross-frame, uncertain, or ambiguous references fail closed. Optional postconditions verify the requested state change.',
       inputSchema: clickRefInputSchema,
       annotations: {
         readOnlyHint: false,

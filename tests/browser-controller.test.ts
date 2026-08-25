@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { BrowserController } from '../src/browser-controller.js';
 import type { Stage5BrowserConfig } from '../src/config.js';
@@ -222,6 +222,17 @@ describe('BrowserController', () => {
     const screenshot = await controller.screenshot({ fullPage: false, timeoutMs: 5_000 });
     expect((await stat(screenshot.path)).mode & 0o777).toBe(0o600);
     expect(screenshot.dataBase64.length).toBeGreaterThan(100);
+    expect(screenshot.captureEvidence).toMatchObject({
+      artifactClassification: 'contentful',
+      semanticContentPresent: true,
+      retryUsed: false,
+      pageActivation: {
+        controllerSelected: true,
+        bringToFrontSucceeded: true,
+        visibilityAfter: 'visible',
+      },
+    });
+    expect(screenshot.captureEvidence.pngBytes).toBeGreaterThan(100);
 
     const available = await controller.availableBrowsers();
     for (const browser of ['chromium', 'firefox', 'webkit'] as const) {
@@ -245,6 +256,123 @@ describe('BrowserController', () => {
       expect(reopened.responseStatus).toBe(200);
       expect(reopened.page.title).toBe('Stage5 Browser fixture');
     }
+  });
+
+  it('reports an externally locked stopped profile and waits for a bounded owned release', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><head><title>Released profile</title></head><body>Ready</body></html>');
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-transient-lock-'));
+    const config = browserConfig(temporaryRoot);
+    await mkdir(config.profileDir, { recursive: true });
+    const lockPath = path.join(config.profileDir, 'SingletonLock');
+    await writeFile(lockPath, 'owned-by-prior-worker');
+    controller = new BrowserController(config);
+
+    await expect(controller.status()).resolves.toMatchObject({
+      state: 'stopped',
+      browserConnected: false,
+      profileLockState: 'possible_external_owner',
+      profileLockFiles: ['SingletonLock'],
+    });
+    const release = setTimeout(() => {
+      void rm(lockPath, { force: true });
+    }, 150);
+    try {
+      await expect(controller.open({
+        url: `http://127.0.0.1:${port}/`,
+        newTab: false,
+        stabilizationMs: 0,
+        timeoutMs: 5_000,
+      })).resolves.toMatchObject({ responseStatus: 200 });
+    } finally {
+      clearTimeout(release);
+    }
+    const running = await controller.status();
+    expect(running).toMatchObject({
+      state: 'running',
+      browserConnected: true,
+    });
+    expect(running.profileLockState).not.toBe('possible_external_owner');
+  });
+
+  it('bounds role resolution long enough for a transitioning control to appear', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Transitioning role</title></head><body>
+        <div id="controls"></div>
+        <a id="ready" href="#ready" hidden>Next step ready</a>
+        <script>
+          setTimeout(() => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = 'Continue';
+            button.onclick = () => { document.querySelector('#ready').hidden = false; };
+            document.querySelector('#controls').append(button);
+          }, 250);
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-role-transition-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    await expect(controller.clickByRole({
+      role: 'button',
+      name: 'Continue',
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'link',
+          name: 'Next step ready',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+  });
+
+  it('recaptures a suspiciously uniform screenshot when semantic content exists', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Uniform canvas</title><style>
+        html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+        canvas { display: block; width: 1px; height: 1px; }
+      </style></head><body><canvas aria-label="Managed render surface"></canvas></body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-uniform-capture-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const screenshot = await controller.screenshot({ fullPage: false, timeoutMs: 5_000 });
+    expect(screenshot.captureEvidence).toMatchObject({
+      artifactClassification: 'possibly_uniform',
+      semanticContentPresent: true,
+      retryUsed: true,
+      pageActivation: {
+        controllerSelected: true,
+        visibilityAfter: 'visible',
+      },
+    });
   });
 
   it('keeps an auxiliary player from stealing the active tab and recovers the sole remaining tab', async () => {
@@ -592,6 +720,102 @@ describe('BrowserController', () => {
         targetConnectedBefore: true,
         targetConnectedAtFirstEvent: true,
         targetConnectedAfter: true,
+        trustedEventObserved: true,
+        pointerDownOnTarget: true,
+        mouseDownOnTarget: true,
+        pointerUpOnTarget: true,
+        mouseUpOnTarget: true,
+        clickOnTarget: true,
+        misdirectedEventBlocked: false,
+        targetStateChangeBlocked: false,
+      },
+    });
+  });
+
+  it('activates the selected page and uses page mouse only after both handle paths emit zero events', async () => {
+    server = createServer((request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      if (request.url === '/auxiliary') {
+        response.end('<!doctype html><html><head><title>Auxiliary tab</title></head><body>Auxiliary</body></html>');
+        return;
+      }
+      response.end(`<!doctype html><html><head><title>Foreground dispatch target</title></head><body>
+        <button type="button" onclick="window.open('/auxiliary', 'auxiliary')">Open auxiliary</button>
+        <button id="target" type="button"
+          onclick="document.querySelector('#expanded').hidden = false">See more</button>
+        <a id="expanded" href="#expanded" hidden>Expanded foreground caption</a>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-page-mouse-dispatch-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/post`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    await controller.clickByRole({
+      role: 'button',
+      name: 'Open auxiliary',
+      exact: true,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 5_000,
+    });
+
+    const observed = await controller.snapshot({ depth: 8, boxes: false, frameId: null, timeoutMs: 5_000 });
+    const seeMoreLine = observed.snapshot.split('\n').find((line) => line.includes('See more'));
+    const seeMoreRef = seeMoreLine?.match(/\[ref=([^\]]+)\]/)?.[1];
+    expect(seeMoreRef).toBeDefined();
+    if (seeMoreRef === undefined) {
+      throw new Error('Fixture did not expose the foreground exact-target reference.');
+    }
+
+    const exactHandleDispatch = vi.spyOn(
+      controller as unknown as { dispatchExactHandleClick: () => Promise<void> },
+      'dispatchExactHandleClick',
+    );
+    exactHandleDispatch
+      .mockRejectedValueOnce(new Error('Timeout 750ms exceeded while waiting for element stability.'))
+      .mockRejectedValueOnce(new Error('The forced exact-handle transport returned without an event.'));
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: seeMoreRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: 'link',
+          name: 'Expanded foreground caption',
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect(exactHandleDispatch).toHaveBeenCalledTimes(2);
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
+      dispatchEvidence: {
+        strategy: 'guarded_exact_handle',
+        forcedFallbackUsed: true,
+        pageMouseFallbackUsed: true,
+        pageActivation: {
+          attemptCount: 3,
+          controllerSelected: true,
+          bringToFrontAttempted: true,
+          bringToFrontSucceeded: true,
+          visibilityAfter: 'visible',
+          documentFocusedAfter: true,
+        },
+        guardExpired: false,
         trustedEventObserved: true,
         pointerDownOnTarget: true,
         mouseDownOnTarget: true,

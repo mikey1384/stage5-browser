@@ -25,6 +25,7 @@ export type ActionFailureReason =
   | 'detached'
   | 'not_enabled'
   | 'not_visible'
+  | 'page_not_active'
   | 'pointer_intercepted'
   | 'target_missing'
   | 'timeout'
@@ -58,9 +59,22 @@ export interface SafeTargetState {
   coveredBy: { tagName: string; role: string | null; pointerEvents: string } | null;
 }
 
+export interface SanitizedPageActivationEvidence {
+  attemptCount: number;
+  controllerSelected: boolean;
+  bringToFrontAttempted: boolean;
+  bringToFrontSucceeded: boolean;
+  visibilityBefore: 'hidden' | 'prerender' | 'unknown' | 'visible';
+  visibilityAfter: 'hidden' | 'prerender' | 'unknown' | 'visible';
+  documentFocusedBefore: boolean | null;
+  documentFocusedAfter: boolean | null;
+}
+
 export interface SanitizedClickDispatchEvidence {
   strategy: 'guarded_exact_handle';
   forcedFallbackUsed: boolean;
+  pageMouseFallbackUsed: boolean;
+  pageActivation: SanitizedPageActivationEvidence;
   guardExpired: boolean;
   targetConnectedBefore: boolean;
   targetConnectedAtFirstEvent: boolean | null;

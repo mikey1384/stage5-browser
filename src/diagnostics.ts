@@ -131,7 +131,7 @@ const SUGGESTED_ACTIONS: Record<LaunchFailureReason, string> = {
   path_not_absolute: 'Set STAGE5_BROWSER_EXECUTABLE_PATH to an absolute trusted executable path, then restart the MCP host.',
   path_not_executable: 'Correct STAGE5_BROWSER_EXECUTABLE_PATH so it points to an executable file, then restart the MCP host.',
   permission_denied: 'Make the Stage5 Browser profile and artifact directories writable by the current user, then retry.',
-  profile_locked: 'Stop the other Stage5 Browser instance that owns this profile, then retry. Do not delete lock files while a browser may still be running.',
+  profile_locked: 'Check browser_status.profileLockState. Let an owned worker finish releasing the profile, or close only the dedicated Stage5 browser normally when another process owns it. Do not delete lock files while a browser may still be running.',
   unknown_launch_failure: 'Call browser_diagnostics and inspect its preflight, profile, and last-launch fields before retrying.',
   worker_protocol_mismatch: 'Restart the MCP host so the MCP server and browser worker load the same build.',
 };

@@ -42,6 +42,7 @@ import {
   type SafeTargetState,
   type SanitizedActionDiagnostic,
   type SanitizedClickDispatchEvidence,
+  type SanitizedPageActivationEvidence,
 } from './page-diagnostics.js';
 import {
   compareProfileExitMarker,
@@ -220,7 +221,15 @@ interface PreparedObservedClickTarget {
   targetState: SafeTargetState;
 }
 
-type RawClickDispatchEvidence = Omit<SanitizedClickDispatchEvidence, 'forcedFallbackUsed'>;
+type RawClickDispatchEvidence = Omit<
+  SanitizedClickDispatchEvidence,
+  'forcedFallbackUsed' | 'pageActivation' | 'pageMouseFallbackUsed'
+>;
+
+interface PageActivationObservation {
+  documentFocused: boolean | null;
+  visibility: SanitizedPageActivationEvidence['visibilityAfter'];
+}
 
 interface ClickDispatchProbeController {
   snapshot: () => RawClickDispatchEvidence;
@@ -248,7 +257,11 @@ const CLICK_REF_ARTICLE_TEXT_CHARACTERS = 20_000;
 const CLICK_REF_ARTICLE_CANDIDATES = 100;
 const CLICK_REF_ELEMENT_CANDIDATES = 5_000;
 const CLICK_REF_NORMAL_DISPATCH_TIMEOUT_MS = 750;
+const CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
+const CLICK_ROLE_RESOLUTION_TIMEOUT_MS = 1_000;
+const SCREENSHOT_RENDER_SETTLE_MS = 100;
+const SCREENSHOT_MIN_COMPRESSED_BYTES_PER_PIXEL = 0.01;
 const MAX_FILE_INPUTS_PER_SNAPSHOT = 20;
 const MAX_SCROLL_CONTAINERS_PER_SNAPSHOT = 20;
 const SCROLL_BOUNDARY_EPSILON_PX = 1;
@@ -353,6 +366,20 @@ export class BrowserController {
             );
           }
           await removeNativeControlRecord(profileDir);
+        }
+
+        // A compatible worker replacement can release its Chromium process a fraction
+        // after the new worker starts. Wait briefly for that owned lock to clear, but
+        // never remove a lock or assume that an unknown owner is stale.
+        if (!(await waitForProfileUnlock(profileDir, Math.min(this.config.readinessTimeoutMs, 2_000)))) {
+          const lateNativeRecord = await readNativeControlRecord(profileDir, this.selectedBrowser);
+          if (lateNativeRecord !== null && processIsRunning(lateNativeRecord.processId)) {
+            return await this.attachToNativeChromium(
+              lateNativeRecord,
+              launchIdentity,
+              authenticationProbeTargetOrigin,
+            );
+          }
         }
       }
 
@@ -539,10 +566,15 @@ export class BrowserController {
 
   async status(): Promise<BrowserStatus> {
     const context = this.usableContext();
+    const profilePath = profileDirForBrowser(this.config, this.selectedBrowser);
     if (context === undefined) {
       if (this.state !== 'failed' && this.state !== 'recovering') {
         this.state = 'stopped';
       }
+      const profile = await inspectProfile(
+        profilePath,
+        this.authenticationHandoff?.session.state().running === true,
+      );
       return {
         browser: this.selectedBrowser,
         state: this.state,
@@ -553,6 +585,8 @@ export class BrowserController {
         lastKnownUrl: this.lastKnownUrl,
         launchIdentity: this.authenticationHandoff?.launchIdentity ?? this.controlledLaunchIdentity,
         runtimeProfile: null,
+        profileLockState: profile.lockState,
+        profileLockFiles: profile.lockFiles,
       };
     }
 
@@ -561,6 +595,7 @@ export class BrowserController {
     const summaries = await Promise.all(pages.map((page, index) => this.pageSummary(page, index)));
     const reportedActivePage = this.preferredPage();
     const activePageIndex = reportedActivePage === undefined ? -1 : pages.indexOf(reportedActivePage);
+    const profile = await inspectProfile(profilePath, true);
     this.state = 'running';
 
     return {
@@ -573,6 +608,8 @@ export class BrowserController {
       lastKnownUrl: this.lastKnownUrl,
       launchIdentity: this.controlledLaunchIdentity,
       runtimeProfile: this.runtimeProfileObservation,
+      profileLockState: profile.lockState,
+      profileLockFiles: profile.lockFiles,
     };
   }
 
@@ -767,18 +804,54 @@ export class BrowserController {
 
   async screenshot(input: BrowserCommandInput<'screenshot'>): Promise<BrowserCommandOutput<'screenshot'>> {
     const page = await this.ensureActivePage(await this.ensureContext());
+    const pageActivation = await this.activateSelectedPageForInput(page, 1);
+    if (!this.pageIsActivatedForInput(pageActivation)) {
+      throw new Stage5BrowserError(
+        'OPERATION_FAILED',
+        'The controller-selected page could not become visible before screenshot capture.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'capture_page_not_active',
+            pageActivation,
+            suggestedAction: 'Call browser_tabs, explicitly select the intended tab, then capture once more.',
+          },
+        },
+      );
+    }
     const screenshotDir = path.join(this.config.artifactsDir, 'screenshots');
     await mkdir(screenshotDir, { recursive: true, mode: 0o700 });
     const screenshotPath = path.join(
       screenshotDir,
       `${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}.png`,
     );
-    const data = await page.screenshot({
+    let data = await page.screenshot({
       path: screenshotPath,
       type: 'png',
       fullPage: input.fullPage,
       timeout: input.timeoutMs,
     });
+    const semanticContentPresent = await boundedValue(
+      page.locator('body').evaluate((body) => {
+        const text = body instanceof HTMLElement ? body.innerText.trim() : body.textContent?.trim() ?? '';
+        return text.length > 0 || body.querySelector('canvas, img, svg, video') !== null;
+      }),
+      500,
+      false,
+    );
+    let artifactClassification = this.screenshotArtifactClassification(data);
+    let retryUsed = false;
+    if (artifactClassification === 'possibly_uniform' && semanticContentPresent) {
+      retryUsed = true;
+      await page.waitForTimeout(SCREENSHOT_RENDER_SETTLE_MS);
+      data = await page.screenshot({
+        path: screenshotPath,
+        type: 'png',
+        fullPage: input.fullPage,
+        timeout: input.timeoutMs,
+      });
+      artifactClassification = this.screenshotArtifactClassification(data);
+    }
     await chmod(screenshotPath, 0o600);
 
     return {
@@ -786,6 +859,13 @@ export class BrowserController {
       path: screenshotPath,
       mimeType: 'image/png',
       dataBase64: data.toString('base64'),
+      captureEvidence: {
+        pageActivation,
+        pngBytes: data.byteLength,
+        artifactClassification,
+        semanticContentPresent,
+        retryUsed,
+      },
     };
   }
 
@@ -842,6 +922,7 @@ export class BrowserController {
       'click_by_role',
       input.role,
       input.name,
+      input.timeoutMs,
     );
     const startedAt = Date.now();
     const actionStartedAt = new Date(startedAt).toISOString();
@@ -4019,15 +4100,30 @@ export class BrowserController {
     action: SanitizedActionDiagnostic['action'],
     role: string,
     name: string,
+    timeoutMs: number,
   ): Promise<SafeTargetState | null> {
-    const count = await locator.count();
+    const startedAt = Date.now();
+    const deadline = startedAt + Math.min(timeoutMs, CLICK_ROLE_RESOLUTION_TIMEOUT_MS);
+    let count = await locator.count();
+    while (count === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+      count = await locator.count();
+    }
     if (count === 0) {
       this.pageDiagnostics.recordAction(
         page,
         this.targetingFailureDiagnostic(action, page, 'target_missing'),
       );
       throw new Stage5BrowserError('TARGET_NOT_FOUND', 'No element matched the requested role and accessible name.', {
-        details: { role, name },
+        recoverable: true,
+        details: {
+          role,
+          name,
+          actionDispatched: false,
+          clickDispatched: false,
+          resolutionWaitMs: Date.now() - startedAt,
+          suggestedAction: 'The role action emitted no input. Take a fresh semantic snapshot because any visible state change came from earlier or autonomous page activity.',
+        },
       });
     }
     if (count > 1) {
@@ -4040,6 +4136,22 @@ export class BrowserController {
       });
     }
     return inspectTargetState(locator);
+  }
+
+  private screenshotArtifactClassification(data: Buffer): 'contentful' | 'possibly_uniform' {
+    const pngSignature = '89504e470d0a1a0a';
+    if (data.byteLength < 24 || data.subarray(0, 8).toString('hex') !== pngSignature) {
+      return 'possibly_uniform';
+    }
+    const width = data.readUInt32BE(16);
+    const height = data.readUInt32BE(20);
+    const pixelCount = width * height;
+    if (!Number.isSafeInteger(pixelCount) || pixelCount <= 0) {
+      return 'possibly_uniform';
+    }
+    return data.byteLength / pixelCount >= SCREENSHOT_MIN_COMPRESSED_BYTES_PER_PIXEL
+      ? 'contentful'
+      : 'possibly_uniform';
   }
 
   private async prepareObservedClickTarget(
@@ -4213,6 +4325,17 @@ export class BrowserController {
     let probeFinished = false;
     let finalEvidence: SanitizedClickDispatchEvidence | null = null;
     let forcedFallbackUsed = false;
+    let pageMouseFallbackUsed = false;
+    let pageActivation: SanitizedPageActivationEvidence = {
+      attemptCount: 0,
+      controllerSelected: this.preferredPage() === page,
+      bringToFrontAttempted: false,
+      bringToFrontSucceeded: false,
+      visibilityBefore: 'unknown',
+      visibilityAfter: 'unknown',
+      documentFocusedBefore: null,
+      documentFocusedAfter: null,
+    };
     const readProbe = async (finish: boolean): Promise<SanitizedClickDispatchEvidence | null> => {
       if (finish && probeFinished) {
         return finalEvidence;
@@ -4223,6 +4346,8 @@ export class BrowserController {
         const evidence: SanitizedClickDispatchEvidence = {
           ...raw,
           forcedFallbackUsed,
+          pageMouseFallbackUsed,
+          pageActivation,
         };
         if (finish) {
           probeFinished = true;
@@ -4243,6 +4368,17 @@ export class BrowserController {
     };
 
     try {
+      pageActivation = await this.activateSelectedPageForInput(page, pageActivation.attemptCount + 1);
+      if (!this.pageIsActivatedForInput(pageActivation)) {
+        const evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The controller-selected page did not become the visible input target.'),
+          await inspectTargetState(preparedTarget.handle) ?? preparedTarget.targetState,
+          startedAt,
+          evidence,
+        );
+      }
       const normalAttemptTimeoutMs = Math.max(
         1,
         Math.min(
@@ -4252,7 +4388,7 @@ export class BrowserController {
       );
       let normalError: unknown = null;
       try {
-        await preparedTarget.handle.click({
+        await this.dispatchExactHandleClick(preparedTarget.handle, {
           noWaitAfter: true,
           timeout: normalAttemptTimeoutMs,
         });
@@ -4281,11 +4417,28 @@ export class BrowserController {
         );
       }
 
+      pageActivation = await this.activateSelectedPageForInput(page, pageActivation.attemptCount + 1);
+      if (!this.pageIsActivatedForInput(pageActivation)) {
+        evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The controller-selected page lost visible activation before guarded fallback input.'),
+          await inspectTargetState(preparedTarget.handle) ?? targetState ?? preparedTarget.targetState,
+          startedAt,
+          evidence,
+        );
+      }
       forcedFallbackUsed = true;
-      const remainingTimeoutMs = Math.max(1, timeoutMs - (Date.now() - dispatchStartedAt));
+      const remainingTimeoutMs = Math.max(
+        1,
+        Math.min(
+          CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS,
+          timeoutMs - (Date.now() - dispatchStartedAt),
+        ),
+      );
       let forcedError: unknown = null;
       try {
-        await preparedTarget.handle.click({
+        await this.dispatchExactHandleClick(preparedTarget.handle, {
           force: true,
           noWaitAfter: true,
           timeout: remainingTimeoutMs,
@@ -4294,17 +4447,65 @@ export class BrowserController {
         forcedError = error;
       }
 
+      evidence = await readProbe(false);
+      if (evidence?.clickOnTarget === true) {
+        return await readProbe(true);
+      }
+      if (forcedError === null && evidence === null) {
+        await readProbe(true);
+        return null;
+      }
+
+      const directTargetState = await inspectTargetState(preparedTarget.handle);
+      if (!this.canUsePageMouseFallback(evidence, directTargetState)) {
+        evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          forcedError ?? new Error('The guarded exact-handle fallback did not emit a target click event.'),
+          directTargetState ?? targetState ?? preparedTarget.targetState,
+          startedAt,
+          evidence,
+        );
+      }
+
+      pageActivation = await this.activateSelectedPageForInput(page, pageActivation.attemptCount + 1);
+      const point = this.pageIsActivatedForInput(pageActivation)
+        ? await this.freshMainFrameTargetPoint(page, preparedTarget.handle)
+        : null;
+      if (point === null) {
+        evidence = await readProbe(true);
+        return this.throwObservedClickDispatchFailure(
+          page,
+          new Error('The controller-selected page or exact main-frame target was not ready for guarded page input.'),
+          await inspectTargetState(preparedTarget.handle) ?? directTargetState ?? preparedTarget.targetState,
+          startedAt,
+          evidence,
+        );
+      }
+
+      pageMouseFallbackUsed = true;
+      let pageMouseError: unknown = null;
+      try {
+        await page.mouse.click(point.x, point.y, {
+          button: 'left',
+          clickCount: 1,
+          delay: 0,
+        });
+      } catch (error) {
+        pageMouseError = error;
+      }
+
       evidence = await readProbe(true);
       if (evidence?.clickOnTarget === true) {
         return evidence;
       }
-      if (forcedError === null && evidence === null) {
+      if (pageMouseError === null && evidence === null) {
         return null;
       }
       return this.throwObservedClickDispatchFailure(
         page,
-        forcedError ?? new Error('The guarded exact-handle fallback did not emit a target click event.'),
-        await inspectTargetState(preparedTarget.handle) ?? targetState ?? preparedTarget.targetState,
+        pageMouseError ?? new Error('The guarded page-level fallback did not emit a target click event.'),
+        await inspectTargetState(preparedTarget.handle) ?? directTargetState ?? targetState ?? preparedTarget.targetState,
         startedAt,
         evidence,
       );
@@ -4312,6 +4513,100 @@ export class BrowserController {
       if (!probeFinished) {
         await readProbe(true);
       }
+    }
+  }
+
+  private async dispatchExactHandleClick(
+    handle: ElementHandle<HTMLElement | SVGElement>,
+    options: { force?: boolean; noWaitAfter: boolean; timeout: number },
+  ): Promise<void> {
+    await handle.click(options);
+  }
+
+  private async activateSelectedPageForInput(
+    page: Page,
+    attemptCount: number,
+  ): Promise<SanitizedPageActivationEvidence> {
+    const before = await this.observePageActivation(page);
+    let bringToFrontSucceeded = false;
+    try {
+      await page.bringToFront();
+      bringToFrontSucceeded = true;
+    } catch {
+      bringToFrontSucceeded = false;
+    }
+    const after = await this.observePageActivation(page);
+    return {
+      attemptCount,
+      controllerSelected: this.preferredPage() === page,
+      bringToFrontAttempted: true,
+      bringToFrontSucceeded,
+      visibilityBefore: before.visibility,
+      visibilityAfter: after.visibility,
+      documentFocusedBefore: before.documentFocused,
+      documentFocusedAfter: after.documentFocused,
+    };
+  }
+
+  private async observePageActivation(page: Page): Promise<PageActivationObservation> {
+    const observed = await boundedValue<PageActivationObservation>(
+      page.evaluate(() => ({
+        documentFocused: document.hasFocus(),
+        visibility: document.visibilityState,
+      }) as PageActivationObservation),
+      300,
+      { documentFocused: null, visibility: 'unknown' },
+    );
+    const visibility = observed.visibility === 'hidden' ||
+      observed.visibility === 'visible' ||
+      observed.visibility === 'prerender'
+      ? observed.visibility
+      : 'unknown';
+    return {
+      documentFocused: typeof observed.documentFocused === 'boolean' ? observed.documentFocused : null,
+      visibility,
+    };
+  }
+
+  private pageIsActivatedForInput(evidence: SanitizedPageActivationEvidence): boolean {
+    return evidence.controllerSelected &&
+      evidence.bringToFrontSucceeded &&
+      evidence.visibilityAfter === 'visible';
+  }
+
+  private async freshMainFrameTargetPoint(
+    page: Page,
+    handle: ElementHandle<HTMLElement | SVGElement>,
+  ): Promise<{ x: number; y: number } | null> {
+    try {
+      if (await handle.ownerFrame() !== page.mainFrame()) {
+        return null;
+      }
+      return await handle.evaluate((element) => {
+        if (!element.isConnected) return null;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none'
+          && style.visibility !== 'hidden' && style.opacity !== '0';
+        const enabled = !('disabled' in element && Boolean((element as HTMLButtonElement).disabled))
+          && element.getAttribute('aria-disabled') !== 'true';
+        if (!visible || !enabled || rect.bottom <= 0 || rect.right <= 0 ||
+          rect.top >= window.innerHeight || rect.left >= window.innerWidth) {
+          return null;
+        }
+        const left = Math.max(0, rect.left);
+        const right = Math.min(window.innerWidth - 1, rect.right);
+        const top = Math.max(0, rect.top);
+        const bottom = Math.min(window.innerHeight - 1, rect.bottom);
+        if (right <= left || bottom <= top) return null;
+        const x = left + (right - left) / 2;
+        const y = top + (bottom - top) / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (hit === null || (hit !== element && !element.contains(hit))) return null;
+        return { x, y };
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -4449,6 +4744,27 @@ export class BrowserController {
       targetState.receivesPointerEvents === true;
   }
 
+  private canUsePageMouseFallback(
+    evidence: SanitizedClickDispatchEvidence | null,
+    targetState: SafeTargetState | null,
+  ): boolean {
+    return evidence !== null &&
+      !evidence.guardExpired &&
+      !evidence.trustedEventObserved &&
+      !evidence.pointerDownOnTarget &&
+      !evidence.mouseDownOnTarget &&
+      !evidence.pointerUpOnTarget &&
+      !evidence.mouseUpOnTarget &&
+      !evidence.clickOnTarget &&
+      !evidence.misdirectedEventBlocked &&
+      !evidence.targetStateChangeBlocked &&
+      targetState !== null &&
+      targetState.visible &&
+      targetState.enabled &&
+      targetState.inViewport &&
+      targetState.receivesPointerEvents === true;
+  }
+
   private throwObservedClickDispatchFailure(
     page: Page,
     error: unknown,
@@ -4492,7 +4808,9 @@ export class BrowserController {
     const dispatchUnknown = evidence.guardExpired && !evidence.trustedEventObserved;
     const actionDispatched = dispatchUnknown ? 'unknown' : exactTargetActivity;
     const clickDispatched = dispatchUnknown ? 'unknown' : evidence.clickOnTarget;
-    const reason = evidence.misdirectedEventBlocked
+    const reason = !this.pageIsActivatedForInput(evidence.pageActivation)
+      ? 'page_not_active'
+      : evidence.misdirectedEventBlocked
       ? 'pointer_intercepted'
       : !evidence.targetConnectedAfter || (evidence.targetStateChangeBlocked && targetState === null)
         ? 'detached'

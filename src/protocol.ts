@@ -3,6 +3,7 @@ import type { BrowserDiagnostics } from './diagnostics.js';
 import type { BrowserAvailability, BrowserProduct } from './browser-provider.js';
 import type { SerializedStage5BrowserError } from './errors.js';
 import type { RuntimeProcessInfo } from './runtime-info.js';
+import type { SanitizedPageActivationEvidence } from './page-diagnostics.js';
 import type {
   AuthenticationStorageContinuity,
   BrowserLaunchIdentity,
@@ -249,6 +250,8 @@ export interface BrowserStatus {
   lastKnownUrl: string | null;
   launchIdentity: BrowserLaunchIdentity | null;
   runtimeProfile: RuntimeProfileObservation | null;
+  profileLockState: 'none' | 'owned_browser_running' | 'possible_external_owner';
+  profileLockFiles: string[];
 }
 
 export interface AvailableBrowsers {
@@ -333,7 +336,19 @@ export interface BrowserCommandMap {
   };
   screenshot: {
     input: { fullPage: boolean; timeoutMs: number };
-    output: { page: PageSummary; path: string; mimeType: 'image/png'; dataBase64: string };
+    output: {
+      page: PageSummary;
+      path: string;
+      mimeType: 'image/png';
+      dataBase64: string;
+      captureEvidence: {
+        pageActivation: SanitizedPageActivationEvidence;
+        pngBytes: number;
+        artifactClassification: 'contentful' | 'possibly_uniform';
+        semanticContentPresent: boolean;
+        retryUsed: boolean;
+      };
+    };
   };
   tabs: {
     input: Record<string, never>;
