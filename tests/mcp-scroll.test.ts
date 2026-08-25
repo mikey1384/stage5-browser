@@ -113,6 +113,11 @@ describe('MCP nested scrolling', () => {
         waitFor: expect.any(Object),
       },
     });
+    for (const name of ['browser_click_by_role', 'browser_click_ref']) {
+      const clickTool = tools.tools.find((tool) => tool.name === name);
+      expect(clickTool, `${name} should be exposed`).toBeDefined();
+      expect(JSON.stringify(clickTool?.inputSchema)).toContain('"expectedHidden"');
+    }
 
     const opened = await client.callTool({
       name: 'browser_open',

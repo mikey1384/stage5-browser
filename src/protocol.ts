@@ -75,6 +75,7 @@ export interface ClickPostcondition {
   expectedUrl: UrlExpectation | null;
   expectedSelected: boolean | null;
   expectedVisible: VisibleElementExpectation | null;
+  expectedHidden?: VisibleElementExpectation | null;
   timeoutMs: number;
 }
 

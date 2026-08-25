@@ -10,7 +10,7 @@ const buildFingerprint = process.env.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT ?? 'f
 const runtime = {
   component: 'worker',
   version: '0.6.5',
-  protocolVersion: 6,
+  protocolVersion: 7,
   processId: process.pid,
   startedAt,
   buildModifiedAt: startedAt,

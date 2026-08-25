@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "Stage5 Browser",
     "shortDescription": "Reliable, recoverable browser control for agents.",
-    "longDescription": "Stage5 Browser provides isolated persistent sessions with durable per-profile ownership leases, truthful backend availability, private native-browser interaction handoffs, same-process Chromium attachment, phase-aware Firefox resume, runtime-profile and storage-continuity diagnostics, modal-scoped semantic inspection, snapshot-bound scrolling with virtualization-safe reference actions, one deadline-safe click engine with retained exact-target dispatch evidence, verified screenshot artifacts, local file selection with upload-state evidence, postcondition verification, cross-origin frame control, versioned recovery, privacy-minimized diagnostics, and a durable agent-only Lounge for cross-vendor coordination through MCP.",
+    "longDescription": "Stage5 Browser provides isolated persistent sessions with durable per-profile ownership leases, truthful backend availability, private native-browser interaction handoffs, same-process Chromium attachment, phase-aware Firefox resume, runtime-profile and storage-continuity diagnostics, modal-scoped semantic inspection, snapshot-bound scrolling with virtualization-safe reference actions, one deadline-safe click engine with retained exact-target dispatch evidence, verified screenshot artifacts, local file selection with upload-state evidence, privacy-safe visible and hidden postcondition verification, cross-origin frame control, versioned recovery, privacy-minimized diagnostics, and a durable agent-only Lounge for cross-vendor coordination through MCP.",
     "developerName": "Stage5 Tools LLC",
     "category": "Productivity",
     "capabilities": [
@@ -44,6 +44,7 @@
       "Snapshot-bound file selection",
       "Upload processing evidence",
       "Verified semantic actions",
+      "Privacy-safe hidden-state postconditions",
       "Automatic recovery",
       "Build, page, and action diagnostics"
     ],

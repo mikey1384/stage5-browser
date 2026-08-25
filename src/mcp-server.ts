@@ -45,12 +45,14 @@ const clickPostconditionSchema = z.object({
   expectedUrl: urlExpectationSchema.nullable().default(null),
   expectedSelected: z.boolean().nullable().default(null),
   expectedVisible: visibleElementExpectationSchema.nullable().default(null),
+  expectedHidden: visibleElementExpectationSchema.nullable().default(null),
   timeoutMs: z.number().int().min(100).max(60_000).default(5_000),
 }).refine(
   (value) =>
     value.expectedUrl !== null ||
     value.expectedSelected !== null ||
-    value.expectedVisible !== null,
+    value.expectedVisible !== null ||
+    value.expectedHidden !== null,
   { message: 'At least one click postcondition must be supplied.' },
 );
 const fileProcessingExpectationSchema = z.object({
@@ -194,7 +196,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async (input) => safelyCurrent(() => lounge.join({
+    async (input) => safely(() => lounge.join({
       agentId: input.agentId,
       room: input.room,
       ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
@@ -223,7 +225,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async (input) => safelyCurrent(() => lounge.send({
+    async (input) => safely(() => lounge.send({
       kind: input.kind,
       body: input.body,
       replyTo: input.replyTo,
@@ -250,7 +252,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async (input, context) => safelyCurrent(() => lounge.wait(input, context.mcpReq.signal)),
+    async (input, context) => safely(() => lounge.wait(input, context.mcpReq.signal)),
   );
 
   server.registerTool(
@@ -270,7 +272,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async (input) => safelyCurrent(() => lounge.ack(input)),
+    async (input) => safely(() => lounge.ack(input)),
   );
 
   server.registerTool(
@@ -287,7 +289,7 @@ function createServer(): McpServer {
         openWorldHint: false,
       },
     },
-    async () => safelyCurrent(() => lounge.status()),
+    async () => safely(() => lounge.status()),
   );
 
   server.registerTool(
@@ -544,7 +546,7 @@ function createServer(): McpServer {
     {
       title: 'Click unique semantic target',
       description:
-        'Click exactly one element matched by ARIA role and accessible name through the same guarded exact-target engine used by browser_click_ref. One absolute deadline covers resolution, preparation, activation, dispatch, fallback, postcondition, and evidence finalization. A zero match receives a bounded transition wait, then reports explicit false dispatch evidence; the tool never attributes earlier or autonomous UI changes to that miss. It fails instead of choosing an ambiguous match. Optional postconditions distinguish a confirmed target click from a successful state change; expectedSelected also covers accessible expanded state. If partial exact-target input produces the requested postcondition, Stage5 returns that terminal success with truthful partial dispatch evidence and never replays.',
+        'Click exactly one element matched by ARIA role and accessible name through the same guarded exact-target engine used by browser_click_ref. One absolute deadline covers resolution, preparation, activation, dispatch, fallback, postcondition, and evidence finalization. A zero match receives a bounded transition wait, then reports explicit false dispatch evidence; the tool never attributes earlier or autonomous UI changes to that miss. It fails instead of choosing an ambiguous match. Optional postconditions distinguish a confirmed target click from a successful state change; expectedSelected also covers accessible expanded state, while expectedHidden proves one exact semantic element became absent or uniquely hidden without returning its name. If partial exact-target input produces the requested postcondition, Stage5 returns that terminal success with truthful partial dispatch evidence and never replays.',
       inputSchema: clickByRoleInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -561,7 +563,7 @@ function createServer(): McpServer {
     {
       title: 'Click observed snapshot reference',
       description:
-        'Click one reference from the latest semantic snapshot of the same document and frame through the shared role/ref exact-target engine. One absolute deadline covers viewport preparation, activation, normal dispatch, guarded fallback, postcondition, and evidence finalization. A fresh offscreen ref receives bounded incremental nested/document scrolling while retaining the exact DOM node. If feed virtualization detaches it, only one uniquely proven same-article semantic replacement may be rebound before actionability revalidation. Exact-target dispatch records sanitized page-activation and trusted-event evidence. One guarded forced attempt is allowed only after a normal attempt with zero input events and unchanged full actionability; if both handle paths emit zero events, one guarded page-level mouse dispatch may use the fresh exact main-frame hit point without exposing coordinates. Partial input is never replayed; when its requested postcondition is already observed, that effect becomes the terminal success while click evidence remains truthful. Stale, reused, changed, inactive-page, cross-frame, uncertain, or ambiguous references otherwise fail closed.',
+        'Click one reference from the latest semantic snapshot of the same document and frame through the shared role/ref exact-target engine. One absolute deadline covers viewport preparation, activation, normal dispatch, guarded fallback, postcondition, and evidence finalization. A fresh offscreen ref receives bounded incremental nested/document scrolling while retaining the exact DOM node. If feed virtualization detaches it, only one uniquely proven same-article semantic replacement may be rebound before actionability revalidation. Exact-target dispatch records sanitized page-activation and trusted-event evidence. One guarded forced attempt is allowed only after a normal attempt with zero input events and unchanged full actionability; if both handle paths emit zero events, one guarded page-level mouse dispatch may use the fresh exact main-frame hit point without exposing coordinates. Partial input is never replayed; when its requested postcondition is already observed, that effect becomes the terminal success while click evidence remains truthful. expectedHidden proves one exact semantic element became absent or uniquely hidden without returning its name. Stale, reused, changed, inactive-page, cross-frame, uncertain, or ambiguous references otherwise fail closed.',
       inputSchema: clickRefInputSchema,
       annotations: {
         readOnlyHint: false,

@@ -66,14 +66,14 @@ describe('BrowserSupervisor', () => {
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
       version: '0.6.2',
-      protocolVersion: 6,
+      protocolVersion: 7,
       processId: 123,
       startedAt: '2026-08-24T01:00:00.000Z',
       buildModifiedAt: '2026-08-24T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
       currentVersion: '0.6.2',
-      currentProtocolVersion: 6,
+      currentProtocolVersion: 7,
       currentToolCatalogVersion: 6,
       compatibleUpdateAvailable: false,
       restartRequired: false,
@@ -135,7 +135,7 @@ describe('BrowserSupervisor', () => {
 
     expect(second.result.workerPid).toBe(first.result.workerPid);
     expect(supervisor.workerRuntimeInfo).toMatchObject({
-      protocolVersion: 6,
+      protocolVersion: 7,
       artifactFingerprint: 'worker-build-2',
     });
   });
@@ -153,14 +153,14 @@ describe('BrowserSupervisor', () => {
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
       version: '0.6.7',
-      protocolVersion: 6,
+      protocolVersion: 7,
       processId: 123,
       startedAt: '2026-08-25T01:00:00.000Z',
       buildModifiedAt: '2026-08-25T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
       currentVersion: '0.6.7',
-      currentProtocolVersion: 6,
+      currentProtocolVersion: 7,
       currentToolCatalogVersion: 6,
       compatibleUpdateAvailable: false,
       restartRequired: false,
@@ -216,14 +216,14 @@ describe('BrowserSupervisor', () => {
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
       version: '0.6.2',
-      protocolVersion: 6,
+      protocolVersion: 7,
       processId: 123,
       startedAt: '2026-08-24T01:00:00.000Z',
       buildModifiedAt: '2026-08-24T01:00:00.000Z',
       artifactFingerprint: 'build-1',
       currentArtifactFingerprint: 'build-1',
       currentVersion: '0.6.2',
-      currentProtocolVersion: 6,
+      currentProtocolVersion: 7,
       currentToolCatalogVersion: 6,
       compatibleUpdateAvailable: false,
       restartRequired: false,

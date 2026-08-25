@@ -5716,6 +5716,37 @@ export class BrowserController {
       });
     }
 
+    if (postcondition.expectedHidden !== undefined && postcondition.expectedHidden !== null) {
+      const expectation = postcondition.expectedHidden;
+      let observed: boolean | null = null;
+      try {
+        const frame = expectation.frameId === null
+          ? page.mainFrame()
+          : this.resolveFrame(page, expectation.frameId);
+        const locator = frame.getByRole(expectation.role, {
+          name: expectation.name,
+          exact: expectation.exact,
+          includeHidden: true,
+        });
+        const count = await locator.count();
+        if (count === 0) {
+          observed = false;
+        } else if (count === 1) {
+          observed = await locator.isVisible();
+        }
+      } catch {
+        // A missing frame or failed observation is not proof that the requested
+        // semantic element became hidden. Preserve fail-closed uncertainty.
+        observed = null;
+      }
+      checks.push({
+        kind: 'visible',
+        passed: observed === false,
+        expected: false,
+        observed,
+      });
+    }
+
     if (clickedFrame.isDetached() && postcondition.expectedSelected !== null) {
       const selected = checks.find((check) => check.kind === 'selected');
       if (selected !== undefined) {
