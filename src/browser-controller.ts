@@ -1341,9 +1341,10 @@ export class BrowserController {
 
     const nativeRecord = this.nativeControlRecord;
     if (nativeRecord !== null) {
+      await this.persistActionDiagnosticsForWorkerHandoff();
       await writeNativeControlRecord(
         profileDirForBrowser(this.config, this.selectedBrowser),
-        { ...nativeRecord, state: 'controlled' },
+        { ...(this.nativeControlRecord ?? nativeRecord), state: 'controlled' },
       ).catch(() => undefined);
       await this.ownershipLease.updatePhase('owned_active').catch(() => undefined);
     }
@@ -1357,6 +1358,37 @@ export class BrowserController {
     this.state = 'stopped';
     await this.ownershipLease.detach();
     await nativeBrowser.close().catch(() => undefined);
+  }
+
+  async persistActionDiagnosticsForWorkerHandoff(): Promise<void> {
+    const page = this.preferredPage();
+    const record = this.nativeControlRecord;
+    if (page === undefined || page.isClosed() || record === null || record.state !== 'controlled') return;
+    const diagnostic = this.pageDiagnostics.snapshot(page).lastAction;
+    if (diagnostic === null) return;
+    const [selectedTargetId, documentId] = await Promise.all([
+      this.chromiumTargetId(page),
+      this.chromiumDocumentId(page),
+    ]);
+    if (selectedTargetId === null || documentId === null) return;
+    const updated: NativeControlRecord = {
+      ...record,
+      selectedTargetId,
+      retainedAction: {
+        selectedTargetId,
+        documentId,
+        diagnostic,
+      },
+    };
+    try {
+      await writeNativeControlRecord(
+        profileDirForBrowser(this.config, this.selectedBrowser),
+        updated,
+      );
+      this.nativeControlRecord = updated;
+    } catch {
+      // Diagnostics retention must never change the browser action's terminal result.
+    }
   }
 
   async status(): Promise<BrowserStatus> {
@@ -4454,6 +4486,7 @@ export class BrowserController {
     ]);
     this.activePage = activePageBeforeRuntimeInspection;
     await this.persistNativeSelectedPage(this.activePage);
+    await this.restoreNativeActionAfterAttach(this.activePage);
     this.runtimeProfileObservation = runtimeProfile;
     const targetOriginLoadedAtControlledStart = authenticationProbeTargetOrigin !== null
       && (
@@ -4493,7 +4526,8 @@ export class BrowserController {
     if (record === null || page.isClosed()) return;
     const selectedTargetId = await this.chromiumTargetId(page);
     if (selectedTargetId === null || record.selectedTargetId === selectedTargetId) return;
-    const updated: NativeControlRecord = { ...record, selectedTargetId };
+    const { retainedAction: _staleRetainedAction, ...recordWithoutRetainedAction } = record;
+    const updated: NativeControlRecord = { ...recordWithoutRetainedAction, selectedTargetId };
     try {
       await writeNativeControlRecord(
         profileDirForBrowser(this.config, this.selectedBrowser),
@@ -4503,6 +4537,42 @@ export class BrowserController {
     } catch {
       // The current in-memory selection remains authoritative. A later explicit
       // tab selection/open will retry persistence without exposing the target ID.
+    }
+  }
+
+  private async restoreNativeActionAfterAttach(page: Page): Promise<void> {
+    const retained = this.nativeControlRecord?.retainedAction;
+    if (retained === undefined || page.isClosed()) return;
+    const [selectedTargetId, documentId] = await Promise.all([
+      this.chromiumTargetId(page),
+      this.chromiumDocumentId(page),
+    ]);
+    if (
+      selectedTargetId === null ||
+      documentId === null ||
+      selectedTargetId !== retained.selectedTargetId ||
+      documentId !== retained.documentId
+    ) return;
+    const currentUrl = sanitizeUrlForJournal(page.url()) ?? null;
+    if (currentUrl !== retained.diagnostic.pageUrl) return;
+    this.pageDiagnostics.restoreAction(page, retained.diagnostic);
+  }
+
+  private async chromiumDocumentId(page: Page): Promise<string | null> {
+    let session: Awaited<ReturnType<BrowserContext['newCDPSession']>> | null = null;
+    try {
+      session = await page.context().newCDPSession(page);
+      const response = await session.send('Page.getFrameTree') as {
+        frameTree?: { frame?: { loaderId?: unknown } };
+      };
+      const documentId = response.frameTree?.frame?.loaderId;
+      return typeof documentId === 'string' && documentId.length > 0 && documentId.length <= 256
+        ? documentId
+        : null;
+    } catch {
+      return null;
+    } finally {
+      await session?.detach().catch(() => undefined);
     }
   }
 

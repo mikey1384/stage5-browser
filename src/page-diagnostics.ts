@@ -473,6 +473,19 @@ export class PageDiagnosticBuffer {
     record.activeActionNetworkEndAtMs = new Date(diagnostic.occurredAt).getTime() + ACTION_NETWORK_TAIL_MS;
   }
 
+  restoreAction(page: Page, diagnostic: SanitizedActionDiagnostic): void {
+    const record = this.recordFor(page);
+    const currentOccurredAt = record.lastAction === null
+      ? Number.NEGATIVE_INFINITY
+      : new Date(record.lastAction.occurredAt).getTime();
+    const retainedOccurredAt = new Date(diagnostic.occurredAt).getTime();
+    if (currentOccurredAt >= retainedOccurredAt) return;
+    record.lastAction = structuredClone(diagnostic);
+    record.lastActionNetworkEvents = [];
+    record.activeActionStartedAt = diagnostic.startedAt;
+    record.activeActionNetworkEndAtMs = null;
+  }
+
   snapshot(page: Page): PageRuntimeDiagnostics {
     const record = this.recordFor(page);
     return {
