@@ -122,6 +122,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-25-facebook-native-window-activation.md` — Facebook browser-hidden target finding plus the compatible 0.6.5 exact owned-window activation boundary
 - `docs/dogfooding-2026-08-25-twinkle-runtime-friction.md` — Twinkle profile-lock, transitioning-role, unknown-dispatch, and managed-capture findings plus their 0.6.4 evidence boundaries
 - `docs/dogfooding-2026-08-25-coinbase-release-gate.md` — Coinbase ownership, shared-click, Firefox release, private-input, and availability blockers plus the compatible 0.6.6 remedies
+- `docs/dogfooding-2026-08-25-facebook-auth-route.md` — Facebook authentication false-negative caused by incidental post-login query metadata, fixed in 0.6.7
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers
 
@@ -157,7 +158,7 @@ Key implementation files:
 - Firefox retains the exit-and-restart handoff, modeled as `close_requested → process_exited → profile_unlocked`. An interrupted request/resume continues that retained phase within the remaining operation budget instead of relaunching. On macOS, a persistent `.parentlock` counts as active only while the OS reports a holder. Resume still rejects a running, actually locked, or launch-identity-mismatched profile and never deletes locks or rewrites shutdown preferences.
 - The pinned Playwright Firefox binary currently reports `navigator.webdriver: true` even during its uncontrolled native launch despite receiving no automation flags. Use Brave, Chrome, or Edge for bot-sensitive login/KYC; Firefox's private handoff is supported for lifecycle/session continuity but does not claim automation invisibility.
 - Chromium resume reports the canonical profile path observed by the running browser and compares it with the configured profile after resolving filesystem aliases. A mismatch fails before target navigation.
-- The private phase records no exact manual clicks. Chromium resume samples privacy-safe target-origin cookie-key presence immediately after same-process attachment and after target load; Firefox retains the offline-after-exit checkpoint. A bounded preview and fresh full snapshot remain authoritative for visible authentication state; origin-only URL checks are rejected as too weak.
+- The private phase records no exact manual clicks. Chromium resume samples privacy-safe target-origin cookie-key presence immediately after same-process attachment and after target load; Firefox retains the offline-after-exit checkpoint. A bounded preview and fresh full snapshot remain authoritative for visible authentication state; origin-only URL checks are rejected as too weak. An exact authentication route that omits a query accepts site-added query metadata only when origin, pathname, and fragment still match; explicit queries and all generic navigation/click expectations remain strict.
 - A hung or disconnected worker is killed and replaced before another operation proceeds.
 - MCP and worker builds complete a versioned protocol handshake; incompatible contract changes fail with `MCP_RESTART_REQUIRED`.
 - A running MCP automatically rolls its worker onto compatible completed builds; only tool-catalog or worker-protocol changes require a host reconnect.

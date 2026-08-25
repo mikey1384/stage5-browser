@@ -2501,6 +2501,70 @@ describe('BrowserController', () => {
     });
   });
 
+  it('accepts an exact post-login route when the site appends an incidental query', async () => {
+    server = createServer((request, response) => {
+      const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
+      if (requestUrl.pathname === '/personal-profile' && requestUrl.search === '') {
+        response.writeHead(302, { location: '/personal-profile?checkpoint_src=any' });
+        response.end();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><head><title>Profile</title></head><body><h1>Signed-in personal profile</h1></body></html>');
+    });
+    const port = await listen(server);
+    const origin = `http://127.0.0.1:${port}`;
+    const expectedRoute = `${origin}/personal-profile`;
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-auth-query-'));
+    const config = browserConfig(temporaryRoot);
+    const offlineInspections = [
+      storageInspection(origin, []),
+      storageInspection(origin, ['human-added-key']),
+    ];
+    const controlledInspections = [
+      storageInspection(origin, ['human-added-key']),
+      storageInspection(origin, ['human-added-key']),
+    ];
+    humanLauncher = new FakeHumanBrowserLauncher();
+    controller = new BrowserController(
+      config,
+      config.browser,
+      humanLauncher,
+      async () => {
+        const inspection = offlineInspections.shift();
+        if (inspection === undefined) throw new Error('Unexpected offline storage inspection.');
+        return inspection;
+      },
+      async () => {
+        const inspection = controlledInspections.shift();
+        if (inspection === undefined) throw new Error('Unexpected controlled storage inspection.');
+        return inspection;
+      },
+    );
+    await controller.open({ url: expectedRoute, newTab: false, timeoutMs: 5_000 });
+    config.headless = false;
+    await controller.requestLoginHandoff({ url: null, timeoutMs: 5_000 });
+    await humanLauncher.finish(true);
+
+    const resumed = await controller.resumeAfterLogin({
+      expected: { url: expectedRoute, match: 'exact' },
+      timeoutMs: 2_000,
+    });
+    expect(resumed).toMatchObject({
+      state: 'ready_for_agent_verification',
+      browserConnected: true,
+      page: { url: `${expectedRoute}?checkpoint_src=any` },
+      lastHandoffOutcome: {
+        storageContinuity: {
+          state: 'preserved',
+          lossBoundary: 'none',
+          humanSessionEvidenceObserved: true,
+        },
+      },
+    });
+    expect(resumed.verificationPreview.snapshot).toContain('Signed-in personal profile');
+  });
+
   it('returns AUTH_NOT_PERSISTED when a human session cannot reach the non-root post-login route', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });

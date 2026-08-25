@@ -131,7 +131,11 @@ import type {
   UrlExpectation,
   VisibleElementExpectation,
 } from './protocol.js';
-import { sanitizeUrlForJournal, validateNavigationUrl } from './url-policy.js';
+import {
+  authenticationRouteMatches,
+  sanitizeUrlForJournal,
+  validateNavigationUrl,
+} from './url-policy.js';
 
 async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -2875,7 +2879,13 @@ export class BrowserController {
     let authenticationUrlFailure: Stage5BrowserError | null = null;
     if (input.expected !== null) {
       try {
-        await this.waitForUrlExpectation(page, input.expected, input.timeoutMs, 'Login handoff');
+        await this.waitForUrlExpectation(
+          page,
+          input.expected,
+          input.timeoutMs,
+          'Login handoff',
+          true,
+        );
       } catch (error) {
         if (!(error instanceof Stage5BrowserError)) {
           throw error;
@@ -4701,10 +4711,14 @@ export class BrowserController {
     expected: UrlExpectation,
     timeoutMs: number,
     operation: string,
+    authenticationRoute = false,
   ): Promise<void> {
     const startedAt = Date.now();
     do {
-      if (this.urlMatches(page.url(), expected)) {
+      const matched = authenticationRoute && expected.match === 'exact'
+        ? authenticationRouteMatches(page.url(), expected.url)
+        : this.urlMatches(page.url(), expected);
+      if (matched) {
         return;
       }
       if (Date.now() - startedAt >= timeoutMs) {

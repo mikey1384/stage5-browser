@@ -46,3 +46,35 @@ export function sanitizeUrlForJournal(value: string | undefined): string | undef
     return undefined;
   }
 }
+
+/**
+ * Authentication expectations prove the post-login route, not incidental query
+ * metadata appended by the site. When the caller omits a query, an exact route
+ * may therefore carry additional query parameters. Explicit queries, fragments,
+ * origins, and pathnames remain strict.
+ */
+export function authenticationRouteMatches(actual: string, expected: string): boolean {
+  try {
+    const actualUrl = new URL(actual);
+    const expectedUrl = new URL(expected);
+    if (!ALLOWED_PROTOCOLS.has(actualUrl.protocol) || !ALLOWED_PROTOCOLS.has(expectedUrl.protocol)) {
+      return actual === expected;
+    }
+    if (
+      actualUrl.username !== ''
+      || actualUrl.password !== ''
+      || expectedUrl.username !== ''
+      || expectedUrl.password !== ''
+    ) {
+      return actual === expected;
+    }
+    if (expectedUrl.search !== '') {
+      return actualUrl.href === expectedUrl.href;
+    }
+    return actualUrl.origin === expectedUrl.origin
+      && actualUrl.pathname === expectedUrl.pathname
+      && actualUrl.hash === expectedUrl.hash;
+  } catch {
+    return actual === expected;
+  }
+}
