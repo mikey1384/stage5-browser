@@ -391,15 +391,8 @@ export class NativeOwnedBrowserWindowActivator implements OwnedBrowserWindowActi
   }
 }
 
-/**
- * Resolves the process that owns an already-running dedicated Chromium profile.
- * The singleton target is consumed only as an internal ownership fact; neither
- * the target nor the PID is returned through the MCP protocol.
- */
-export async function chromiumProfileOwnerProcessId(
-  profileRoot: string,
-  processProbe: ProcessProbe = processIsRunning,
-): Promise<number | null> {
+/** Internal-only singleton identity. The parsed PID is never returned through MCP. */
+export async function chromiumProfileLockProcessId(profileRoot: string): Promise<number | null> {
   try {
     const singletonLock = path.join(profileRoot, 'SingletonLock');
     const metadata = await lstat(singletonLock);
@@ -412,10 +405,21 @@ export async function chromiumProfileOwnerProcessId(
       return null;
     }
     const processId = Number.parseInt(match[1] ?? '', 10);
-    return Number.isSafeInteger(processId) && processId > 0 && processProbe(processId)
-      ? processId
-      : null;
+    return Number.isSafeInteger(processId) && processId > 0 ? processId : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolves the live process that owns an already-running dedicated Chromium profile.
+ * The singleton target is consumed only as an internal ownership fact; neither
+ * the target nor the PID is returned through the MCP protocol.
+ */
+export async function chromiumProfileOwnerProcessId(
+  profileRoot: string,
+  processProbe: ProcessProbe = processIsRunning,
+): Promise<number | null> {
+  const processId = await chromiumProfileLockProcessId(profileRoot);
+  return processId !== null && processProbe(processId) ? processId : null;
 }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -868,6 +868,80 @@ describe('BrowserController', () => {
       browserConnected: true,
     });
     expect(running.profileLockState).not.toBe('possible_external_owner');
+  });
+
+  it('removes only exact dead-process singleton entries before restarting the owned profile', async () => {
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-stale-singleton-'));
+    const config = browserConfig(temporaryRoot);
+    await mkdir(config.profileDir, { recursive: true });
+    const target = await resolveBrowserLaunchTarget({ browser: 'chromium', executablePath: null });
+    const identity = launchIdentityForTarget(target, config.profileDir);
+    const deadBrowserProcessId = 2_147_483_647;
+    const deadWorkerProcessId = 2_147_483_646;
+    const now = new Date().toISOString();
+    const executable = await realpath(identity.executablePath);
+    const staleLeaseId = randomUUID();
+    await writeProfileOwnershipLease(config.profileDir, {
+      version: 1,
+      leaseId: staleLeaseId,
+      browser: 'chromium',
+      engine: 'chromium',
+      profileFingerprint: profilePathFingerprint(config.profileDir),
+      ownerWorkerProcessId: deadWorkerProcessId,
+      ownerWorkerStartedAt: 'exited-test-worker',
+      browserProcessId: deadBrowserProcessId,
+      browserProcessStartedAt: 'exited-test-browser',
+      browserExecutableFingerprint: createHash('sha256').update(executable).digest('hex'),
+      controlMode: 'playwright',
+      phase: 'process_exited',
+      createdAt: now,
+      heartbeatAt: now,
+    });
+    await Promise.all([
+      symlink(`fixture-host-${deadBrowserProcessId}`, path.join(config.profileDir, 'SingletonLock')),
+      symlink('stale-cookie', path.join(config.profileDir, 'SingletonCookie')),
+      symlink(path.join(config.profileDir, 'missing-socket'), path.join(config.profileDir, 'SingletonSocket')),
+    ]);
+    controller = new BrowserController(config);
+
+    await expect(controller.status()).resolves.toMatchObject({
+      state: 'stopped',
+      browserConnected: false,
+      profileLockState: 'possible_external_owner',
+      profileOwner: {
+        classification: 'owned_orphaned',
+        ownership: 'proven',
+        recovery: 'automatic_owned_restart',
+        lease: {
+          state: 'abandoned',
+          browserProcess: 'not_running',
+          controlMode: 'playwright',
+          phase: 'process_exited',
+        },
+      },
+    });
+    expect((await controller.availableBrowsers()).browsers.find(
+      (entry) => entry.browser === 'chromium',
+    )).toMatchObject({
+      available: true,
+      profileState: 'owned_orphaned',
+      startable: true,
+      recoverable: true,
+    });
+    await expect(controller.start()).resolves.toMatchObject({
+      state: 'running',
+      browserConnected: true,
+      profileOwner: {
+        classification: 'owned_active',
+        ownership: 'proven',
+      },
+    });
+    expect(processIsRunning(deadBrowserProcessId)).toBe(false);
+    await expect(controller.stop()).resolves.toMatchObject({
+      state: 'stopped',
+      browserConnected: false,
+      profileLockFiles: [],
+    });
   });
 
   it('recovers a conclusively proven direct-Playwright orphan without stranding its profile', async () => {

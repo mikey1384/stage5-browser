@@ -8,6 +8,7 @@ import type { Page } from 'playwright';
 import { BrowserController } from '../src/browser-controller.js';
 import type { Stage5BrowserConfig } from '../src/config.js';
 import {
+  chromiumProfileLockProcessId,
   chromiumProfileOwnerProcessId,
   NativeOwnedBrowserWindowActivator,
   type NativeActivationCommandRunner,
@@ -196,6 +197,7 @@ describe('chromiumProfileOwnerProcessId', () => {
       temporaryRoot,
       (processId) => processId === 24_680,
     )).resolves.toBe(24_680);
+    await expect(chromiumProfileLockProcessId(temporaryRoot)).resolves.toBe(24_680);
   });
 
   it('rejects regular files, malformed targets, and non-running owners', async () => {
@@ -206,6 +208,7 @@ describe('chromiumProfileOwnerProcessId', () => {
     await rm(singletonLock);
     await symlink('stage5-host-24680', singletonLock);
     await expect(chromiumProfileOwnerProcessId(temporaryRoot, () => false)).resolves.toBeNull();
+    await expect(chromiumProfileLockProcessId(temporaryRoot)).resolves.toBe(24_680);
   });
 });
 

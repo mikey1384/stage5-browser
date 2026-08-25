@@ -44,6 +44,10 @@ import {
 } from './diagnostics.js';
 import { Stage5BrowserError } from './errors.js';
 import {
+  proveExitedPlaywrightSingleton,
+  removeProvenExitedPlaywrightSingletonFiles,
+} from './chromium-stale-singleton.js';
+import {
   actionDiagnosticForFailure,
   inspectTargetState,
   PageDiagnosticBuffer,
@@ -844,6 +848,7 @@ export class BrowserController {
     this.state = 'starting';
     let ownershipClaimedForLaunch = false;
     let attemptedProfileRoot: string | null = null;
+    let delegatedStaleSingletonRecovery = false;
     try {
       const launchTarget = await resolveBrowserLaunchTarget(this.selectionFor(this.selectedBrowser));
       const enableChromiumSandbox = launchTarget.engine === 'chromium' && process.platform === 'darwin';
@@ -856,7 +861,7 @@ export class BrowserController {
         mkdir(path.join(this.config.artifactsDir, 'downloads'), { recursive: true, mode: 0o700 }),
       ]);
 
-      await this.prepareOwnershipLeaseForStart(
+      const abandonedExitRecovery = await this.prepareOwnershipLeaseForStart(
         profileDir,
         launchIdentity,
         resumeOwnedHumanHandoff,
@@ -923,7 +928,50 @@ export class BrowserController {
               authenticationProbeTargetOrigin,
             );
           }
-          throw this.lockedProfileOwnerError(ownerInspection);
+          const staleSingletonProof = abandonedExitRecovery === null
+            ? null
+            : await proveExitedPlaywrightSingleton(
+              profileDir,
+              launchIdentity,
+              abandonedExitRecovery,
+            );
+          if (
+            staleSingletonProof !== null
+            && await removeProvenExitedPlaywrightSingletonFiles(
+              profileDir,
+              staleSingletonProof,
+            )
+          ) {
+            if (
+              !(await removeProfileOwnershipLease(
+                profileDir,
+                staleSingletonProof.leaseId,
+              ))
+            ) {
+              const current = await inspectProfileOwnershipLease(
+                profileDir,
+                launchIdentity,
+                this.ownershipLease.leaseId,
+              );
+              throw this.ownershipLeaseError(current, launchIdentity);
+            }
+            delegatedStaleSingletonRecovery = true;
+          } else {
+            throw this.lockedProfileOwnerError(ownerInspection);
+          }
+        } else if (abandonedExitRecovery !== null) {
+          const lease = abandonedExitRecovery.lease;
+          if (
+            lease === null
+            || !(await removeProfileOwnershipLease(profileDir, lease.leaseId))
+          ) {
+            const current = await inspectProfileOwnershipLease(
+              profileDir,
+              launchIdentity,
+              this.ownershipLease.leaseId,
+            );
+            throw this.ownershipLeaseError(current, launchIdentity);
+          }
         }
       }
 
@@ -991,13 +1039,20 @@ export class BrowserController {
       this.controlledBrowserProcess = browserProcess;
       return this.status();
     } catch (error) {
-      if (
-        ownershipClaimedForLaunch
-        && attemptedProfileRoot !== null
-        && await waitForProfileUnlock(attemptedProfileRoot, Math.min(this.config.readinessTimeoutMs, 500))
-      ) {
-        await this.ownershipLease.updatePhase('profile_unlocked').catch(() => undefined);
-        await this.ownershipLease.release().catch(() => undefined);
+      if (ownershipClaimedForLaunch && attemptedProfileRoot !== null) {
+        const unlocked = await waitForProfileUnlock(
+          attemptedProfileRoot,
+          Math.min(this.config.readinessTimeoutMs, 500),
+        );
+        if (unlocked) {
+          await this.ownershipLease.updatePhase('profile_unlocked').catch(() => undefined);
+          await this.ownershipLease.release().catch(() => undefined);
+        } else if (delegatedStaleSingletonRecovery) {
+          // The attempted browser never established an owned process. Remove only
+          // this worker's exact Stage5 lease; any new or remaining Chromium locks
+          // stay untouched and continue to fail closed as external ownership.
+          await this.ownershipLease.release().catch(() => undefined);
+        }
       }
       this.state = 'failed';
       const diagnostic = launchFailureDiagnostic(this.selectedBrowser, error);
@@ -1124,6 +1179,20 @@ export class BrowserController {
         startable: false,
         recoverable: false,
         suggestedAction: `The profile has an invalid or mismatched Stage5 ownership record. Do not overwrite it, kill a process, or delete locks; inspect ${identity.applicationName} ownership first.`,
+      };
+    }
+    if (
+      lease.state === 'abandoned'
+      && await proveExitedPlaywrightSingleton(profileRoot, identity, lease) !== null
+    ) {
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: true,
+        profileState: 'owned_orphaned',
+        startable: true,
+        recoverable: true,
+        suggestedAction: 'Call browser_start once. Stage5 will remove only the revalidated singleton entries bound to its exact proven exited process, then launch the intended profile.',
       };
     }
     if (lease.state === 'abandoned' && profile.lockFiles.length === 0) {
@@ -4290,13 +4359,13 @@ export class BrowserController {
     profileRoot: string,
     identity: BrowserLaunchIdentity,
     resumeOwnedHumanHandoff = false,
-  ): Promise<void> {
+  ): Promise<ProfileOwnershipLeaseInspection | null> {
     const inspection = await inspectProfileOwnershipLease(
       profileRoot,
       identity,
       this.ownershipLease.leaseId,
     );
-    if (inspection.state === 'none') return;
+    if (inspection.state === 'none') return null;
     if (inspection.state === 'busy_other_stage5_session' || inspection.state === 'invalid') {
       throw this.ownershipLeaseError(inspection, identity);
     }
@@ -4304,12 +4373,12 @@ export class BrowserController {
       if (
         inspection.lease?.controlMode === 'native_cdp'
         && (inspection.ownershipProven || inspection.lease.phase === 'launching')
-      ) return;
+      ) return null;
       if (
         inspection.ownershipProven
         && resumeOwnedHumanHandoff
         && inspection.lease?.controlMode === 'human_handoff'
-      ) return;
+      ) return null;
       throw this.ownershipLeaseError(inspection, identity);
     }
     if (inspection.state === 'owned_orphaned') {
@@ -4328,7 +4397,7 @@ export class BrowserController {
           );
           throw this.ownershipLeaseError(competingLease, identity);
         }
-        return;
+        return null;
       }
       if (inspection.lease?.controlMode === 'human_handoff') {
         throw this.ownershipLeaseError(inspection, identity);
@@ -4345,13 +4414,22 @@ export class BrowserController {
       if (inspection.lease !== null) {
         await removeProfileOwnershipLease(profileRoot, inspection.lease.leaseId);
       }
-      return;
+      return null;
     }
     if (inspection.state === 'abandoned' && await ownershipProfileUnlocked(profileRoot)) {
       if (inspection.lease !== null) {
         await removeProfileOwnershipLease(profileRoot, inspection.lease.leaseId);
       }
-      return;
+      return null;
+    }
+    if (
+      inspection.state === 'abandoned'
+      && inspection.ownerWorkerRunning === false
+      && inspection.browserProcess === 'not_running'
+      && inspection.lease?.controlMode === 'playwright'
+      && inspection.lease.phase === 'process_exited'
+    ) {
+      return inspection;
     }
     throw this.ownershipLeaseError(inspection, identity);
   }
@@ -4431,25 +4509,36 @@ export class BrowserController {
     if (leaseInspection.state !== 'none') {
       const controlMode = leaseInspection.lease?.controlMode ?? null;
       const humanHandoff = controlMode === 'human_handoff';
+      const exitedPlaywrightSingleton = await proveExitedPlaywrightSingleton(
+        profile.path,
+        identity,
+        leaseInspection,
+      ) !== null;
       const classification = leaseInspection.state === 'current_owner'
         ? humanHandoff ? 'authentication_handoff_pending' : 'owned_active'
         : leaseInspection.state === 'busy_other_stage5_session'
           ? 'busy_other_stage5_session'
           : leaseInspection.state === 'owned_orphaned'
             ? 'owned_orphaned'
-            : 'external_owner';
+            : exitedPlaywrightSingleton
+              ? 'owned_orphaned'
+              : 'external_owner';
       const recovery = leaseInspection.state === 'owned_orphaned'
         ? humanHandoff
           ? 'return_to_authentication_handoff'
           : controlMode === 'native_cdp'
             ? 'automatic_reattach'
             : 'automatic_owned_restart'
+        : exitedPlaywrightSingleton
+          ? 'automatic_owned_restart'
         : leaseInspection.state === 'current_owner' && !humanHandoff
           ? 'none'
           : 'do_not_modify_locks';
       return {
         classification,
-        ownership: leaseInspection.ownershipProven ? 'proven' : 'not_proven',
+        ownership: leaseInspection.ownershipProven || exitedPlaywrightSingleton
+          ? 'proven'
+          : 'not_proven',
         lockOwnerProcess: leaseInspection.browserProcess === 'matched'
           ? 'running'
           : leaseInspection.browserProcess === 'not_running'
@@ -4458,13 +4547,17 @@ export class BrowserController {
         expectedApplication: identity.applicationName,
         applicationIdentity: leaseInspection.browserProcess === 'matched'
           ? 'matched'
+          : exitedPlaywrightSingleton
+            ? 'matched'
           : leaseInspection.browserProcess === 'mismatched'
             ? 'mismatched'
             : 'unverified',
         loopbackControl: controlMode === 'native_cdp' ? 'available' : 'unverified',
         authenticationHandoff: humanHandoff ? 'present' : 'absent',
         recovery,
-        suggestedAction: leaseInspection.state === 'owned_orphaned' && !humanHandoff
+        suggestedAction: exitedPlaywrightSingleton
+          ? 'Call browser_start once. Stage5 will remove only the revalidated singleton entries bound to its exact proven exited process, then launch the intended profile.'
+          : leaseInspection.state === 'owned_orphaned' && !humanHandoff
           ? controlMode === 'native_cdp'
             ? 'Call browser_start once; Stage5 will verify and reattach to the exact orphaned native process automatically. Do not close the browser or delete locks.'
             : 'Call browser_start once; Stage5 will terminate only the exact fingerprint-matched orphan, wait for profile unlock, and relaunch it. Do not close the browser or delete locks manually.'

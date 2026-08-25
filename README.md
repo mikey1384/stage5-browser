@@ -223,6 +223,8 @@ Agents do not need an MCP restart to choose browsers after the Stage5 Browser to
 
 A stopped browser is never launched implicitly by snapshots, screenshots, tab or frame inspection, clicks, fills, attachments, scrolling, text search, or URL waits. Those operations fail with `BROWSER_NOT_READY`, `reason: browser_stopped`, and definite `actionDispatched: false`; the caller must inspect availability and explicitly start the intended profile.
 
+If a normal Stage5-owned Chromium shutdown leaves singleton entries after both the exact worker and exact browser process have exited, availability reports a recoverable owned orphan only when the durable lease, profile, browser, executable fingerprint, shutdown phase, dead PID, and singleton target all agree. One explicit `browser_start` revalidates the lease and each fixed-name entry, removes only that proven stale singleton set, and launches the intended profile. Changed, live, malformed, foreign, or private-handoff locks remain fail-closed and are never removed.
+
 For a nonstandard installation, a trusted operator can set an absolute executable path:
 
 ```bash
