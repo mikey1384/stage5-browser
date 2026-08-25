@@ -2359,7 +2359,7 @@ describe('BrowserController', () => {
       },
       timeoutMs: 3_000,
     })).resolves.toMatchObject({ postcondition: { passed: true } });
-    expect(activation).toHaveBeenCalledTimes(2);
+    expect(activation).toHaveBeenCalledTimes(1);
     await expect(page.locator('#counter').textContent()).resolves.toBe('clicks:1');
     expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
       action: 'click_by_role',
@@ -2517,9 +2517,96 @@ describe('BrowserController', () => {
       },
       timeoutMs: 3_000,
     })).resolves.toMatchObject({ postcondition: { passed: true } });
-    expect(activation).toHaveBeenCalledTimes(2);
+    expect(activation).toHaveBeenCalledTimes(1);
     await expect(page.locator('#counter').textContent()).resolves.toBe('clicks:1');
     await expect(page.locator('#outside').getAttribute('aria-selected')).resolves.toBeNull();
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: 'click_by_ref',
+      outcome: 'succeeded',
+      actionDispatched: true,
+      clickDispatched: true,
+    });
+  });
+
+  it('settles activation replacement before the final ref bind without activating again at dispatch', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><title>Deferred activation replacement</title></head><body>
+        <div role="dialog" aria-modal="true" aria-label="Business use">
+          <button id="opener" type="button" aria-selected="false"
+            onclick="this.setAttribute('aria-selected', 'true'); document.querySelector('#counter').textContent = 'clicks:1'">
+            Use Coinbase for business operations
+          </button>
+          <output id="counter">clicks:0 replacements:0</output>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-deferred-activation-rebind-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({ depth: 6, boxes: false, frameId: null, timeoutMs: 2_000 });
+    const openerRef = observed.snapshot.match(
+      /button "Use Coinbase for business operations"[^\n]*\[ref=([^\]]+)\]/,
+    )?.[1];
+    expect(openerRef).toBeDefined();
+    if (openerRef === undefined) throw new Error('Deferred activation fixture did not expose its opener ref.');
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const internals = controller as unknown as {
+      activateSelectedPageForInput: (
+        page: Page,
+        attemptCount: number,
+      ) => Promise<SanitizedPageActivationEvidence>;
+    };
+    const originalActivation = internals.activateSelectedPageForInput.bind(controller);
+    let activationCount = 0;
+    const replaceOpener = async (): Promise<void> => {
+      await page.locator('#opener').evaluate((opener) => {
+        opener.replaceWith(opener.cloneNode(true));
+        const counter = document.querySelector('#counter');
+        if (counter !== null) counter.textContent = 'clicks:0 replacements:1';
+      });
+    };
+    const activation = vi.spyOn(internals, 'activateSelectedPageForInput').mockImplementation(async (...args) => {
+      activationCount += 1;
+      if (activationCount === 1) {
+        void page.waitForTimeout(25).then(replaceOpener).catch(() => undefined);
+      } else {
+        await replaceOpener();
+      }
+      const evidence = await originalActivation(...args);
+      return {
+        ...evidence,
+        attemptCount: activationCount,
+        bringToFrontAttempted: activationCount === 1,
+        bringToFrontSucceeded: activationCount === 1,
+        visibilityBefore: activationCount === 1 ? 'hidden' : 'visible',
+        visibilityAfter: 'visible',
+        documentFocusedBefore: false,
+        documentFocusedAfter: true,
+      };
+    });
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: openerRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: true,
+        expectedVisible: null,
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect(activation).toHaveBeenCalledTimes(1);
+    await expect(page.locator('#counter').textContent()).resolves.toBe('clicks:1');
     expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
       action: 'click_by_ref',
       outcome: 'succeeded',
@@ -3167,7 +3254,7 @@ describe('BrowserController', () => {
         forcedFallbackUsed: true,
         pageMouseFallbackUsed: true,
         pageActivation: {
-          attemptCount: 4,
+          attemptCount: 1,
           controllerSelected: true,
           bringToFrontAttempted: false,
           bringToFrontSucceeded: false,

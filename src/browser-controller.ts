@@ -7195,7 +7195,7 @@ export class BrowserController {
     startedAt: string,
     action: SanitizedActionDiagnostic['action'],
   ): Promise<SanitizedPageActivationEvidence> {
-    const pageActivation = await boundedValue(
+    let pageActivation = await boundedValue(
       this.activateSelectedPageForInput(page, 1),
       Math.max(1, remainingUntil(actionDeadlineAt)),
       {
@@ -7210,31 +7210,88 @@ export class BrowserController {
         nativeWindow: this.nativeWindowActivationNotRequired(),
       },
     );
-    if (this.pageIsActivatedForInput(pageActivation)) {
-      return pageActivation;
-    }
-    const diagnostic: SanitizedActionDiagnostic = {
-      action,
-      outcome: 'blocked',
-      reason: 'page_not_active',
-      actionDispatched: false,
-      clickDispatched: false,
-      targetState: null,
-      pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
-      startedAt,
-      occurredAt: new Date().toISOString(),
-    };
-    this.pageDiagnostics.recordAction(page, diagnostic);
-    throw new Stage5BrowserError('OPERATION_FAILED', 'The selected page could not become visible before target preparation.', {
-      recoverable: true,
-      details: {
+    const failBeforeTargetPreparation = (
+      reason: string,
+      message: string,
+      suggestedAction: string,
+    ): never => {
+      const diagnostic: SanitizedActionDiagnostic = {
+        action,
+        outcome: 'blocked',
         reason: 'page_not_active',
         actionDispatched: false,
         clickDispatched: false,
-        pageActivation,
-        suggestedAction: 'Inspect the selected tab and renderer visibility; Stage5 Browser did not resolve or dispatch the target action.',
-      },
-    });
+        targetState: null,
+        pageUrl: sanitizeUrlForJournal(page.url()) ?? null,
+        startedAt,
+        occurredAt: new Date().toISOString(),
+      };
+      this.pageDiagnostics.recordAction(page, diagnostic);
+      throw new Stage5BrowserError('OPERATION_FAILED', message, {
+        recoverable: true,
+        details: {
+          reason,
+          actionDispatched: false,
+          clickDispatched: false,
+          pageActivation,
+          suggestedAction,
+        },
+      });
+    };
+
+    if (!this.pageIsActivatedForInput(pageActivation)) {
+      failBeforeTargetPreparation(
+        'page_not_active',
+        'The selected page could not become visible before target preparation.',
+        'Inspect the selected tab and renderer visibility; Stage5 Browser did not resolve or dispatch the target action.',
+      );
+    }
+
+    const activationCrossedBoundary = pageActivation.bringToFrontAttempted ||
+      pageActivation.nativeWindow.attempted ||
+      pageActivation.visibilityBefore !== pageActivation.visibilityAfter ||
+      pageActivation.documentFocusedBefore !== pageActivation.documentFocusedAfter;
+    if (!activationCrossedBoundary) return pageActivation;
+
+    if (remainingUntil(actionDeadlineAt) < CLICK_REF_REBIND_SETTLE_MS) {
+      failBeforeTargetPreparation(
+        'page_activation_settle_deadline_expired',
+        'The selected page became visible too late to settle before target preparation.',
+        'Take one fresh semantic snapshot with a longer action timeout; Stage5 Browser did not resolve or dispatch the target action.',
+      );
+    }
+    const settled = await boundedValue(
+      page.waitForTimeout(CLICK_REF_REBIND_SETTLE_MS).then(() => true),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      false,
+    );
+    if (!settled || remainingUntil(actionDeadlineAt) <= 0) {
+      failBeforeTargetPreparation(
+        'page_activation_settle_deadline_expired',
+        'The selected page did not finish settling before the target-preparation deadline.',
+        'Take one fresh semantic snapshot with a longer action timeout; Stage5 Browser did not resolve or dispatch the target action.',
+      );
+    }
+
+    const settledObservation = await boundedValue(
+      this.observePageActivation(page),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      { documentFocused: null, visibility: 'unknown' } as PageActivationObservation,
+    );
+    pageActivation = {
+      ...pageActivation,
+      controllerSelected: this.preferredPage() === page,
+      visibilityAfter: settledObservation.visibility,
+      documentFocusedAfter: settledObservation.documentFocused,
+    };
+    if (!this.pageIsActivatedForInput(pageActivation)) {
+      failBeforeTargetPreparation(
+        'page_not_active_after_activation_settle',
+        'The selected page lost visible activation while settling before target preparation.',
+        'Inspect the selected tab and renderer visibility, then take one fresh semantic snapshot; Stage5 Browser did not resolve or dispatch the target action.',
+      );
+    }
+    return pageActivation;
   }
 
   private async preferredObservedClickActivation(
@@ -7659,6 +7716,28 @@ export class BrowserController {
               ? pageActivation.nativeWindow
               : next.nativeWindow,
         };
+    const selectedPageRemainsActivated = async (): Promise<boolean> => {
+      const controllerSelected = this.preferredPage() === page;
+      const observed = controllerSelected
+        ? await boundedValue(
+          this.observePageActivation(page),
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+          { documentFocused: null, visibility: 'unknown' } as PageActivationObservation,
+        )
+        : { documentFocused: null, visibility: 'unknown' } as PageActivationObservation;
+      pageActivation = retainActivationBoundary({
+        attemptCount: pageActivation.attemptCount,
+        controllerSelected,
+        bringToFrontAttempted: false,
+        bringToFrontSucceeded: false,
+        visibilityBefore: observed.visibility,
+        visibilityAfter: observed.visibility,
+        documentFocusedBefore: observed.documentFocused,
+        documentFocusedAfter: observed.documentFocused,
+        nativeWindow: pageActivation.nativeWindow,
+      });
+      return this.pageIsActivatedForInput(pageActivation);
+    };
     const readProbe = async (finish: boolean): Promise<SanitizedClickDispatchEvidence | null> => {
       if (finish && probeFinished) {
         return finalEvidence;
@@ -7708,25 +7787,11 @@ export class BrowserController {
     };
 
     try {
-      const preparedPageActivation = await boundedValue(
-        this.activateSelectedPageForInput(
-          page,
-          pageActivation.attemptCount + 1,
-          pageActivation.nativeWindow,
-        ),
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        {
-          ...pageActivation,
-          attemptCount: pageActivation.attemptCount + 1,
-          bringToFrontAttempted: true,
-        },
-      );
-      pageActivation = retainActivationBoundary(preparedPageActivation);
-      if (!this.pageIsActivatedForInput(pageActivation)) {
+      if (!await selectedPageRemainsActivated()) {
         const evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
           page,
-          new Error('The controller-selected page did not become the visible input target.'),
+          new Error('The controller-selected page did not remain the visible input target.'),
           await targetStateWithinDeadline(preparedTarget.targetState),
           startedAt,
           evidence,
@@ -7849,21 +7914,7 @@ export class BrowserController {
         );
       }
 
-      const fallbackPageActivation = await boundedValue(
-        this.activateSelectedPageForInput(
-          page,
-          pageActivation.attemptCount + 1,
-          pageActivation.nativeWindow,
-        ),
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        {
-          ...pageActivation,
-          attemptCount: pageActivation.attemptCount + 1,
-          bringToFrontAttempted: true,
-        },
-      );
-      pageActivation = retainActivationBoundary(fallbackPageActivation);
-      if (!this.pageIsActivatedForInput(pageActivation)) {
+      if (!await selectedPageRemainsActivated()) {
         evidence = await readProbe(true);
         return this.throwObservedClickDispatchFailure(
           page,
@@ -7942,21 +7993,7 @@ export class BrowserController {
         );
       }
 
-      const directPageActivation = await boundedValue(
-        this.activateSelectedPageForInput(
-          page,
-          pageActivation.attemptCount + 1,
-          pageActivation.nativeWindow,
-        ),
-        Math.max(1, remainingUntil(actionDeadlineAt)),
-        {
-          ...pageActivation,
-          attemptCount: pageActivation.attemptCount + 1,
-          bringToFrontAttempted: true,
-        },
-      );
-      pageActivation = retainActivationBoundary(directPageActivation);
-      const point = this.pageIsActivatedForInput(pageActivation)
+      const point = await selectedPageRemainsActivated()
         ? await boundedValue(
           this.freshMainFrameTargetPoint(page, preparedTarget.handle),
           Math.max(1, remainingUntil(actionDeadlineAt)),
