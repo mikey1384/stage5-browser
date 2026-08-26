@@ -94,6 +94,14 @@ export interface PostconditionResult {
 }
 
 export type ControlKind = 'custom_popup' | 'native_select';
+export type ControlPopupAssociationProof =
+  | 'explicit'
+  | 'structural'
+  | 'focused'
+  | 'expanded'
+  | 'spatial'
+  | 'post_dispatch_unique';
+export type ControlPopupSurfaceProof = 'semantic_role' | 'positioned_option_group';
 
 export interface ControlTarget {
   role: SupportedAriaRole;
@@ -130,14 +138,9 @@ export interface ControlOptionsInspection {
     preparationActionDispatched: boolean | 'unknown';
     scrollSteps: number;
     boundaryReached: boolean;
-    associationProof:
-      | 'explicit'
-      | 'structural'
-      | 'focused'
-      | 'expanded'
-      | 'spatial'
-      | 'post_dispatch_unique'
-      | null;
+    associationProof: ControlPopupAssociationProof | null;
+    surfaceProof: ControlPopupSurfaceProof | null;
+    renderedPopupCount: number | null;
   };
   choice: {
     responsibility: 'agent';

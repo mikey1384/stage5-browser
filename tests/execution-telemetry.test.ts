@@ -163,6 +163,86 @@ describe('privacy-safe execution telemetry', () => {
       selectionEffectObserved: null,
       selectedRepresentationObserved: null,
       popupClosed: null,
+      popupAssociationProof: null,
+      popupSurfaceProof: null,
+      renderedPopupCount: null,
+      targetState: null,
     });
+  });
+
+  it('records categorical popup-position evidence without control or option semantics', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-popup-position-fixture',
+      agentId: 'finance-agent',
+      command: 'inspectControl',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(10).toISOString(),
+      durationMs: 10,
+      outcome: 'succeeded',
+      error: null,
+      result: {
+        inspection: {
+          reveal: {
+            associationProof: 'spatial',
+            surfaceProof: 'positioned_option_group',
+            renderedPopupCount: 2,
+          },
+        },
+      },
+      workerRuntime: { version: 'fixture', protocolVersion: 12 },
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion).toMatchObject({
+      popupAssociationProof: 'spatial',
+      popupSurfaceProof: 'positioned_option_group',
+      renderedPopupCount: 2,
+    });
+    expect(JSON.stringify(trace)).not.toContain('controlName');
+    expect(JSON.stringify(trace)).not.toContain('optionName');
+  });
+
+  it('records categorical exact-target viewport evidence without geometry or semantics', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-viewport-proof-fixture',
+      agentId: 'youtube-agent',
+      command: 'clickByRole',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(10).toISOString(),
+      durationMs: 10,
+      outcome: 'failed',
+      error: {
+        code: 'OPERATION_FAILED',
+        message: 'Fixture failure.',
+        recoverable: true,
+        details: {
+          reason: 'not_visible',
+          targetState: {
+            visible: true,
+            enabled: true,
+            inViewport: true,
+            viewportEvidence: 'exact_hit_test_override',
+            receivesPointerEvents: true,
+            pointerHitPoint: 'alternate',
+            tagName: 'a',
+            role: 'link',
+          },
+        },
+      },
+      result: null,
+      workerRuntime: { version: 'fixture', protocolVersion: 12 },
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion.targetState).toEqual({
+      visible: true,
+      enabled: true,
+      inViewport: true,
+      viewportEvidence: 'exact_hit_test_override',
+      receivesPointerEvents: true,
+      pointerHitPoint: 'alternate',
+    });
+    expect(JSON.stringify(trace)).not.toContain('tagName');
+    expect(JSON.stringify(trace)).not.toContain('link');
   });
 });

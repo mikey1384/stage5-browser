@@ -138,9 +138,10 @@ describe('BrowserController control reveal recovery', () => {
   it('passively associates two unlinked portal popups with their unique geometric anchors', async () => {
     const page = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; position: relative; min-height: 500px; }
-      button, [role="listbox"] { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      button, .popup { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
       button { height: 40px; }
-      [role="listbox"] { height: 80px; border: 1px solid black; }
+      .popup { height: 80px; border: 1px solid black; overflow-y: auto; }
+      .popup [role="option"] { height: 32px; }
       #prior { top: 24px; }
       #prior-options { top: 64px; }
       #target { top: 210px; }
@@ -148,8 +149,13 @@ describe('BrowserController control reveal recovery', () => {
     </style></head><body>
       <button id="prior" type="button">Intended use</button>
       <button id="target" type="button">Funding source</button>
-      <div id="prior-options" role="listbox"><div role="option">Treasury</div></div>
-      <div id="target-options" role="listbox"><div role="option">Company capital</div></div>
+      <div id="prior-options" class="popup"><div role="option">Treasury</div></div>
+      <div id="target-options" class="popup">
+        <div role="option">Business revenue</div>
+        <div role="option">Company capital</div>
+        <div role="option">Client funds</div>
+        <div role="option">External financing</div>
+      </div>
       <output id="inputs">0</output>
       <script>
         for (const control of [prior, target]) {
@@ -170,7 +176,6 @@ describe('BrowserController control reveal recovery', () => {
 
     expect(inspected?.inspection).toMatchObject({
       expanded: null,
-      options: [{ name: 'Company capital' }],
       reveal: {
         requested: false,
         competingPopupDismissed: false,
@@ -178,8 +183,17 @@ describe('BrowserController control reveal recovery', () => {
         openerActionDispatched: false,
         popupOpened: true,
         associationProof: 'spatial',
+        surfaceProof: 'positioned_option_group',
+        renderedPopupCount: 2,
       },
     });
+    expect(inspected?.inspection.options.map(({ name }) => name)).toEqual([
+      'Business revenue',
+      'Company capital',
+      'Client funds',
+      'External financing',
+    ]);
+    expect(inspected?.inspection.reveal.scrollSteps).toBeGreaterThan(0);
     await expect(page.locator('#prior-options').isVisible()).resolves.toBe(true);
     await expect(page.locator('#target-options').isVisible()).resolves.toBe(true);
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
@@ -188,7 +202,7 @@ describe('BrowserController control reveal recovery', () => {
   it('fails closed when an unlinked popup has two plausible geometric anchors', async () => {
     const page = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; position: relative; min-height: 400px; }
-      button, [role="listbox"] { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      button, .popup { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
       button { height: 40px; }
       #first { top: 20px; }
       #target { top: 60px; }
@@ -196,7 +210,7 @@ describe('BrowserController control reveal recovery', () => {
     </style></head><body>
       <button id="first" type="button">First source</button>
       <button id="target" type="button">Funding source</button>
-      <div id="options" role="listbox"><div role="option">Company capital</div></div>
+      <div id="options" class="popup"><div role="option">Company capital</div></div>
       <output id="inputs">0</output>
       <script>
         for (const control of [first, target]) {

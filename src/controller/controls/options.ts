@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
-import { type ElementHandle, type Frame, type Locator } from '../dependencies.js';
-import { boundedValue, CONTROL_INSPECTION_SCROLL_SETTLE_MS, CONTROL_OPTION_SELECTOR, CONTROL_POPUP_SELECTOR, MAX_CONTROL_INSPECTION_SCROLL_STEPS, type ObservedControlOption, remainingUntil } from '../model.js';
+import { type ControlPopupAssociationProof, type ControlPopupSurfaceProof, type ElementHandle, type Frame, type Locator } from '../dependencies.js';
+import { boundedValue, CONTROL_INSPECTION_SCROLL_SETTLE_MS, CONTROL_OPTION_SELECTOR, CONTROL_POPUP_OPTION_SELECTOR, MAX_CONTROL_INSPECTION_SCROLL_STEPS, MAX_CONTROL_POPUP_OPTION_CANDIDATES, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import { resolveControlPopupOwner } from './popup-ownership.js';
+import { discoverControlPopupSurfaces } from './popup-surfaces.js';
 
 const OPTION_ROLES = new Set([
   'menuitem',
@@ -15,20 +16,25 @@ const OPTION_ROLES = new Set([
 ] as const);
 
 interface PopupCandidate {
-  locator: Locator;
+  locator: Locator | null;
   handle: ElementHandle<HTMLElement>;
+  surfaceProof: ControlPopupSurfaceProof;
   explicit: boolean;
   structurallyRelated: boolean;
   rendered: boolean;
 }
 
-type PopupAssociationProof =
-  | 'explicit'
-  | 'structural'
-  | 'focused'
-  | 'expanded'
-  | 'spatial'
-  | 'post_dispatch_unique';
+type ControlPopupAssociation =
+  | {
+      kind: 'resolved';
+      locator: Locator | null;
+      handle: ElementHandle<HTMLElement>;
+      proof: ControlPopupAssociationProof;
+      surfaceProof: ControlPopupSurfaceProof;
+      renderedSurfaceCount: number;
+    }
+  | { kind: 'ambiguous'; renderedSurfaceCount: number | null }
+  | { kind: 'missing'; renderedSurfaceCount: number | null };
 
 export const controlOptionOperations = {
   async inspectControlDescriptor(
@@ -66,31 +72,22 @@ export const controlOptionOperations = {
     controlHandle: ElementHandle<HTMLElement>,
     deadlineAt: number,
     allowUniqueRenderedAfterDispatch = false,
-  ): Promise<{ locator: Locator; handle: ElementHandle<HTMLElement>; proof: PopupAssociationProof } | null | 'ambiguous'> {
+  ): Promise<ControlPopupAssociation> {
     const connected = await boundedValue(
       controlHandle.evaluate((control) => control.isConnected),
       Math.max(1, remainingUntil(deadlineAt)),
       false,
     );
-    if (!connected) return null;
+    if (!connected) return { kind: 'missing', renderedSurfaceCount: null };
 
-    const surfaces = frame.locator(CONTROL_POPUP_SELECTOR);
-    const count = await boundedValue(
-      surfaces.count(),
-      Math.max(1, remainingUntil(deadlineAt)),
-      -1,
-    );
-    if (count < 0 || count > 50) return count > 50 ? 'ambiguous' : null;
+    const discovery = await discoverControlPopupSurfaces(frame, deadlineAt);
+    if (discovery.kind === 'unbounded') {
+      return { kind: 'ambiguous', renderedSurfaceCount: null };
+    }
     const candidates: PopupCandidate[] = [];
     try {
-      for (let index = 0; index < count; index += 1) {
-        const locator = surfaces.nth(index);
-        const handle = await boundedValue(
-          locator.elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
-          Math.max(1, remainingUntil(deadlineAt)),
-          null,
-        );
-        if (handle === null) continue;
+      for (const surface of discovery.surfaces) {
+        const { locator, handle, surfaceProof } = surface;
         const state = await boundedValue(
           controlHandle.evaluate((control, surface) => {
             if (!control.isConnected || !surface.isConnected) return null;
@@ -118,7 +115,7 @@ export const controlOptionOperations = {
           await handle.dispose().catch(() => undefined);
           continue;
         }
-        candidates.push({ locator, handle, ...state });
+        candidates.push({ locator, handle, surfaceProof, ...state });
       }
 
       const explicit = candidates.filter((candidate) => candidate.explicit);
@@ -129,7 +126,7 @@ export const controlOptionOperations = {
         : structural.length === 1
           ? structural[0]
           : null;
-      let selectedProof: PopupAssociationProof | null = explicit.length === 1
+      let selectedProof: ControlPopupAssociationProof | null = explicit.length === 1
         ? 'explicit'
         : structural.length === 1
           ? 'structural'
@@ -171,9 +168,17 @@ export const controlOptionOperations = {
       for (const candidate of candidates) {
         if (candidate !== selected) await candidate.handle.dispose().catch(() => undefined);
       }
+      const renderedSurfaceCount = rendered.length;
       return selected !== null && selected !== undefined && selectedProof !== null
-        ? { locator: selected.locator, handle: selected.handle, proof: selectedProof }
-        : ambiguous ? 'ambiguous' : null;
+        ? {
+            kind: 'resolved',
+            locator: selected.locator,
+            handle: selected.handle,
+            proof: selectedProof,
+            surfaceProof: selected.surfaceProof,
+            renderedSurfaceCount,
+          }
+        : { kind: ambiguous ? 'ambiguous' : 'missing', renderedSurfaceCount };
     } catch (error) {
       await Promise.allSettled(candidates.map(({ handle }) => handle.dispose()));
       throw error;
@@ -234,7 +239,8 @@ export const controlOptionOperations = {
   },
 
   async collectPopupControlOptions(
-    popupLocator: Locator,
+    frame: Frame,
+    popupLocator: Locator | null,
     popupHandle: ElementHandle<HTMLElement>,
     maxOptions: number,
     deadlineAt: number,
@@ -248,11 +254,17 @@ export const controlOptionOperations = {
     const optionsBySemantic = new Map<string, ObservedControlOption[]>();
     let scrollSteps = 0;
     let boundaryReached = false;
+    let candidateScanBounded = true;
 
-    const capture = async (): Promise<void> => {
-      const locator = popupLocator.locator(CONTROL_OPTION_SELECTOR);
+    const capture = async (): Promise<boolean> => {
+      const locator = popupLocator === null
+        ? frame.locator(CONTROL_POPUP_OPTION_SELECTOR)
+        : popupLocator.locator(CONTROL_OPTION_SELECTOR);
       const count = await boundedValue(locator.count(), Math.max(1, remainingUntil(deadlineAt)), -1);
-      if (count < 0) return;
+      if (count < 0 || count > MAX_CONTROL_POPUP_OPTION_CANDIDATES) {
+        candidateScanBounded = false;
+        return false;
+      }
       const occurrences = new Map<string, number>();
       for (let index = 0; index < count && options.size < maxOptions; index += 1) {
         const candidate = locator.nth(index);
@@ -262,6 +274,16 @@ export const controlOptionOperations = {
           null,
         );
         if (handle === null) continue;
+        const insidePopup = await boundedValue(
+          popupHandle.evaluate((popup, option) =>
+            popup.isConnected && option.isConnected && (popup === option || popup.contains(option)), handle),
+          Math.max(1, remainingUntil(deadlineAt)),
+          false,
+        );
+        if (!insidePopup) {
+          await handle.dispose().catch(() => undefined);
+          continue;
+        }
         const semantic = await this.controlOptionSemantic(candidate, handle, deadlineAt);
         if (semantic === null) {
           await handle.dispose().catch(() => undefined);
@@ -298,10 +320,11 @@ export const controlOptionOperations = {
         known.push(observed);
         optionsBySemantic.set(key, known);
       }
+      return true;
     };
 
     for (;;) {
-      await capture();
+      if (!await capture()) break;
       if (options.size >= maxOptions || scrollSteps >= MAX_CONTROL_INSPECTION_SCROLL_STEPS) break;
       const movement = await boundedValue(
         popupHandle.evaluate((surface) => {
@@ -330,7 +353,7 @@ export const controlOptionOperations = {
     }
     return {
       options,
-      complete: boundaryReached && options.size < maxOptions,
+      complete: candidateScanBounded && boundaryReached && options.size < maxOptions,
       scrollSteps,
       boundaryReached,
     };

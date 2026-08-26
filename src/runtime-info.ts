@@ -6,9 +6,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Stage5BrowserError } from './errors.js';
 import { MCP_TOOL_NAMES } from './mcp/tool-names.js';
 
-export const STAGE5_BROWSER_VERSION = '0.15.4';
+export const STAGE5_BROWSER_VERSION = '0.15.5';
 export const WORKER_PROTOCOL_VERSION = 12;
-export const MCP_HOST_BEHAVIOR_VERSION = 1;
+export const MCP_HOST_BEHAVIOR_VERSION = 2;
 export const TOOL_CATALOG_VERSION = 13;
 export const MCP_TOOL_COUNT = Object.keys(MCP_TOOL_NAMES).length;
 

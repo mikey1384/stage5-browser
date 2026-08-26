@@ -30,6 +30,7 @@ import { scrollHelpersOperations, type ScrollHelpersOperations } from './scroll/
 import { handoffHelpersOperations, type HandoffHelpersOperations } from './handoff/helpers.js';
 import { observationTabModelOperations, type ObservationTabModelOperations } from './observation/tab-model.js';
 import { inputClickTargetOperations, type InputClickTargetOperations } from './input/click-target.js';
+import { inputReferenceCapabilityOperations, type InputReferenceCapabilityOperations } from './input/reference-capabilities.js';
 import { inputClickReferenceOperations, type InputClickReferenceOperations } from './input/click-reference.js';
 import { inputClickDispatchOperations, type InputClickDispatchOperations } from './input/click-dispatch.js';
 import { inputActivationOperations, type InputActivationOperations } from './input/activation.js';
@@ -95,6 +96,7 @@ export interface BrowserControllerContext extends
   HandoffHelpersOperations,
   ObservationTabModelOperations,
   InputClickTargetOperations,
+  InputReferenceCapabilityOperations,
   InputClickReferenceOperations,
   InputClickDispatchOperations,
   InputActivationOperations,
@@ -230,6 +232,7 @@ export interface BrowserController extends
   HandoffHelpersOperations,
   ObservationTabModelOperations,
   InputClickTargetOperations,
+  InputReferenceCapabilityOperations,
   InputClickReferenceOperations,
   InputClickDispatchOperations,
   InputActivationOperations,
@@ -380,6 +383,7 @@ for (const operations of [
   handoffHelpersOperations,
   observationTabModelOperations,
   inputClickTargetOperations,
+  inputReferenceCapabilityOperations,
   inputClickReferenceOperations,
   inputClickDispatchOperations,
   inputActivationOperations,

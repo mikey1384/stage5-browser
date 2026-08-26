@@ -26,6 +26,75 @@ afterEach(async () => {
 });
 
 describe("BrowserController exact hit points", () => {
+  it("trusts an exact browser hit over an inapplicable overflow-ancestor clip", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Positioned search result</title><style>
+        body { margin: 0; }
+        #containing-block { position: relative; margin: 40px; height: 300px; }
+        #overflow-ancestor { overflow: hidden; width: 1px; height: 1px; }
+        #target { position: absolute; left: 40px; top: 40px; width: 220px; height: 40px; }
+      </style></head><body>
+        <div id="containing-block"><div id="overflow-ancestor">
+          <a id="target" href="#opened">Translated video result</a>
+        </div></div>
+        <p id="outcome" role="status" aria-label="Opened" hidden>Opened</p>
+        <script>
+          target.addEventListener('click', () => { outcome.hidden = false; });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-positioned-overflow-hit-"),
+    );
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator("#target").evaluate((target) => {
+      const rect = target.getBoundingClientRect();
+      return document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2,
+      ) === target;
+    })).resolves.toBe(true);
+    await expect(inspectTargetState(page.locator("#target") as Locator)).resolves.toMatchObject({
+      visible: true,
+      enabled: true,
+      inViewport: true,
+      receivesPointerEvents: true,
+      viewportEvidence: "exact_hit_test_override",
+    });
+
+    await expect(controller.clickByRole({
+      role: "link",
+      name: "Translated video result",
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: "status",
+          name: "Opened",
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 2_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({
+      dispatch: { actionDispatched: true, clickDispatched: true },
+      postcondition: { passed: true },
+    });
+    await expect(page.locator("#outcome").isVisible()).resolves.toBe(true);
+  });
+
   it("uses a fresh alternate point when a non-target span covers only the center", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });

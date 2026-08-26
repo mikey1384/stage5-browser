@@ -21,6 +21,8 @@ export const controlInspectionOperations = {
     let popupLocator: Locator | null = null;
     let popupHandle: ElementHandle<HTMLElement> | null = null;
     let popupAssociationProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['associationProof'] = null;
+    let popupSurfaceProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['surfaceProof'] = null;
+    let renderedPopupCount: number | null = null;
     let options: ObservedControlInspection['options'] | null = null;
     let retained = false;
     let openerActionDispatched: boolean | 'unknown' = false;
@@ -52,21 +54,24 @@ export const controlInspectionOperations = {
         boundaryReached = native.complete;
       } else {
         let associated = await this.associatedControlPopup(frame, controlHandle, deadlineAt);
-        if (associated === 'ambiguous') {
+        renderedPopupCount = associated.renderedSurfaceCount;
+        if (associated.kind === 'ambiguous') {
           throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'Multiple popup surfaces could belong to the exact control.', {
             recoverable: true,
             details: {
               reason: 'ambiguous_control_popup',
               actionDispatched: false,
+              renderedPopupCount,
               decision: { kind: 'decision_required', responsible: 'agent' },
               suggestedAction: 'Inspect the current semantic page state and narrow to one exact control or modal before continuing.',
             },
           });
         }
-        if (associated !== null) {
+        if (associated.kind === 'resolved') {
           popupLocator = associated.locator;
           popupHandle = associated.handle;
           popupAssociationProof = associated.proof;
+          popupSurfaceProof = associated.surfaceProof;
         }
         let rendered = await popupRendered(popupHandle, deadlineAt);
         if (!rendered && input.revealOptions) {
@@ -133,25 +138,28 @@ export const controlInspectionOperations = {
             deadlineAt,
             openerActionDispatched !== false,
           );
-          if (associated !== null && associated !== 'ambiguous') {
+          renderedPopupCount = associated.renderedSurfaceCount;
+          if (associated.kind === 'resolved') {
             popupLocator = associated.locator;
             popupHandle = associated.handle;
             popupAssociationProof = associated.proof;
+            popupSurfaceProof = associated.surfaceProof;
           }
           rendered = await popupRendered(popupHandle, deadlineAt);
           popupOpened = rendered;
           if (!rendered && revealError !== null) throw revealError;
-          if (!rendered || associated === 'ambiguous') {
+          if (!rendered || associated.kind !== 'resolved') {
             throw new Stage5BrowserError(
-              associated === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'POSTCONDITION_FAILED',
-              associated === 'ambiguous'
+              associated.kind === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'POSTCONDITION_FAILED',
+              associated.kind === 'ambiguous'
                 ? 'The control input exposed multiple possible popup surfaces.'
                 : 'The control input did not expose one associated popup surface.',
               {
                 recoverable: true,
                 details: {
-                  reason: associated === 'ambiguous' ? 'ambiguous_control_popup_after_reveal' : 'control_popup_not_observed',
+                  reason: associated.kind === 'ambiguous' ? 'ambiguous_control_popup_after_reveal' : 'control_popup_not_observed',
                   actionDispatched: openerActionDispatched,
+                  renderedPopupCount,
                   suggestedAction: 'Inspect authoritative page state. The opener may have received input; do not replay it automatically.',
                 },
               },
@@ -161,7 +169,7 @@ export const controlInspectionOperations = {
           popupOpened = rendered;
         }
 
-        if (popupLocator === null || popupHandle === null || !await popupRendered(popupHandle, deadlineAt)) {
+        if (popupHandle === null || !await popupRendered(popupHandle, deadlineAt)) {
           options = new Map();
         } else {
           const popupMultiple = await boundedValue(
@@ -170,6 +178,7 @@ export const controlInspectionOperations = {
             false,
           );
           const custom = await this.collectPopupControlOptions(
+            frame,
             popupLocator,
             popupHandle,
             input.maxOptions,
@@ -238,6 +247,8 @@ export const controlInspectionOperations = {
             scrollSteps,
             boundaryReached,
             associationProof: popupAssociationProof,
+            surfaceProof: popupSurfaceProof,
+            renderedPopupCount,
           },
           choice: {
             responsibility: 'agent',

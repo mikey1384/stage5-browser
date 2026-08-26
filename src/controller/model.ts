@@ -324,8 +324,10 @@ export const POPUP_RENDERED_STATE_ROLES = new Set([
   ...POPUP_SURFACE_ROLES,
 ]);
 export const MAX_POPUP_RENDERED_STATE_CANDIDATES = 100;
-export const CONTROL_OPTION_SELECTOR = '[role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="radio"], [role="treeitem"]';
+export const CONTROL_POPUP_OPTION_SELECTOR = '[role="option"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"]';
+export const CONTROL_OPTION_SELECTOR = `${CONTROL_POPUP_OPTION_SELECTOR}, [role="radio"]`;
 export const CONTROL_POPUP_SELECTOR = '[role="listbox"], [role="menu"], [role="tree"]';
+export const MAX_CONTROL_POPUP_OPTION_CANDIDATES = 200;
 export const MAX_CONTROL_INSPECTION_SCROLL_STEPS = 16;
 export const CONTROL_INSPECTION_SCROLL_SETTLE_MS = 75;
 export const FILL_RESULT_FINALIZATION_RESERVE_MS = 750;

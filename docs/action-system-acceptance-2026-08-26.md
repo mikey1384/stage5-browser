@@ -48,8 +48,9 @@ The one controller runtime owns session context. Tab IDs, frame IDs, document ve
 
 | Reported failure | Generic remedy | Regression evidence | Status |
 | --- | --- | --- | --- |
-| Another custom-control popup was already open, so the intended control opener changed state but its expected-hidden condition failed | Before revealing a control, Stage5 may dismiss exactly one rendered competing popup only when it has one structural owner. Escape dispatch has trusted evidence and a close postcondition; ambiguity or failed closure stops before the intended opener. | Competing-popup case in `tests/browser-controller/core/control-options.test.ts` | Fixed locally; reporting action remains frozen until the 0.13 release handoff |
-| Temporary read-only tab activation could not prove restoration of the prior selected draft tab | Restoration now gets one bounded second attempt on the same exact selected page only. A second failure remains closed, and no URL/title/index fallback is permitted. | Restoration-recovery cases in `tests/browser-controller-tab-capabilities.test.ts` | Fixed locally; reporting action remains frozen until the 0.13 release handoff |
+| Two open custom-control portals had no semantic popup roles, so passive inspection returned no association despite preserving both surfaces | One bounded surface-discovery owner now admits rendered option groups only behind positioned, popover, or dialog portal boundaries, retains the innermost real scroll surface, and feeds the existing explicit/structural/focused/expanded/spatial ownership resolver. Ambiguous surfaces or owners remain zero-input. | Generic two-portal and equal-anchor cases in `tests/browser-controller/core/control-reveal-recovery.test.ts` | Fixed in 0.15.5 candidate; reporting page remains frozen until host adoption and one passive inspection |
+| An exact visible result was rejected as outside the viewport because a non-containing `overflow:hidden` ancestor collapsed inferred geometry | One canonical geometry evaluator keeps conservative overflow inference first, then accepts a viewport override only when bounded `elementFromPoint` probes inside the target's own viewport-clipped client rectangles hit that exact target or a composed-tree descendant. The synchronous dispatch guard repeats the same proof. | Positioned exact-target and existing covered/slotted/offscreen cases in `tests/browser-controller-hit-point.test.ts` | Fixed in 0.15.5 candidate; prior live attempts all proved zero dispatch |
+| Agent narratives alone could not localize the popup and viewport boundaries | Execution traces now retain categorical target state/viewport proof, popup association/surface proof, rendered-surface count, reach strategy, dispatch evidence, and reconciliation outcome through an explicit privacy allowlist. | `tests/execution-telemetry.test.ts`; native-record validation in `tests/native-control-channel.test.ts` | Fixed in 0.15.5 candidate; host behavior 2 requires one reconnect |
 
 ## Complete hand vocabulary
 
@@ -61,7 +62,7 @@ This does not promise a bespoke command for every future widget. It promises tha
 
 Focused regressions run without rebuilding unchanged code. The complete release suite remains serial, gives each run an automatically removed root under `/private/tmp/stage5-browser-tests.noindex`, and bounds fixture teardown with exact disposable-process proof so indexing or one delayed browser exit cannot contaminate later tests. Seventeen abandoned directories from the old per-user temp runner (46 MB) were verified process-free and removed.
 
-Final post-change release evidence:
+Final 0.13 post-change release evidence:
 
 - `npm test`: build, typecheck, file-size gate, and complete headless suite passed in 140.43 seconds;
 - test files: 63 passed, 3 skipped, 66 total;
@@ -69,3 +70,5 @@ Final post-change release evidence:
 - all production TypeScript files are 497 lines or fewer; all hand-authored TypeScript files remain below the enforced 1,000-line ceiling;
 - public MCP catalog and exhaustive manager-owner contract: 53 unique tools;
 - native focus-changing, native handoff smoke, and live-account tests were deliberately excluded because their boundaries were not required for this release.
+
+The additive 0.15.5 release evidence is recorded separately in `docs/dogfooding-2026-08-26-positioned-popup-and-hit-test-evidence.md`; it does not replace or reinterpret the historical 0.13 gate above.

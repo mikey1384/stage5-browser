@@ -7,9 +7,10 @@ import {
   sanitizeUrlForJournal,
   Stage5BrowserError,
 } from '../dependencies.js';
-import { boundedValue, CONTROL_POPUP_SELECTOR, remainingUntil } from '../model.js';
+import { boundedValue, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import { resolveControlPopupOwner } from './popup-ownership.js';
+import { discoverControlPopupSurfaces } from './popup-surfaces.js';
 import { popupRendered } from './rendering.js';
 
 interface PopupPreparationResult {
@@ -24,22 +25,15 @@ export const popupPreparationOperations = {
     targetControl: ElementHandle<HTMLElement>,
     deadlineAt: number,
   ): Promise<PopupPreparationResult> {
-    const popupLocator = frame.locator(CONTROL_POPUP_SELECTOR);
-    const popupCount = await boundedValue(popupLocator.count(), Math.max(1, remainingUntil(deadlineAt)), -1);
-    if (popupCount < 0 || popupCount > 50) {
+    const discovery = await discoverControlPopupSurfaces(frame, deadlineAt);
+    if (discovery.kind === 'unbounded') {
       throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'The visible popup environment could not be bounded.', {
         recoverable: true,
         details: { reason: 'popup_environment_unbounded', actionDispatched: false },
       });
     }
     const renderedPopups: ElementHandle<HTMLElement>[] = [];
-    for (let index = 0; index < popupCount; index += 1) {
-      const handle = await boundedValue(
-        popupLocator.nth(index).elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
-        Math.max(1, remainingUntil(deadlineAt)),
-        null,
-      );
-      if (handle === null) continue;
+    for (const { handle } of discovery.surfaces) {
       if (await popupRendered(handle, deadlineAt)) renderedPopups.push(handle);
       else await handle.dispose().catch(() => undefined);
     }

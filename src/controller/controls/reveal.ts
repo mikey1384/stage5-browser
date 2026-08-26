@@ -95,8 +95,8 @@ export const controlRevealOperations = {
         deadlineAt,
         true,
       );
-      if (associated === 'ambiguous') return failPopupReveal('ambiguous_control_popup_after_reveal', null);
-      if (associated === null) return failPopupReveal('control_popup_not_observed', false);
+      if (associated.kind === 'ambiguous') return failPopupReveal('ambiguous_control_popup_after_reveal', null);
+      if (associated.kind === 'missing') return failPopupReveal('control_popup_not_observed', false);
       popupHandle = associated.handle;
       const rendered = await popupRendered(popupHandle, deadlineAt);
       if (!rendered) return failPopupReveal('control_popup_not_observed', false);

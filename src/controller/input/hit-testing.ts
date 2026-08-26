@@ -1,4 +1,4 @@
-import { type ElementHandle, type Page, randomUUID } from '../dependencies.js';
+import { type ElementHandle, inspectExactTargetGeometry, type Page, randomUUID } from '../dependencies.js';
 import { type InstalledClickDispatchProbe, type RawClickDispatchEvidence } from '../model.js';
 import { safeRawClickDispatchEvidence } from './click-dispatch-evidence.js';
 import type { BrowserControllerContext } from '../runtime.js';
@@ -17,81 +17,8 @@ export const inputHitTestingOperations = {
     element: { x: number; y: number };
   } | null> {
     try {
-      return await handle.evaluate((element) => {
-        if (!element.isConnected) return null;
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none'
-          && style.visibility !== 'hidden' && style.opacity !== '0';
-        const enabled = !('disabled' in element && Boolean((element as HTMLButtonElement).disabled))
-          && element.getAttribute('aria-disabled') !== 'true';
-        if (!visible || !enabled || rect.bottom <= 0 || rect.right <= 0 ||
-          rect.top >= window.innerHeight || rect.left >= window.innerWidth) {
-          return null;
-        }
-        let left = Math.max(0, rect.left);
-        let right = Math.min(window.innerWidth, rect.right);
-        let top = Math.max(0, rect.top);
-        let bottom = Math.min(window.innerHeight, rect.bottom);
-        const composedParent = (candidate: Element): HTMLElement | null => {
-          if (candidate.assignedSlot !== null) return candidate.assignedSlot;
-          if (candidate.parentElement !== null) return candidate.parentElement;
-          const root = candidate.getRootNode();
-          return root instanceof ShadowRoot ? root.host as HTMLElement : null;
-        };
-        const visited = new Set<Element>();
-        for (
-          let ancestor = composedParent(element);
-          ancestor !== null && !visited.has(ancestor);
-          ancestor = composedParent(ancestor)
-        ) {
-          visited.add(ancestor);
-          const ancestorStyle = getComputedStyle(ancestor);
-          const ancestorRect = ancestor.getBoundingClientRect();
-          if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowX)) {
-            left = Math.max(left, ancestorRect.left);
-            right = Math.min(right, ancestorRect.right);
-          }
-          if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowY)) {
-            top = Math.max(top, ancestorRect.top);
-            bottom = Math.min(bottom, ancestorRect.bottom);
-          }
-        }
-        if (right <= left || bottom <= top) return null;
-        const width = right - left;
-        const height = bottom - top;
-        const points = [
-          [0.5, 0.5],
-          [0.2, 0.5], [0.8, 0.5], [0.5, 0.2], [0.5, 0.8],
-          [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8],
-        ] as const;
-        const composedContains = (candidate: Element | null): boolean => {
-          let current: Node | null = candidate;
-          const visited = new Set<Node>();
-          while (current !== null && !visited.has(current)) {
-            if (current === element) return true;
-            visited.add(current);
-            if (current instanceof Element && current.assignedSlot !== null) {
-              current = current.assignedSlot;
-              continue;
-            }
-            const parent = current.parentNode;
-            current = parent instanceof ShadowRoot ? parent.host : parent;
-          }
-          return false;
-        };
-        for (const [xRatio, yRatio] of points) {
-          const x = left + width * xRatio;
-          const y = top + height * yRatio;
-          const hit = document.elementFromPoint(x, y);
-          if (!composedContains(hit)) continue;
-          return {
-            page: { x, y },
-            element: { x: x - rect.left, y: y - rect.top },
-          };
-        }
-        return null;
-      });
+      const geometry = await handle.evaluate(inspectExactTargetGeometry);
+      return geometry.state.visible && geometry.state.enabled ? geometry.hitPoint : null;
     } catch {
       return null;
     }
@@ -194,7 +121,49 @@ export const inputHitTestingOperations = {
               bottom = Math.min(bottom, ancestorRect.bottom);
             }
           }
-          return visible && enabled && (!viewportRequired || (right > left && bottom > top));
+          const inferredInViewport = right > left && bottom > top;
+          let exactViewportHit = false;
+          if (viewportRequired && !inferredInViewport) {
+            const composedContains = (candidate: Element | null): boolean => {
+              let current: Node | null = candidate;
+              const visited = new Set<Node>();
+              while (current !== null && !visited.has(current)) {
+                if (current === element) return true;
+                visited.add(current);
+                if (current instanceof Element && current.assignedSlot !== null) {
+                  current = current.assignedSlot;
+                  continue;
+                }
+                const parent = current.parentNode;
+                current = parent instanceof ShadowRoot ? parent.host : parent;
+              }
+              return false;
+            };
+            const ratios = [
+              [0.5, 0.5],
+              [0.2, 0.5], [0.8, 0.5], [0.5, 0.2], [0.5, 0.8],
+              [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8],
+            ] as const;
+            for (const clientRect of [...element.getClientRects()].slice(0, 20)) {
+              const clientLeft = Math.max(0, clientRect.left);
+              const clientRight = Math.min(window.innerWidth, clientRect.right);
+              const clientTop = Math.max(0, clientRect.top);
+              const clientBottom = Math.min(window.innerHeight, clientRect.bottom);
+              if (clientRight <= clientLeft || clientBottom <= clientTop) continue;
+              for (const [xRatio, yRatio] of ratios) {
+                const hit = document.elementFromPoint(
+                  clientLeft + (clientRight - clientLeft) * xRatio,
+                  clientTop + (clientBottom - clientTop) * yRatio,
+                );
+                if (!composedContains(hit)) continue;
+                exactViewportHit = true;
+                break;
+              }
+              if (exactViewportHit) break;
+            }
+          }
+          return visible && enabled &&
+            (!viewportRequired || inferredInViewport || exactViewportHit);
         };
         const block = (event: Event): void => {
           event.preventDefault();

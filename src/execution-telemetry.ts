@@ -16,6 +16,24 @@ const CHECK_KINDS = new Set<PostconditionCheck['kind']>([
   'url',
   'visible',
 ]);
+const POPUP_ASSOCIATION_PROOFS = new Set<ExecutionTraceConclusion['popupAssociationProof']>([
+  'explicit',
+  'structural',
+  'focused',
+  'expanded',
+  'spatial',
+  'post_dispatch_unique',
+]);
+const POPUP_SURFACE_PROOFS = new Set<ExecutionTraceConclusion['popupSurfaceProof']>([
+  'semantic_role',
+  'positioned_option_group',
+]);
+const VIEWPORT_EVIDENCE = new Set<
+  NonNullable<ExecutionTraceConclusion['targetState']>['viewportEvidence']
+>(['clipped_geometry', 'exact_hit_test_override', 'none']);
+const POINTER_HIT_POINTS = new Set<
+  NonNullable<ExecutionTraceConclusion['targetState']>['pointerHitPoint']
+>(['center', 'alternate']);
 
 export interface BuildExecutionTraceInput {
   operationId: string;
@@ -153,6 +171,13 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     selectionEffectObserved: booleanConclusion(valuesForKey(combined, 'selectionEffectObserved')),
     selectedRepresentationObserved: booleanConclusion(valuesForKey(combined, 'selectedRepresentationObserved')),
     popupClosed: booleanConclusion(valuesForKey(combined, 'popupClosed')),
+    popupAssociationProof: enumConclusion(
+      valuesForKey(combined, 'associationProof'),
+      POPUP_ASSOCIATION_PROOFS,
+    ),
+    popupSurfaceProof: enumConclusion(valuesForKey(combined, 'surfaceProof'), POPUP_SURFACE_PROOFS),
+    renderedPopupCount: boundedIntegerConclusion(valuesForKey(combined, 'renderedPopupCount'), 50),
+    targetState: targetStateConclusion(combined),
   };
 }
 
@@ -186,6 +211,34 @@ function dispatchConclusion(values: unknown[]): boolean | 'unknown' | null {
 function booleanConclusion(values: unknown[]): boolean | null {
   if (values.includes(true)) return true;
   return values.includes(false) ? false : null;
+}
+
+function enumConclusion<T extends string>(values: unknown[], allowed: Set<T | null>): T | null {
+  const observed = new Set(values.filter((value): value is T =>
+    typeof value === 'string' && allowed.has(value as T)));
+  return observed.size === 1 ? [...observed][0]! : null;
+}
+
+function boundedIntegerConclusion(values: unknown[], maximum: number): number | null {
+  const observed = new Set(values.filter((value): value is number =>
+    Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum));
+  return observed.size === 1 ? [...observed][0]! : null;
+}
+
+function targetStateConclusion(value: unknown): ExecutionTraceConclusion['targetState'] {
+  const states = valuesForKey(value, 'targetState').filter(isRecord);
+  if (states.length === 0) return null;
+  return {
+    visible: booleanConclusion(states.map((state) => state.visible)),
+    enabled: booleanConclusion(states.map((state) => state.enabled)),
+    inViewport: booleanConclusion(states.map((state) => state.inViewport)),
+    viewportEvidence: enumConclusion(
+      states.map((state) => state.viewportEvidence),
+      VIEWPORT_EVIDENCE,
+    ),
+    receivesPointerEvents: booleanConclusion(states.map((state) => state.receivesPointerEvents)),
+    pointerHitPoint: enumConclusion(states.map((state) => state.pointerHitPoint), POINTER_HIT_POINTS),
+  };
 }
 
 function valuesForKey(value: unknown, key: string, depth = 0, ancestors = new WeakSet<object>()): unknown[] {

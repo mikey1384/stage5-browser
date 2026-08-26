@@ -1,6 +1,6 @@
 import type { BrowserCommandName } from './commands.js';
 import type { BrowserActionManager, BrowserCommandContract, BrowserPhaseSystem } from './command-contracts.js';
-import type { PostconditionCheck } from './controls.js';
+import type { ControlPopupAssociationProof, ControlPopupSurfaceProof, PostconditionCheck } from './controls.js';
 
 export interface ViewportPreparationTelemetry {
   attempts: number;
@@ -67,6 +67,17 @@ export interface ExecutionTraceConclusion {
   selectionEffectObserved: boolean | null;
   selectedRepresentationObserved: boolean | null;
   popupClosed: boolean | null;
+  popupAssociationProof: ControlPopupAssociationProof | null;
+  popupSurfaceProof: ControlPopupSurfaceProof | null;
+  renderedPopupCount: number | null;
+  targetState: {
+    visible: boolean | null;
+    enabled: boolean | null;
+    inViewport: boolean | null;
+    viewportEvidence: 'clipped_geometry' | 'exact_hit_test_override' | 'none' | null;
+    receivesPointerEvents: boolean | null;
+    pointerHitPoint: 'center' | 'alternate' | null;
+  } | null;
 }
 
 export interface BrowserExecutionTrace {

@@ -49,6 +49,7 @@ export interface SafeTargetState {
   visible: boolean;
   enabled: boolean;
   inViewport: boolean;
+  viewportEvidence: 'clipped_geometry' | 'exact_hit_test_override' | 'none';
   receivesPointerEvents: boolean | null;
   pointerHitPoint: 'center' | 'alternate' | null;
   tagName: string;

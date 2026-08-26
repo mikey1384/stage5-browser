@@ -70,7 +70,7 @@ function isSafeSemanticToken(value: unknown): value is string {
 
 function isSafeTargetState(value: unknown): boolean {
   if (!isRecordWithOnlyKeys(value, [
-    'visible', 'enabled', 'inViewport', 'receivesPointerEvents', 'pointerHitPoint', 'tagName', 'role', 'coveredBy',
+    'visible', 'enabled', 'inViewport', 'viewportEvidence', 'receivesPointerEvents', 'pointerHitPoint', 'tagName', 'role', 'coveredBy',
   ])) return false;
   const coveredBy = value.coveredBy;
   const safeCover = coveredBy === null || (
@@ -82,6 +82,12 @@ function isSafeTargetState(value: unknown): boolean {
   return typeof value.visible === 'boolean'
     && typeof value.enabled === 'boolean'
     && typeof value.inViewport === 'boolean'
+    && (
+      value.viewportEvidence === undefined ||
+      value.viewportEvidence === 'clipped_geometry' ||
+      value.viewportEvidence === 'exact_hit_test_override' ||
+      value.viewportEvidence === 'none'
+    )
     && isBooleanOrNull(value.receivesPointerEvents)
     && (
       value.pointerHitPoint === undefined ||
