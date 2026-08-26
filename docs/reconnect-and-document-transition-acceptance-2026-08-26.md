@@ -32,7 +32,8 @@ This lifecycle result supersedes an inner selected/expanded postcondition failur
 - `tests/supervisor-agent-context.test.ts` proves independent Chrome and Brave context restoration for two stable agent identities, review-policy restoration, and context binding while a browser operation is hung.
 - `tests/browser-controller/core/control-options.test.ts` drives one exact opener through application → sign-in → application replacement, proves the sign-in route was requested once, verifies no replay, asserts the specialized transition error, and reads the durable state-loss event.
 - `tests/runtime-info.test.ts` proves a host-behavior change requires reconnect while an ordinary compatible worker rebuild does not.
-- Existing native-CDP reattachment and exact-target tests continue to own process, lease, selected-target, and unsaved-page continuity.
+- `tests/native-worker-handoff.test.ts` launches one disposable headless Chromium process over real loopback CDP, fills a local modal textarea, detaches the first controller, marks only its simulated worker identity exited, reattaches a second controller to the exact process and target, and proves the loader identity, modal, and unsaved value survived without a selected-document replacement.
+- Existing exact-target and diagnostic tests continue to cover stale/missing identity, replacement-document warnings, and privacy-safe evidence restoration.
 
 ## Safe migration and resume
 
