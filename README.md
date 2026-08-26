@@ -174,6 +174,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-26-popup-partition-and-all-hidden-proof.md` — separated option branches under a shared portal and bounded all-match hidden-state proof in compatible 0.15.6
 - `docs/dogfooding-2026-08-26-nearest-popup-anchor.md` — normalized uniquely-nearest popup ownership with true ties retained as ambiguity in compatible 0.15.7
 - `docs/dogfooding-2026-08-27-surface-covered-popup-owner.md` — hit-test-proven covered-sibling exclusion plus categorical owner telemetry in compatible 0.15.8
+- `docs/dogfooding-2026-08-27-popup-owner-telemetry-host.md` — fresh-host durable owner-telemetry contract and host-behavior 3 reconnect in 0.15.9
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
 - `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, consumed-input, active-tab, selected-state, and dynamic-feed regressions plus the 0.5.0–0.5.1 remedies

@@ -16,13 +16,13 @@ This is a generic contact invariant: a popup that physically occupies a page reg
 
 ## Proprioceptive telemetry
 
-Successful control results, errors, and `browser_execution_traces` may now include a privacy-safe `popupOwnership` record containing only:
+Successful control results and errors now include a privacy-safe `popupOwnership` record containing only:
 
 - the proof tier;
 - bounded total, exterior, overlapping, and surface-covered candidate counts; and
 - a categorical decision such as `decisive_distance`, `covered_siblings_excluded`, `tie_or_near`, or `structural_conflict`.
 
-Coordinates, rectangles, names, selectors, values, options, URLs, and page content remain omitted. This makes a future fail-closed result localizable without another speculative patch or live action.
+Coordinates, rectangles, names, selectors, values, options, URLs, and page content remain omitted. A freshly started host built from this source also retains the record in `browser_execution_traces`. The live Finance host predated the new host-side privacy parser, however, so its durable trace correctly kept the old allowlist and omitted `popupOwnership` even though the canonical worker result returned it. That deployment-boundary finding is fixed separately by the 0.15.9 host-behavior increment; a worker-only update must never promise a new host-owned trace field.
 
 ## Regression and adoption
 
@@ -35,4 +35,6 @@ Coordinates, rectangles, names, selectors, values, options, URLs, and page conte
 
 `tests/execution-telemetry.test.ts` proves the same categories survive the privacy allowlist without semantics. Focused adjacent-boundary gate: 3 files and 22 tests passed. Complete headless release gate: 71 files and 260 tests passed; the 3 native focus-changing/handoff cases remained intentionally skipped. Total release-gate duration was 178.36 seconds.
 
-At the preserved native-browser safe boundary, the existing host calls `browser_status` once, requires worker 0.15.8 with host behavior 2/protocol 12/catalog 13/54 tools and `restartRequired:false`, discards old control capabilities, and performs only a separately released passive verification. Any new ambiguity stops without replay or further page action; its new categorical owner trace determines the next investigation boundary.
+The preserved live page then accepted exactly one passive inspection. Operation `0c6864de-484b-431b-a562-55c63b74633b` succeeded in 888 ms with zero action phases, one positioned option-group surface, spatial association, and categorical ownership of five candidates: two exterior, three overlapping, and two hit-test-proven surface-covered; decision `covered_siblings_excluded`. Seven options were observed within the caller's existing bound. No option was selected and no further page action occurred. The corresponding old-host trace retained the success, manager, timing, zero actions, association, surface, and rendered count but omitted the newly added owner record, directly proving the host-contract issue above.
+
+The functional browser defect is accepted on 0.15.8 and requires no replay or further live verification. Durable owner categories require the 0.15.9 fresh-host gate documented separately; old trace rows are immutable and are not rewritten.

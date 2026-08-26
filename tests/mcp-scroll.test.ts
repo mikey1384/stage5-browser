@@ -59,8 +59,16 @@ describe('MCP nested scrolling', () => {
         body { margin: 0; overflow: hidden; }
         #feed { height: 160px; overflow-y: auto; }
         #spacer { height: 600px; }
+        #funding, #covered, #funding-options { position: fixed; left: 320px; width: 200px; box-sizing: border-box; }
+        #funding, #covered { height: 40px; }
+        #funding { top: 20px; }
+        #funding-options { top: 60px; height: 160px; z-index: 2; border: 1px solid black; }
+        #covered { top: 100px; }
       </style></head><body>
         <button id="mode" aria-pressed="false" onclick="this.setAttribute('aria-pressed', 'true')">Enable mode</button>
+        <button id="funding">Funding source</button>
+        <div id="funding-options"><div role="option">Company capital</div></div>
+        <button id="covered">Covered sibling</button>
         <section id="feed" role="feed" aria-label="Other posts">
           <article>Initial post</article><div id="spacer"></div>
         </section>
@@ -143,6 +151,55 @@ describe('MCP nested scrolling', () => {
       },
     });
     expect(opened.isError).not.toBe(true);
+    const inspected = await client.callTool({
+      name: 'browser_inspect_control',
+      arguments: {
+        control: { role: 'button', name: 'Funding source', exact: true },
+        frameId: null,
+        revealOptions: false,
+        maxOptions: 20,
+        timeoutMs: 10_000,
+      },
+    });
+    expect(inspected.isError).not.toBe(true);
+    expect(inspected.structuredContent).toMatchObject({
+      result: {
+        inspection: {
+          reveal: {
+            popupOpened: true,
+            associationProof: 'spatial',
+            surfaceProof: 'positioned_option_group',
+            renderedPopupCount: 1,
+            popupOwnership: {
+              proofTier: 'spatial',
+              decision: 'covered_siblings_excluded',
+            },
+          },
+        },
+      },
+    });
+    const inspectOperationId = (inspected.structuredContent as { operationId?: unknown }).operationId;
+    expect(typeof inspectOperationId).toBe('string');
+    if (typeof inspectOperationId !== 'string') throw new Error('Control inspection did not expose its operationId.');
+    const inspectTelemetry = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: { operationId: inspectOperationId, limit: 10 },
+    });
+    expect(inspectTelemetry.structuredContent).toMatchObject({
+      traces: [{
+        command: 'inspectControl',
+        actions: [],
+        conclusion: {
+          popupAssociationProof: 'spatial',
+          popupSurfaceProof: 'positioned_option_group',
+          renderedPopupCount: 1,
+          popupOwnership: {
+            proofTier: 'spatial',
+            decision: 'covered_siblings_excluded',
+          },
+        },
+      }],
+    });
     const snapshot = await client.callTool({
       name: 'browser_snapshot',
       arguments: { depth: 8, boxes: false, frameId: null, timeoutMs: 10_000 },
