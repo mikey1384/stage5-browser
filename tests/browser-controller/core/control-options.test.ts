@@ -229,6 +229,60 @@ describe('BrowserController generic control inspection and selection', () => {
     expect(await page.locator('#clicks').textContent()).toBe('0');
   });
 
+  it('contacts an exact button option with the pointer instead of selecting the active option by keyboard', async () => {
+    await openFixture(`<!doctype html><html><body>
+      <button id="purpose" aria-haspopup="listbox" aria-controls="choices" aria-expanded="false">Use of account</button>
+      <div id="choices" role="listbox" hidden>
+        <button id="first" role="option" aria-selected="false">Business operations</button>
+        <button id="intended" role="option" aria-selected="false">Treasury management</button>
+      </div>
+      <output id="keydowns">0</output><output id="selected">none</output>
+      <script>
+        const choose = (option) => {
+          for (const candidate of choices.querySelectorAll('[role=option]')) {
+            candidate.setAttribute('aria-selected', String(candidate === option));
+          }
+          selected.value = option.textContent;
+          purpose.textContent = option.textContent;
+          purpose.setAttribute('aria-expanded', 'false');
+          choices.hidden = true;
+        };
+        purpose.addEventListener('click', () => {
+          purpose.setAttribute('aria-expanded', 'true');
+          choices.hidden = false;
+          first.focus();
+        });
+        choices.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter') return;
+          keydowns.value = String(Number(keydowns.value) + 1);
+          choose(first);
+          event.target.remove();
+        });
+        for (const option of choices.querySelectorAll('[role=option]')) {
+          option.addEventListener('click', () => choose(option));
+        }
+      </script>
+    </body></html>`);
+
+    const selected = await controller?.selectOptions({
+      inspectionId: null,
+      optionIds: null,
+      control: { role: 'button', name: 'Use of account', exact: true },
+      options: [{ name: 'Treasury management', exact: true }],
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(selected?.selectedNames).toEqual(['Treasury management']);
+    expect(selected?.selections[0]?.evidence).toMatchObject({
+      actionDispatched: true,
+      selectionEffectObserved: true,
+      selectedState: true,
+    });
+    const page = (controller as unknown as { activePage: { locator: (selector: string) => { textContent: () => Promise<string | null> } } }).activePage;
+    expect(await page.locator('#keydowns').textContent()).toBe('0');
+    expect(await page.locator('#selected').textContent()).toBe('Treasury management');
+  });
+
   it('dismisses one structurally owned competing popup before opening the intended control once', async () => {
     await openFixture(`<!doctype html><html><body>
       <button id="first" aria-haspopup="listbox" aria-controls="first-options" aria-expanded="true">Funding source</button>

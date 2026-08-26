@@ -36,6 +36,12 @@ export interface ObservedReferenceSemantic {
   url: string | null;
 }
 
+export interface ObservedReferenceCapability {
+  locator: Locator;
+  handle: ElementHandle<HTMLElement | SVGElement>;
+  identity: ClickTargetSemanticIdentity;
+}
+
 export interface ObservedTextEditor {
   handle: ElementHandle<HTMLElement>;
 }
@@ -197,7 +203,7 @@ export interface ClickTargetSemanticIdentity {
   role: string | null;
   name: string;
   url: string | null;
-  article: {
+  owner: {
     fingerprint: string;
     tagName: string;
     role: string | null;
@@ -281,8 +287,9 @@ export const CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS = 5_000;
 export const CLICK_REF_INCREMENTAL_SCROLL_STEPS = 32;
 export const CLICK_REF_INCREMENTAL_SETTLE_MS = 75;
 export const CLICK_REF_REBIND_SETTLE_MS = 500;
-export const CLICK_REF_ARTICLE_TEXT_CHARACTERS = 20_000;
-export const CLICK_REF_ARTICLE_CANDIDATES = 100;
+export const CLICK_REF_OWNER_TEXT_CHARACTERS = 20_000;
+export const CLICK_REF_OWNER_CANDIDATES = 100;
+export const CLICK_REF_OWNER_SELECTOR = 'article, [role="article"], tr, [role="row"], li, [role="listitem"]';
 export const CLICK_REF_ELEMENT_CANDIDATES = 5_000;
 export const CLICK_REF_NORMAL_DISPATCH_TIMEOUT_MS = 750;
 export const CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS = 750;

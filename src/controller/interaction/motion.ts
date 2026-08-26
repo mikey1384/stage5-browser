@@ -1,5 +1,5 @@
 import { type BrowserCommandInput, type BrowserCommandOutput, type BrowserMotionDispatchEvidence, type BrowserMotionTarget, type ElementHandle, type Page, sanitizeUrlForJournal, Stage5BrowserError } from '../dependencies.js';
-import { fillFinalizationReserve, remainingUntil } from '../model.js';
+import { fillFinalizationReserve, type ObservedReferenceCapability, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import type { PreparedMotionTarget } from './motion-target.js';
 
@@ -37,6 +37,8 @@ export const interactionMotionOperations = {
     const startedAt = new Date(phases.startedAtMs).toISOString();
     let source: PreparedMotionTarget | null = null;
     let destination: PreparedMotionTarget | null = null;
+    let sourceCapability: ObservedReferenceCapability | null = null;
+    let destinationCapability: ObservedReferenceCapability | null = null;
     let probe: Awaited<ReturnType<BrowserControllerContext['installMotionProbe']>> = null;
     let dispatchError: unknown = null;
     let dispatch: BrowserMotionDispatchEvidence | null = null;
@@ -51,6 +53,22 @@ export const interactionMotionOperations = {
       const destinationSnapshot = destinationTarget === null
         ? null
         : this.validateMotionTargetCapability(frame, destinationTarget);
+      sourceCapability = sourceTarget.kind === 'ref' && sourceSnapshot !== null
+        ? await this.retainObservedReferenceCapability(
+          frame,
+          sourceSnapshot,
+          sourceTarget.ref,
+          actionDeadlineAt,
+        )
+        : null;
+      destinationCapability = destinationTarget?.kind === 'ref' && destinationSnapshot !== null
+        ? await this.retainObservedReferenceCapability(
+          frame,
+          destinationSnapshot,
+          destinationTarget.ref,
+          actionDeadlineAt,
+        )
+        : null;
       phases.enter('plan');
       if (
         sourceTarget.kind === 'ref' &&
@@ -75,6 +93,7 @@ export const interactionMotionOperations = {
         frame,
         sourceTarget,
         sourceSnapshot,
+        sourceCapability,
         input.motion.kind === 'hover'
           || input.motion.kind === 'drag'
           || input.motion.kind === 'double_click'
@@ -87,6 +106,7 @@ export const interactionMotionOperations = {
           frame,
           destinationTarget,
           destinationSnapshot,
+          destinationCapability,
           true,
           actionDeadlineAt,
         );
@@ -236,6 +256,8 @@ export const interactionMotionOperations = {
       await probe?.dispose().catch(() => undefined);
       await source?.handle.dispose().catch(() => undefined);
       await destination?.handle.dispose().catch(() => undefined);
+      await sourceCapability?.handle.dispose().catch(() => undefined);
+      await destinationCapability?.handle.dispose().catch(() => undefined);
       this.discardObservedSnapshot(frame);
       phases.ensureFailed();
       this.actionPhases.finish(phases);

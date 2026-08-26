@@ -70,57 +70,69 @@ export const inputActionsOperations = {
           actionDeadlineAt: number,
         ) => {
           const retained = observed as ObservedSnapshot;
-          const pageActivation = await this.primeSelectedPageForTargetPreparation(
-            page,
-            actionDeadlineAt,
-            actionStartedAt,
-            'click_by_ref',
-            activationAttemptCount,
-            priorNativeActivation ?? undefined,
-          );
-          const resolution = await this.resolveObservedReferenceAfterActivation(
+          const capability = await this.retainObservedReferenceCapability(
             frame,
             retained,
             input.ref,
             actionDeadlineAt,
           );
-          if (resolution.kind !== 'resolved') {
-            const ambiguous = resolution.kind === 'ambiguous';
-            const timedOut = resolution.kind === 'timeout';
-            const scopeChanged = resolution.kind === 'scope_changed';
-            return this.failClickBeforeDispatch(
+          try {
+            const pageActivation = await this.primeSelectedPageForTargetPreparation(
               page,
+              actionDeadlineAt,
               actionStartedAt,
-              null,
-              ambiguous ? 'ambiguous_target' : timedOut ? 'timeout' : 'target_missing',
-              ambiguous
-                ? 'reference_semantic_rebind_ambiguous'
-                : timedOut
-                  ? 'reference_resolution_deadline_expired'
-                  : scopeChanged
-                    ? 'snapshot_scope_changed'
-                    : 'reference_resolution_changed',
-              ambiguous
-                ? 'More than one live element matched the fresh reference semantic inside its retained snapshot scope.'
-                : timedOut
-                  ? 'The fresh reference could not be resolved before the shared click deadline.'
-                  : scopeChanged
-                    ? 'The retained snapshot scope changed before the fresh reference could be resolved.'
-                    : 'The fresh reference no longer resolves and no unique semantic replacement exists inside its retained snapshot scope.',
-              'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
-              ambiguous ? 'AMBIGUOUS_TARGET' : timedOut ? 'OPERATION_FAILED' : 'TARGET_NOT_FOUND',
+              'click_by_ref',
+              activationAttemptCount,
+              priorNativeActivation ?? undefined,
             );
+            const resolution = await this.resolveObservedReferenceCapabilityAfterActivation(
+              frame,
+              retained,
+              input.ref,
+              capability,
+              actionDeadlineAt,
+            );
+            if (resolution.kind !== 'resolved') {
+              const ambiguous = resolution.kind === 'ambiguous';
+              const timedOut = resolution.kind === 'timeout';
+              const scopeChanged = resolution.kind === 'scope_changed';
+              return this.failClickBeforeDispatch(
+                page,
+                actionStartedAt,
+                null,
+                ambiguous ? 'ambiguous_target' : timedOut ? 'timeout' : 'target_missing',
+                ambiguous
+                  ? 'reference_semantic_rebind_ambiguous'
+                  : timedOut
+                    ? 'reference_resolution_deadline_expired'
+                    : scopeChanged
+                      ? 'snapshot_scope_changed'
+                      : 'reference_resolution_changed',
+                ambiguous
+                  ? 'More than one live element matched the fresh reference semantic inside its retained snapshot scope.'
+                  : timedOut
+                    ? 'The fresh reference could not be resolved before the shared click deadline.'
+                    : scopeChanged
+                      ? 'The retained snapshot scope changed before the fresh reference could be resolved.'
+                      : 'The fresh reference no longer resolves and no unique semantic replacement exists inside its retained snapshot scope.',
+                'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
+                ambiguous ? 'AMBIGUOUS_TARGET' : timedOut ? 'OPERATION_FAILED' : 'TARGET_NOT_FOUND',
+              );
+            }
+            return this.prepareObservedClickTarget(
+              page,
+              frame,
+              resolution.locator,
+              actionStartedAt,
+              actionDeadlineAt,
+              input.postcondition,
+              pageActivation,
+              resolution.handle,
+            );
+          } catch (error) {
+            await capability?.handle.dispose().catch(() => undefined);
+            throw error;
           }
-          return this.prepareObservedClickTarget(
-            page,
-            frame,
-            resolution.locator,
-            actionStartedAt,
-            actionDeadlineAt,
-            input.postcondition,
-            pageActivation,
-            resolution.handle,
-          );
         },
         reconciliationLocator: (prepared) => prepared.locator,
         discardCapabilities: () => this.discardObservedSnapshot(frame),

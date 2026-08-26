@@ -1,5 +1,5 @@
 import { actionDiagnosticForFailure, type ElementHandle, type Page, privacyFingerprint, type SafeTargetState, type SanitizedActionDiagnostic, type SanitizedClickDispatchEvidence } from '../dependencies.js';
-import { CLICK_REF_ARTICLE_TEXT_CHARACTERS, type ClickDispatchConclusion, type ClickTargetSemanticIdentity } from '../model.js';
+import { CLICK_REF_OWNER_SELECTOR, CLICK_REF_OWNER_TEXT_CHARACTERS, type ClickDispatchConclusion, type ClickTargetSemanticIdentity } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
 export const inputClickFailureOperations = {
@@ -135,7 +135,7 @@ export const inputClickFailureOperations = {
     handle: ElementHandle<HTMLElement | SVGElement>,
   ): Promise<ClickTargetSemanticIdentity | null> {
     try {
-      const observed = await handle.evaluate((element, articleTextCharacters) => {
+      const observed = await handle.evaluate((element, args) => {
         if (!element.isConnected) {
           throw new Error('Target element is detached.');
         }
@@ -150,6 +150,8 @@ export const inputClickFailureOperations = {
           if (tagName === 'button') return 'button';
           if (tagName === 'a' && candidate.hasAttribute('href')) return 'link';
           if (tagName === 'article') return 'article';
+          if (tagName === 'tr') return 'row';
+          if (tagName === 'li') return 'listitem';
           if (tagName === 'img') return 'img';
           if (tagName === 'textarea') return 'textbox';
           if (tagName === 'select') return 'combobox';
@@ -189,10 +191,10 @@ export const inputClickFailureOperations = {
           if (placeholder !== '') return placeholder.slice(0, 500);
           return normalize(candidate.getAttribute('title')).slice(0, 500);
         };
-        const article = element.closest('article, [role="article"]');
+        const owner = element.closest(args.ownerSelector);
         let nestingDepth = 0;
-        for (let ancestor: Element | null = article; ancestor !== null; ancestor = ancestor.parentElement) {
-          if (ancestor.matches('article, [role="article"]')) {
+        for (let ancestor: Element | null = owner; ancestor !== null; ancestor = ancestor.parentElement) {
+          if (ancestor.matches(args.ownerSelector)) {
             nestingDepth += 1;
           }
         }
@@ -201,28 +203,31 @@ export const inputClickFailureOperations = {
           role: semanticRole(element),
           name: semanticName(element),
           url: element.getAttribute('href'),
-          article: article === null
+          owner: owner === null
             ? null
             : {
-                text: renderedText(article).slice(0, articleTextCharacters),
-                tagName: article.tagName.toLocaleLowerCase(),
-                role: semanticRole(article),
+                text: renderedText(owner).slice(0, args.ownerTextCharacters),
+                tagName: owner.tagName.toLocaleLowerCase(),
+                role: semanticRole(owner),
                 nestingDepth,
               },
         };
-      }, CLICK_REF_ARTICLE_TEXT_CHARACTERS);
+      }, {
+        ownerSelector: CLICK_REF_OWNER_SELECTOR,
+        ownerTextCharacters: CLICK_REF_OWNER_TEXT_CHARACTERS,
+      });
       return {
         tagName: observed.tagName,
         role: observed.role,
         name: observed.name,
         url: observed.url,
-        article: observed.article === null
+        owner: observed.owner === null
           ? null
           : {
-              fingerprint: privacyFingerprint(observed.article.text),
-              tagName: observed.article.tagName,
-              role: observed.article.role,
-              nestingDepth: observed.article.nestingDepth,
+              fingerprint: privacyFingerprint(observed.owner.text),
+              tagName: observed.owner.tagName,
+              role: observed.owner.role,
+              nestingDepth: observed.owner.nestingDepth,
             },
       };
     } catch {

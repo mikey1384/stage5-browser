@@ -1,5 +1,5 @@
 import { type BrowserMotionTarget, type ElementHandle, type Frame, inspectTargetState, type Locator, type Page, type SafeTargetState, Stage5BrowserError } from '../dependencies.js';
-import { boundedValue, CLICK_REF_INCREMENTAL_SETTLE_MS, type ObservedSnapshot, remainingUntil } from '../model.js';
+import { boundedValue, CLICK_REF_INCREMENTAL_SETTLE_MS, type ObservedReferenceCapability, type ObservedSnapshot, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
 export interface PreparedMotionTarget {
@@ -42,6 +42,7 @@ export const interactionMotionTargetOperations = {
     frame: Frame,
     target: BrowserMotionTarget,
     observed: ObservedSnapshot | null,
+    capability: ObservedReferenceCapability | null,
     pointerRequired: boolean,
     deadlineAt: number,
   ): Promise<PreparedMotionTarget> {
@@ -54,10 +55,11 @@ export const interactionMotionTargetOperations = {
           details: { reason: 'motion_reference_not_retained', actionDispatched: false },
         });
       }
-      const resolved = await this.resolveObservedReferenceAfterActivation(
+      const resolved = await this.resolveObservedReferenceCapabilityAfterActivation(
         frame,
         observed,
         target.ref,
+        capability,
         deadlineAt,
       );
       if (resolved.kind !== 'resolved') {

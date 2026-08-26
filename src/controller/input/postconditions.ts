@@ -146,6 +146,7 @@ export const inputPostconditionsOperations = {
             ...dispatchError.details,
             effectPostconditionObserved: false,
             effectPostconditionChecks: postconditionError.details?.checks ?? [],
+            checks: postconditionError.details?.checks ?? [],
             suggestedAction: 'Inspect authoritative state with a fresh snapshot. Partial or ambiguous input occurred and the requested effect was not confirmed; do not retry or replay the action.',
           },
           cause: dispatchError,

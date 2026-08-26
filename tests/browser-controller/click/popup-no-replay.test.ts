@@ -275,7 +275,7 @@ describe("BrowserController popup dispatch evidence and no replay", () => {
     );
   });
 
-  it("never falls back or replays when a popup opener detaches during keyboard activation", async () => {
+  it("uses exact pointer contact for an unpostconditioned native button", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(`<!doctype html><html><head><title>Popup keyboard replacement</title></head><body>
@@ -328,38 +328,17 @@ describe("BrowserController popup dispatch evidence and no replay", () => {
       timeoutMs: 5_000,
     });
 
-    let failure: Stage5BrowserError | null = null;
-    try {
-      await controller.clickByRole({
+    await expect(
+      controller.clickByRole({
         role: "button",
         name: "Funding source",
         exact: true,
         frameId: null,
         postcondition: null,
         timeoutMs: 3_000,
-      });
-    } catch (error) {
-      expect(error).toBeInstanceOf(Stage5BrowserError);
-      failure = error as Stage5BrowserError;
-    }
-    expect(failure).not.toBeNull();
-    expect(failure).toMatchObject({
-      code: "OPERATION_FAILED",
-      details: {
-        reason: "detached",
-        actionDispatched: true,
-        clickDispatched: false,
-        suggestedAction: expect.stringMatching(/do not retry/i),
-        dispatchEvidence: {
-          forcedFallbackUsed: false,
-          pageMouseFallbackUsed: false,
-          keyDownOnTarget: true,
-          pointerDownOnTarget: false,
-          mouseDownOnTarget: false,
-          clickOnTarget: false,
-          targetConnectedAfter: false,
-        },
-      },
+      }),
+    ).resolves.toMatchObject({
+      dispatch: { actionDispatched: true, clickDispatched: true },
     });
     expect(
       (
@@ -371,7 +350,7 @@ describe("BrowserController popup dispatch evidence and no replay", () => {
         })
       ).snapshot,
     ).toContain(
-      "keydowns:1 pointerdowns:0 clicks:0 replacements:1 replacement-clicks:0",
+      "keydowns:0 pointerdowns:1 clicks:1 replacements:0 replacement-clicks:0",
     );
   });
 

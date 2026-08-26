@@ -168,7 +168,7 @@ describe("BrowserController exact target replacement before and during input", (
     ).toContain("target-clicks:1");
   });
 
-  it("reports definite no-dispatch when a native dropdown opener detaches while press is focusing it", async () => {
+  it("reports partial pointer input without replay when focus detaches a native button", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(`<!doctype html><html><head><title>Pre-keyboard replacement</title></head><body>
@@ -220,14 +220,15 @@ describe("BrowserController exact target replacement before and during input", (
       code: "OPERATION_FAILED",
       details: {
         reason: "detached",
-        actionDispatched: false,
+        actionDispatched: true,
         clickDispatched: false,
+        suggestedAction: expect.stringMatching(/do not retry|do not replay/i),
         dispatchEvidence: {
           trustedEventObserved: true,
           keyDownOnTarget: false,
           keyUpOnTarget: false,
-          pointerDownOnTarget: false,
-          mouseDownOnTarget: false,
+          pointerDownOnTarget: true,
+          mouseDownOnTarget: true,
           clickOnTarget: false,
           targetConnectedAfter: false,
           misdirectedEventBlocked: true,
@@ -236,9 +237,9 @@ describe("BrowserController exact target replacement before and during input", (
     });
     expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
       action: "click_by_role",
-      outcome: "blocked",
+      outcome: "failed",
       reason: "detached",
-      actionDispatched: false,
+      actionDispatched: true,
       clickDispatched: false,
     });
     expect(

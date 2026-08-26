@@ -95,4 +95,48 @@ describe('privacy-safe execution telemetry', () => {
     expect(persisted).not.toContain('Never persist this form value');
     expect(persisted).not.toContain('never-store');
   });
+
+  it('retains canonical reconciliation checks after partial input fails closed', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-partial-selection-fixture',
+      agentId: 'finance-agent',
+      command: 'selectOptions',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(25).toISOString(),
+      durationMs: 25,
+      outcome: 'failed',
+      error: {
+        code: 'OPERATION_FAILED',
+        message: 'Selection stopped after possible partial input.',
+        recoverable: true,
+        details: {
+          reason: 'detached',
+          actionDispatched: true,
+          clickDispatched: false,
+          checks: [
+            { kind: 'selection_representation', passed: false, expected: true, observed: false },
+            { kind: 'selected', passed: false, expected: true, observed: null },
+            { kind: 'popup_closed', passed: true, expected: true, observed: true },
+          ],
+        },
+      },
+      result: null,
+      workerRuntime: { version: 'fixture', protocolVersion: 12 },
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion).toEqual({
+      actionDispatched: true,
+      clickDispatched: false,
+      postconditionPassed: null,
+      checks: [
+        { kind: 'selection_representation', passed: false, observed: false },
+        { kind: 'selected', passed: false, observed: null },
+        { kind: 'popup_closed', passed: true, observed: true },
+      ],
+      selectionEffectObserved: null,
+      selectedRepresentationObserved: null,
+      popupClosed: null,
+    });
+  });
 });

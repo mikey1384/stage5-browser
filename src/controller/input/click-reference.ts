@@ -1,13 +1,128 @@
 import { type Browser, type ClickPostcondition, type ElementHandle, type Frame, inspectTargetState, type Locator, type Page, type SanitizedPageActivationEvidence } from '../dependencies.js';
-import { boundedValue, CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_INCREMENTAL_SCROLL_STEPS, CLICK_REF_INCREMENTAL_SETTLE_MS, CLICK_REF_REBIND_SETTLE_MS, CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS, type ObservedReferenceResolution, type ObservedReferenceSemantic, type ObservedSnapshot, POPUP_OPTION_ROLES, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
+import { boundedValue, CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_INCREMENTAL_SCROLL_STEPS, CLICK_REF_INCREMENTAL_SETTLE_MS, CLICK_REF_REBIND_SETTLE_MS, CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS, type ClickTargetSemanticIdentity, type ObservedReferenceCapability, type ObservedReferenceResolution, type ObservedReferenceSemantic, type ObservedSnapshot, POPUP_OPTION_ROLES, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
 export const inputClickReferenceOperations = {
+  async retainObservedReferenceCapability(
+    frame: Frame,
+    observed: ObservedSnapshot,
+    ref: string,
+    actionDeadlineAt: number,
+  ): Promise<ObservedReferenceCapability | null> {
+    const locator = frame.locator(`aria-ref=${ref}`);
+    const count = await boundedValue(
+      locator.count(),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      -1,
+    );
+    if (count !== 1) return null;
+    const handle = await boundedValue(
+      locator.elementHandle(),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      null,
+    );
+    if (handle === null) return null;
+    const insideScope = await boundedValue(
+      observed.scopeHandle.evaluate(
+        (root, target) => root.isConnected && target.isConnected && (root === target || root.contains(target)),
+        handle,
+      ),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      false,
+    );
+    const identity = insideScope
+      ? await boundedValue(
+        this.observeClickTargetIdentity(handle),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      )
+      : null;
+    if (identity === null) {
+      await handle.dispose().catch(() => undefined);
+      return null;
+    }
+    return { locator, handle, identity };
+  },
+
+  async resolveRetainedReferenceCapability(
+    observed: ObservedSnapshot,
+    capability: ObservedReferenceCapability | null,
+    actionDeadlineAt: number,
+  ): Promise<ObservedReferenceResolution | null> {
+    if (capability === null) return null;
+    const insideScope = await boundedValue(
+      observed.scopeHandle.evaluate(
+        (root, target) => root.isConnected && target.isConnected && (root === target || root.contains(target)),
+        capability.handle,
+      ),
+      Math.max(1, remainingUntil(actionDeadlineAt)),
+      false,
+    );
+    const identity = insideScope
+      ? await boundedValue(
+        this.observeClickTargetIdentity(capability.handle),
+        Math.max(1, remainingUntil(actionDeadlineAt)),
+        null,
+      )
+      : null;
+    if (identity !== null && this.sameObservedElementIdentity(capability.identity, identity)) {
+      return { kind: 'resolved', locator: capability.locator, handle: capability.handle };
+    }
+    await capability.handle.dispose().catch(() => undefined);
+    return null;
+  },
+
+  async resolveObservedReferenceCapabilityAfterActivation(
+    frame: Frame,
+    observed: ObservedSnapshot,
+    ref: string,
+    capability: ObservedReferenceCapability | null,
+    actionDeadlineAt: number,
+  ): Promise<ObservedReferenceResolution> {
+    const retained = await this.resolveRetainedReferenceCapability(
+      observed,
+      capability,
+      actionDeadlineAt,
+    );
+    if (retained !== null) return retained;
+    if (capability !== null) {
+      const scoped = await this.waitForVirtualizedClickTarget(
+        frame,
+        capability.locator,
+        capability.identity,
+        actionDeadlineAt,
+      );
+      if (scoped.kind === 'resolved') return scoped;
+      if (scoped.kind === 'ambiguous') return { kind: 'ambiguous' };
+    }
+    return this.resolveObservedReferenceAfterActivation(
+      frame,
+      observed,
+      ref,
+      actionDeadlineAt,
+    );
+  },
+
+  sameObservedElementIdentity(
+    expected: ClickTargetSemanticIdentity,
+    observed: ClickTargetSemanticIdentity,
+  ): boolean {
+    return expected.tagName === observed.tagName &&
+      expected.role === observed.role &&
+      expected.name === observed.name &&
+      expected.url === observed.url;
+  },
+
   async preferredObservedClickActivation(
     handle: ElementHandle<HTMLElement | SVGElement>,
     actionDeadlineAt: number,
     postcondition: ClickPostcondition | null,
   ): Promise<PreparedObservedClickTarget['activation']> {
+    // A native button's keyboard semantics may act on a framework-managed
+    // active option before the exact observed button receives a click. Keep
+    // keyboard activation as a guarded, postconditioned recovery primitive;
+    // ordinary exact-target contact uses the pointer like every other target.
+    if (postcondition === null) return 'pointer';
     const useKeyboard = await boundedValue(
       handle.evaluate((element) => element instanceof HTMLButtonElement),
       Math.max(1, remainingUntil(actionDeadlineAt)),

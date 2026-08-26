@@ -68,6 +68,8 @@ Release 0.15.0 changes both public contracts to catalog 13, worker protocol 12, 
 
 Release 0.15.1 is a compatible worker update for durable private-handoff recovery. If a host or worker restarted while a Chromium-family handoff was `awaiting_user`, keep that exact dedicated browser open and call `browser_auth_status` once. Stage5 restores the handoff only when the v1 control record and either the durable ownership lease or the crash-window owner proof bind the exact executable, profile, process-start identity, unique loopback endpoint, and marker. Do not request another handoff, start/switch a browser, inspect the private page, or replay the action. After the user completes the private step, call `browser_resume_after_login` once and require version 0.15.1 with `restartRequired: false`.
 
+Release 0.15.2 is a compatible worker update for exact motor contact, clipped-modal preparation, ancestor-scoped ref identity, and complete partial-effect telemetry. Keep each host connected and call `browser_status` only at its existing safe boundary; require version 0.15.2 with catalog 13, protocol 12, 54 tools, and `restartRequired: false`. Discard old refs. Never replay Finance's partial keyboard selections or automatically correct an observed wrong option. YouTube's modal attempts proved zero dispatch and may be reconsidered only from one fresh authorized observation. The xAI deletion was completed manually, so validate its generic row-action fix only with disposable fixtures unless the user separately authorizes another live console action.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.15.0 catalog.
 - Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.15.0 catalog.
 

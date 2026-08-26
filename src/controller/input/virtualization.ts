@@ -1,5 +1,5 @@
 import { type Browser, type ElementHandle, type Frame, type Locator, type Page, privacyFingerprint, type SafeTargetState } from '../dependencies.js';
-import { CLICK_REF_ARTICLE_CANDIDATES, CLICK_REF_ARTICLE_TEXT_CHARACTERS, CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_REBIND_SETTLE_MS, type ClickTargetSemanticIdentity, type VirtualizedClickResolution } from '../model.js';
+import { CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_OWNER_CANDIDATES, CLICK_REF_OWNER_SELECTOR, CLICK_REF_OWNER_TEXT_CHARACTERS, CLICK_REF_REBIND_SETTLE_MS, type ClickTargetSemanticIdentity, type VirtualizedClickResolution } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
 export const inputVirtualizationOperations = {
@@ -11,13 +11,7 @@ export const inputVirtualizationOperations = {
         const viewportIntersects = (rect: DOMRect): boolean =>
           rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
         const targetRect = element.getBoundingClientRect();
-        if (viewportIntersects(targetRect)) {
-          return { moved: false, targetInViewport: true };
-        }
         const targetDirection = targetRect.bottom <= 0 ? -1 : targetRect.top >= window.innerHeight ? 1 : 0;
-        if (targetDirection === 0) {
-          return { moved: false, targetInViewport: false };
-        }
         const moveSurface = (
           surface: HTMLElement,
           direction: number,
@@ -42,7 +36,7 @@ export const inputVirtualizationOperations = {
         for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
           if (ancestor === document.body || ancestor === document.documentElement) continue;
           const style = getComputedStyle(ancestor);
-          if (!/(auto|scroll|overlay)/u.test(style.overflowY)) continue;
+          if (!/(auto|hidden|scroll|overlay)/u.test(style.overflowY)) continue;
           if (ancestor.scrollHeight <= ancestor.clientHeight + 1) continue;
           const surfaceRect = ancestor.getBoundingClientRect();
           if (!viewportIntersects(surfaceRect)) continue;
@@ -57,6 +51,14 @@ export const inputVirtualizationOperations = {
             const after = element.getBoundingClientRect();
             return { moved: true, targetInViewport: viewportIntersects(after) };
           }
+        }
+
+        // A descendant can geometrically intersect the browser window while
+        // remaining fully clipped by a modal or nested scroll viewport. Only
+        // fall back to document scrolling after every clipping ancestor has
+        // had one bounded opportunity to reveal the exact target.
+        if (targetDirection === 0) {
+          return { moved: false, targetInViewport: false };
         }
 
         const scrollingElement = document.scrollingElement;
@@ -121,56 +123,63 @@ export const inputVirtualizationOperations = {
           await originalHandle.dispose().catch(() => undefined);
         }
       }
-      if (identity?.article === null || identity?.article === undefined || identity.name === '') {
+      if (identity?.owner === null || identity?.owner === undefined || identity.name === '') {
         return { kind: 'missing' };
       }
-      const articleIdentity = identity.article;
+      const ownerIdentity = identity.owner;
 
-      const articles = frame.locator('article, [role="article"]');
-      const articleCount = await articles.count();
-      if (articleCount > CLICK_REF_ARTICLE_CANDIDATES) {
+      const owners = frame.locator(CLICK_REF_OWNER_SELECTOR);
+      const ownerCount = await owners.count();
+      if (ownerCount > CLICK_REF_OWNER_CANDIDATES) {
         return { kind: 'ambiguous' };
       }
-      const articleCandidates = await articles.evaluateAll((candidates, articleTextCharacters) =>
-        candidates.map((article) => {
+      const ownerCandidates = await owners.evaluateAll((candidates, args) =>
+        candidates.map((owner) => {
           const normalize = (value: string | null | undefined): string =>
             (value ?? '').replaceAll(/\s+/g, ' ').trim();
-          const explicitRole = normalize(article.getAttribute('role')).split(' ')[0] ?? '';
+          const explicitRole = normalize(owner.getAttribute('role')).split(' ')[0] ?? '';
           let nestingDepth = 0;
-          for (let ancestor: Element | null = article; ancestor !== null; ancestor = ancestor.parentElement) {
-            if (ancestor.matches('article, [role="article"]')) nestingDepth += 1;
+          for (let ancestor: Element | null = owner; ancestor !== null; ancestor = ancestor.parentElement) {
+            if (ancestor.matches(args.ownerSelector)) nestingDepth += 1;
           }
+          const tagName = owner.tagName.toLocaleLowerCase();
           return {
-            text: (article instanceof HTMLElement
-              ? normalize(article.innerText || article.textContent)
-              : normalize(article.textContent)).slice(0, articleTextCharacters),
-            tagName: article.tagName.toLocaleLowerCase(),
+            text: (owner instanceof HTMLElement
+              ? normalize(owner.innerText || owner.textContent)
+              : normalize(owner.textContent)).slice(0, args.ownerTextCharacters),
+            tagName,
             role: explicitRole === ''
-              ? article.tagName.toLocaleLowerCase() === 'article' ? 'article' : null
+              ? tagName === 'article' ? 'article'
+                : tagName === 'tr' ? 'row'
+                  : tagName === 'li' ? 'listitem'
+                    : null
               : explicitRole.toLocaleLowerCase(),
             nestingDepth,
           };
-        }), CLICK_REF_ARTICLE_TEXT_CHARACTERS);
-      const matchingArticleIndexes: number[] = [];
-      articleCandidates.forEach((candidate, index) => {
+        }), {
+          ownerSelector: CLICK_REF_OWNER_SELECTOR,
+          ownerTextCharacters: CLICK_REF_OWNER_TEXT_CHARACTERS,
+        });
+      const matchingOwnerIndexes: number[] = [];
+      ownerCandidates.forEach((candidate, index) => {
         if (
-          privacyFingerprint(candidate.text) === articleIdentity.fingerprint &&
-          candidate.tagName === articleIdentity.tagName &&
-          candidate.role === articleIdentity.role &&
-          candidate.nestingDepth === articleIdentity.nestingDepth
+          privacyFingerprint(candidate.text) === ownerIdentity.fingerprint &&
+          candidate.tagName === ownerIdentity.tagName &&
+          candidate.role === ownerIdentity.role &&
+          candidate.nestingDepth === ownerIdentity.nestingDepth
         ) {
-          matchingArticleIndexes.push(index);
+          matchingOwnerIndexes.push(index);
         }
       });
-      if (matchingArticleIndexes.length > 1) {
+      if (matchingOwnerIndexes.length > 1) {
         return { kind: 'ambiguous' };
       }
-      const articleIndex = matchingArticleIndexes[0];
-      if (articleIndex === undefined) {
+      const ownerIndex = matchingOwnerIndexes[0];
+      if (ownerIndex === undefined) {
         return { kind: 'missing' };
       }
-      const article = articles.nth(articleIndex);
-      const match = await article.evaluate((articleElement, expected) => {
+      const owner = owners.nth(ownerIndex);
+      const match = await owner.evaluate((ownerElement, expected) => {
         const normalize = (value: string | null | undefined): string =>
           (value ?? '').replaceAll(/\s+/g, ' ').trim();
         const semanticRole = (candidate: Element): string | null => {
@@ -180,6 +189,8 @@ export const inputVirtualizationOperations = {
           if (tagName === 'button') return 'button';
           if (tagName === 'a' && candidate.hasAttribute('href')) return 'link';
           if (tagName === 'article') return 'article';
+          if (tagName === 'tr') return 'row';
+          if (tagName === 'li') return 'listitem';
           if (tagName === 'img') return 'img';
           if (tagName === 'textarea') return 'textbox';
           if (tagName === 'select') return 'combobox';
@@ -219,11 +230,11 @@ export const inputVirtualizationOperations = {
           if (placeholder !== '') return placeholder.slice(0, 500);
           return normalize(candidate.getAttribute('title')).slice(0, 500);
         };
-        const descendants = Array.from(articleElement.querySelectorAll('*'));
+        const descendants = Array.from(ownerElement.querySelectorAll('*'));
         if (descendants.length + 1 > expected.maximumCandidates) {
           return { tooMany: true, indexes: [] as number[] };
         }
-        const candidates = [articleElement, ...descendants];
+        const candidates = [ownerElement, ...descendants];
         const indexes: number[] = [];
         candidates.forEach((candidate, index) => {
           if (
@@ -251,8 +262,8 @@ export const inputVirtualizationOperations = {
         return { kind: 'missing' };
       }
       const reboundLocator = targetIndex === 0
-        ? article
-        : article.locator('*').nth(targetIndex - 1);
+        ? owner
+        : owner.locator('*').nth(targetIndex - 1);
       const reboundHandle = await reboundLocator.elementHandle();
       if (reboundHandle === null) {
         return { kind: 'missing' };
@@ -280,13 +291,13 @@ export const inputVirtualizationOperations = {
     ) {
       return false;
     }
-    if (expected.article === null || observed.article === null) {
-      return expected.article === null && observed.article === null;
+    if (expected.owner === null || observed.owner === null) {
+      return expected.owner === null && observed.owner === null;
     }
-    return expected.article.fingerprint === observed.article.fingerprint &&
-      expected.article.tagName === observed.article.tagName &&
-      expected.article.role === observed.article.role &&
-      expected.article.nestingDepth === observed.article.nestingDepth;
+    return expected.owner.fingerprint === observed.owner.fingerprint &&
+      expected.owner.tagName === observed.owner.tagName &&
+      expected.owner.role === observed.owner.role &&
+      expected.owner.nestingDepth === observed.owner.nestingDepth;
   },
 
   failVirtualizedClickRebind(
