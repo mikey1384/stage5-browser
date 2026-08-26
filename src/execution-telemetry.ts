@@ -28,6 +28,20 @@ const POPUP_SURFACE_PROOFS = new Set<ExecutionTraceConclusion['popupSurfaceProof
   'semantic_role',
   'positioned_option_group',
 ]);
+const POPUP_OWNER_PROOF_TIERS = new Set<
+  NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier']
+>(['expanded', 'focused', 'spatial', 'structural', 'none']);
+const POPUP_OWNER_DECISIONS = new Set<
+  NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision']
+>([
+  'covered_siblings_excluded',
+  'decisive_distance',
+  'missing',
+  'single_candidate',
+  'structural_conflict',
+  'tie_or_near',
+  'unbounded',
+]);
 const VIEWPORT_EVIDENCE = new Set<
   NonNullable<ExecutionTraceConclusion['targetState']>['viewportEvidence']
 >(['clipped_geometry', 'exact_hit_test_override', 'none']);
@@ -177,6 +191,7 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     ),
     popupSurfaceProof: enumConclusion(valuesForKey(combined, 'surfaceProof'), POPUP_SURFACE_PROOFS),
     renderedPopupCount: boundedIntegerConclusion(valuesForKey(combined, 'renderedPopupCount'), 50),
+    popupOwnership: popupOwnershipConclusion(combined),
     targetState: targetStateConclusion(combined),
   };
 }
@@ -223,6 +238,51 @@ function boundedIntegerConclusion(values: unknown[], maximum: number): number | 
   const observed = new Set(values.filter((value): value is number =>
     Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum));
   return observed.size === 1 ? [...observed][0]! : null;
+}
+
+function popupOwnershipConclusion(value: unknown): ExecutionTraceConclusion['popupOwnership'] {
+  const observed = valuesForKey(value, 'popupOwnership').flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const proofTier = candidate.proofTier;
+    const decision = candidate.decision;
+    if (
+      typeof proofTier !== 'string' ||
+      !POPUP_OWNER_PROOF_TIERS.has(
+        proofTier as NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier'],
+      ) ||
+      typeof decision !== 'string' ||
+      !POPUP_OWNER_DECISIONS.has(
+        decision as NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision'],
+      )
+    ) return [];
+    const candidateCount = boundedNullableInteger(candidate.candidateCount, 100);
+    const exteriorCandidateCount = boundedNullableInteger(candidate.exteriorCandidateCount, 100);
+    const overlappingCandidateCount = boundedNullableInteger(candidate.overlappingCandidateCount, 100);
+    const surfaceCoveredCandidateCount = boundedNullableInteger(candidate.surfaceCoveredCandidateCount, 100);
+    if (
+      candidateCount === undefined ||
+      exteriorCandidateCount === undefined ||
+      overlappingCandidateCount === undefined ||
+      surfaceCoveredCandidateCount === undefined
+    ) return [];
+    return [{
+      proofTier: proofTier as NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier'],
+      candidateCount,
+      exteriorCandidateCount,
+      overlappingCandidateCount,
+      surfaceCoveredCandidateCount,
+      decision: decision as NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision'],
+    }];
+  });
+  const unique = new Map(observed.map((candidate) => [JSON.stringify(candidate), candidate]));
+  return unique.size === 1 ? [...unique.values()][0]! : null;
+}
+
+function boundedNullableInteger(value: unknown, maximum: number): number | null | undefined {
+  if (value === null) return null;
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum
+    ? Number(value)
+    : undefined;
 }
 
 function targetStateConclusion(value: unknown): ExecutionTraceConclusion['targetState'] {

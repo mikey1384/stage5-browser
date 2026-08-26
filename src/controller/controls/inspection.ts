@@ -23,6 +23,7 @@ export const controlInspectionOperations = {
     let popupAssociationProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['associationProof'] = null;
     let popupSurfaceProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['surfaceProof'] = null;
     let renderedPopupCount: number | null = null;
+    let popupOwnership: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['popupOwnership'] = null;
     let options: ObservedControlInspection['options'] | null = null;
     let retained = false;
     let openerActionDispatched: boolean | 'unknown' = false;
@@ -55,6 +56,7 @@ export const controlInspectionOperations = {
       } else {
         let associated = await this.associatedControlPopup(frame, controlHandle, deadlineAt);
         renderedPopupCount = associated.renderedSurfaceCount;
+        popupOwnership = associated.popupOwnership;
         if (associated.kind === 'ambiguous') {
           throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'Multiple popup surfaces could belong to the exact control.', {
             recoverable: true,
@@ -62,6 +64,7 @@ export const controlInspectionOperations = {
               reason: 'ambiguous_control_popup',
               actionDispatched: false,
               renderedPopupCount,
+              popupOwnership: associated.popupOwnership,
               decision: { kind: 'decision_required', responsible: 'agent' },
               suggestedAction: 'Inspect the current semantic page state and narrow to one exact control or modal before continuing.',
             },
@@ -139,6 +142,7 @@ export const controlInspectionOperations = {
             openerActionDispatched !== false,
           );
           renderedPopupCount = associated.renderedSurfaceCount;
+          popupOwnership = associated.popupOwnership;
           if (associated.kind === 'resolved') {
             popupLocator = associated.locator;
             popupHandle = associated.handle;
@@ -160,6 +164,7 @@ export const controlInspectionOperations = {
                   reason: associated.kind === 'ambiguous' ? 'ambiguous_control_popup_after_reveal' : 'control_popup_not_observed',
                   actionDispatched: openerActionDispatched,
                   renderedPopupCount,
+                  popupOwnership: associated.popupOwnership,
                   suggestedAction: 'Inspect authoritative page state. The opener may have received input; do not replay it automatically.',
                 },
               },
@@ -249,6 +254,7 @@ export const controlInspectionOperations = {
             associationProof: popupAssociationProof,
             surfaceProof: popupSurfaceProof,
             renderedPopupCount,
+            popupOwnership,
           },
           choice: {
             responsibility: 'agent',

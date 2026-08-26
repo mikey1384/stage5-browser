@@ -81,6 +81,8 @@ Release 0.15.6 is compatible with the 0.15.5 host: host behavior 2, protocol 12,
 
 Release 0.15.7 is compatible with the same host contract. It resolves several non-structural popup owners only when one has a decisive normalized edge-gap lead; structural contradictions and positional ties remain zero-input ambiguous. Finance keeps its exact Brave state frozen until the coordinator releases one new passive `revealOptions=false` verification after worker 0.15.7 adoption. YouTube has no replay or new action gate from this release.
 
+Release 0.15.8 is compatible with the same host contract. It distinguishes one tightly adjacent exterior anchor from siblings materially overlapped and hit-test-covered by the popup, but only in the spatial tier; stronger ownership evidence, uncovered overlap, and exterior ties remain closed. Bounded categorical owner telemetry is included in success and failure traces without geometry or semantics. Finance remains frozen until a revisioned notice releases exactly one passive `revealOptions=false` verification after worker 0.15.8 adoption. YouTube has no replay or new action gate from this release.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.15.0 catalog.
 - Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.15.0 catalog.
 

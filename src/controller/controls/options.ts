@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { type ControlPopupAssociationProof, type ControlPopupSurfaceProof, type ElementHandle, type Frame, type Locator } from '../dependencies.js';
+import { type ControlPopupAssociationProof, type ControlPopupOwnershipEvidence, type ControlPopupSurfaceProof, type ElementHandle, type Frame, type Locator } from '../dependencies.js';
 import { boundedValue, CONTROL_INSPECTION_SCROLL_SETTLE_MS, CONTROL_OPTION_SELECTOR, CONTROL_POPUP_OPTION_SELECTOR, MAX_CONTROL_INSPECTION_SCROLL_STEPS, MAX_CONTROL_POPUP_OPTION_CANDIDATES, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import { resolveControlPopupOwner } from './popup-ownership.js';
@@ -32,9 +32,10 @@ type ControlPopupAssociation =
       proof: ControlPopupAssociationProof;
       surfaceProof: ControlPopupSurfaceProof;
       renderedSurfaceCount: number;
+      popupOwnership: ControlPopupOwnershipEvidence | null;
     }
-  | { kind: 'ambiguous'; renderedSurfaceCount: number | null }
-  | { kind: 'missing'; renderedSurfaceCount: number | null };
+  | { kind: 'ambiguous'; renderedSurfaceCount: number | null; popupOwnership: ControlPopupOwnershipEvidence | null }
+  | { kind: 'missing'; renderedSurfaceCount: number | null; popupOwnership: ControlPopupOwnershipEvidence | null };
 
 export const controlOptionOperations = {
   async inspectControlDescriptor(
@@ -78,11 +79,11 @@ export const controlOptionOperations = {
       Math.max(1, remainingUntil(deadlineAt)),
       false,
     );
-    if (!connected) return { kind: 'missing', renderedSurfaceCount: null };
+    if (!connected) return { kind: 'missing', renderedSurfaceCount: null, popupOwnership: null };
 
     const discovery = await discoverControlPopupSurfaces(frame, deadlineAt);
     if (discovery.kind === 'unbounded') {
-      return { kind: 'ambiguous', renderedSurfaceCount: null };
+      return { kind: 'ambiguous', renderedSurfaceCount: null, popupOwnership: null };
     }
     const candidates: PopupCandidate[] = [];
     try {
@@ -132,6 +133,7 @@ export const controlOptionOperations = {
           ? 'structural'
           : null;
       let ownershipAmbiguous = false;
+      const ownershipDiagnostics: ControlPopupOwnershipEvidence[] = [];
       if (selected === null) {
         const ownerMatched: Array<{
           candidate: PopupCandidate;
@@ -144,6 +146,7 @@ export const controlOptionOperations = {
             controlHandle,
             deadlineAt,
           );
+          ownershipDiagnostics.push(ownership.diagnostics);
           if (ownership.kind === 'resolved') {
             if (ownership.targetMatch) ownerMatched.push({ candidate, proof: ownership.proof });
             await ownership.owner.dispose().catch(() => undefined);
@@ -169,6 +172,9 @@ export const controlOptionOperations = {
         if (candidate !== selected) await candidate.handle.dispose().catch(() => undefined);
       }
       const renderedSurfaceCount = rendered.length;
+      const popupOwnership = rendered.length === 1 && ownershipDiagnostics.length === 1
+        ? ownershipDiagnostics[0]!
+        : null;
       return selected !== null && selected !== undefined && selectedProof !== null
         ? {
             kind: 'resolved',
@@ -177,8 +183,9 @@ export const controlOptionOperations = {
             proof: selectedProof,
             surfaceProof: selected.surfaceProof,
             renderedSurfaceCount,
+            popupOwnership,
           }
-        : { kind: ambiguous ? 'ambiguous' : 'missing', renderedSurfaceCount };
+        : { kind: ambiguous ? 'ambiguous' : 'missing', renderedSurfaceCount, popupOwnership };
     } catch (error) {
       await Promise.allSettled(candidates.map(({ handle }) => handle.dispose()));
       throw error;

@@ -1,6 +1,6 @@
 import type { BrowserCommandName } from './commands.js';
 import type { BrowserActionManager, BrowserCommandContract, BrowserPhaseSystem } from './command-contracts.js';
-import type { ControlPopupAssociationProof, ControlPopupSurfaceProof, PostconditionCheck } from './controls.js';
+import type { ControlPopupAssociationProof, ControlPopupOwnershipEvidence, ControlPopupSurfaceProof, PostconditionCheck } from './controls.js';
 
 export interface ViewportPreparationTelemetry {
   attempts: number;
@@ -70,6 +70,7 @@ export interface ExecutionTraceConclusion {
   popupAssociationProof: ControlPopupAssociationProof | null;
   popupSurfaceProof: ControlPopupSurfaceProof | null;
   renderedPopupCount: number | null;
+  popupOwnership: ControlPopupOwnershipEvidence | null;
   targetState: {
     visible: boolean | null;
     enabled: boolean | null;

@@ -102,6 +102,21 @@ export type ControlPopupAssociationProof =
   | 'spatial'
   | 'post_dispatch_unique';
 export type ControlPopupSurfaceProof = 'semantic_role' | 'positioned_option_group';
+export interface ControlPopupOwnershipEvidence {
+  proofTier: 'expanded' | 'focused' | 'spatial' | 'structural' | 'none';
+  candidateCount: number | null;
+  exteriorCandidateCount: number | null;
+  overlappingCandidateCount: number | null;
+  surfaceCoveredCandidateCount: number | null;
+  decision:
+    | 'covered_siblings_excluded'
+    | 'decisive_distance'
+    | 'missing'
+    | 'single_candidate'
+    | 'structural_conflict'
+    | 'tie_or_near'
+    | 'unbounded';
+}
 
 export interface ControlTarget {
   role: SupportedAriaRole;
@@ -141,6 +156,7 @@ export interface ControlOptionsInspection {
     associationProof: ControlPopupAssociationProof | null;
     surfaceProof: ControlPopupSurfaceProof | null;
     renderedPopupCount: number | null;
+    popupOwnership: ControlPopupOwnershipEvidence | null;
   };
   choice: {
     responsibility: 'agent';

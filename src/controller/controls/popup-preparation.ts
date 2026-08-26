@@ -75,6 +75,7 @@ export const popupPreparationOperations = {
                 ? 'ambiguous_competing_popup_owner'
                 : 'competing_popup_owner_missing',
             actionDispatched: false,
+            popupOwnership: ownership.diagnostics,
           },
         });
       }

@@ -166,11 +166,12 @@ describe('privacy-safe execution telemetry', () => {
       popupAssociationProof: null,
       popupSurfaceProof: null,
       renderedPopupCount: null,
+      popupOwnership: null,
       targetState: null,
     });
   });
 
-  it('records categorical popup-position evidence without control or option semantics', () => {
+  it('records categorical popup-owner ambiguity without control or option semantics', () => {
     const trace = buildExecutionTrace({
       operationId: 'operation-popup-position-fixture',
       agentId: 'finance-agent',
@@ -178,25 +179,43 @@ describe('privacy-safe execution telemetry', () => {
       startedAt: new Date(0).toISOString(),
       completedAt: new Date(10).toISOString(),
       durationMs: 10,
-      outcome: 'succeeded',
-      error: null,
-      result: {
-        inspection: {
-          reveal: {
-            associationProof: 'spatial',
-            surfaceProof: 'positioned_option_group',
-            renderedPopupCount: 2,
+      outcome: 'failed',
+      error: {
+        code: 'AMBIGUOUS_TARGET',
+        message: 'Fixture popup ownership remained ambiguous.',
+        recoverable: true,
+        details: {
+          reason: 'ambiguous_control_popup',
+          actionDispatched: false,
+          renderedPopupCount: 1,
+          popupOwnership: {
+            proofTier: 'spatial',
+            candidateCount: 2,
+            exteriorCandidateCount: 2,
+            overlappingCandidateCount: 0,
+            surfaceCoveredCandidateCount: 0,
+            decision: 'tie_or_near',
           },
         },
       },
+      result: null,
       workerRuntime: { version: 'fixture', protocolVersion: 12 },
       workerTelemetry: null,
     });
 
     expect(trace.conclusion).toMatchObject({
-      popupAssociationProof: 'spatial',
-      popupSurfaceProof: 'positioned_option_group',
-      renderedPopupCount: 2,
+      actionDispatched: false,
+      popupAssociationProof: null,
+      popupSurfaceProof: null,
+      renderedPopupCount: 1,
+      popupOwnership: {
+        proofTier: 'spatial',
+        candidateCount: 2,
+        exteriorCandidateCount: 2,
+        overlappingCandidateCount: 0,
+        surfaceCoveredCandidateCount: 0,
+        decision: 'tie_or_near',
+      },
     });
     expect(JSON.stringify(trace)).not.toContain('controlName');
     expect(JSON.stringify(trace)).not.toContain('optionName');

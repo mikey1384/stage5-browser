@@ -333,6 +333,110 @@ describe('BrowserController control reveal recovery', () => {
         popupOpened: true,
         associationProof: 'spatial',
         renderedPopupCount: 1,
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 2,
+          exteriorCandidateCount: 2,
+          overlappingCandidateCount: 0,
+          surfaceCoveredCandidateCount: 0,
+          decision: 'decisive_distance',
+        },
+      },
+    });
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
+  it('prefers an exterior adjacent anchor over controls geometrically covered by the popup', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; position: relative; min-height: 400px; }
+      button, .popup { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      button { height: 40px; }
+      #target { top: 60px; }
+      #options { top: 100px; height: 160px; border: 1px solid black; z-index: 2; }
+      #covered { top: 140px; }
+    </style></head><body>
+      <button id="target" type="button">Funding source</button>
+      <div id="options" class="popup"><div role="option">Company capital</div></div>
+      <button id="covered" type="button">Covered sibling</button>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of [target, covered]) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+
+    expect(inspected?.inspection).toMatchObject({
+      options: [{ name: 'Company capital' }],
+      reveal: {
+        openerActionDispatched: false,
+        popupOpened: true,
+        associationProof: 'spatial',
+        renderedPopupCount: 1,
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 2,
+          exteriorCandidateCount: 1,
+          overlappingCandidateCount: 1,
+          surfaceCoveredCandidateCount: 1,
+          decision: 'covered_siblings_excluded',
+        },
+      },
+    });
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
+  it('keeps an uncovered overlapping control ambiguous with an exterior anchor', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; position: relative; min-height: 400px; }
+      button, .popup { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      button { height: 40px; }
+      #target { top: 60px; }
+      #options { top: 100px; height: 160px; border: 1px solid black; z-index: 2; }
+      #overlap { top: 140px; z-index: 3; }
+    </style></head><body>
+      <button id="target" type="button">Funding source</button>
+      <div id="options" class="popup"><div role="option">Company capital</div></div>
+      <button id="overlap" type="button">Uncovered overlap</button>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of [target, overlap]) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    await expect(controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      code: 'AMBIGUOUS_TARGET',
+      details: {
+        reason: 'ambiguous_control_popup',
+        actionDispatched: false,
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 2,
+          exteriorCandidateCount: 1,
+          overlappingCandidateCount: 1,
+          surfaceCoveredCandidateCount: 0,
+          decision: 'tie_or_near',
+        },
       },
     });
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
@@ -367,7 +471,18 @@ describe('BrowserController control reveal recovery', () => {
       timeoutMs: 5_000,
     })).rejects.toMatchObject({
       code: 'AMBIGUOUS_TARGET',
-      details: { reason: 'ambiguous_control_popup', actionDispatched: false },
+      details: {
+        reason: 'ambiguous_control_popup',
+        actionDispatched: false,
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 2,
+          exteriorCandidateCount: 2,
+          overlappingCandidateCount: 0,
+          surfaceCoveredCandidateCount: 0,
+          decision: 'tie_or_near',
+        },
+      },
     });
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });

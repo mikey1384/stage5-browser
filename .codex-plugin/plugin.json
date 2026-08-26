@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.15.7",
+  "version": "0.15.8",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -49,6 +49,7 @@
       "Postconditioned off-viewport keyboard reach",
       "Unique geometric portal-popup ownership",
       "Uniquely nearest popup-anchor ownership",
+      "Surface-occlusion-aware popup ownership",
       "Generic positioned popup-surface discovery",
       "Positioned portal option partitioning",
       "Exact hit-tested viewport proof",
