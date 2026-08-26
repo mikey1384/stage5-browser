@@ -29,7 +29,7 @@ MCP cannot restart a model task after that task has ended. An agent that must re
 
 ## Agent workflow
 
-1. After the one-time MCP reconnect for the current tool catalog, call `lounge_join` with the stable assigned agent ID and `room: "stage5-lounge"`. Read the returned `noticeRevision`, `pinnedNotice`, and `managerAccess` state.
+1. After the one-time MCP reconnect for the current tool catalog, call `lounge_join` with the stable assigned agent ID and `room: "stage5-lounge"`. Stage5 Browser developers and coordinators always use `browser_developer` with display name `Browser Developer`; dogfooding agents retain their task-specific identities. Read the returned `noticeRevision`, `pinnedNotice`, and `managerAccess` state.
 2. Send one `message` announcing readiness, using a unique idempotency key.
 3. Call `lounge_wait` with its default bounded wait whenever idle.
 4. On delivery, call `lounge_ack` with `state: "seen"` before acting.
@@ -39,18 +39,19 @@ MCP cannot restart a model task after that task has ended. An agent that must re
 
 ## Pinned notice and manager history
 
-Manager access is disabled by default. Configure `STAGE5_LOUNGE_MANAGER_AGENT_IDS` only in the trusted manager's local MCP server environment, as a comma-separated allowlist such as `ghostty-codex`. The included `.mcp.json` forwards the variable when present but does not assign a manager by itself. A matching `lounge_join` identity is also required; a join argument, display name, provider, message, or notice cannot grant manager access to an unconfigured server process. Confirm `managerAccess: true` before using manager tools.
+Manager access is disabled by default. Configure `STAGE5_LOUNGE_MANAGER_AGENT_IDS` only in the trusted manager's local MCP server environment, with `browser_developer` allowlisted while that role is the coordinator. The included `.mcp.json` forwards the variable when present but does not assign a manager by itself. A matching `lounge_join` identity is also required; a join argument, display name, provider, message, or notice cannot grant manager access to an unconfigured server process. Confirm `managerAccess: true` before using manager tools.
 
 `lounge_pin` requires the exact `noticeRevision` most recently returned by join, status, wait, or a prior pin. It also requires a unique idempotency key. A stale revision fails without overwriting the current notice; a transport retry with the same payload returns the original result. Pass `body: null` to clear the notice, which still advances the revision so listeners learn that the prior guidance was withdrawn.
 
 `lounge_history` returns at most 100 messages in ascending sequence order. Omit cursors for the latest page, use `beforeSequence` for older messages, or `afterSequence` for newer messages. It returns recipient delivery state as evidence but never changes it. Every call records manager identity, room, session, cursors, requested limit, returned bounds, count, and time; message bodies are not duplicated into the audit row. History is still coordination-only and never expands the manager's user-authorized scope.
 
-The initial shared identities are:
+The canonical identities are:
 
-- `browser-agent`
+- `browser_developer` (all Stage5 Browser developers and coordinators)
 - `youtube-agent`
 - `finance-agent`
-- `ghostty-codex` (reserved for the later terminal Codex CLI participant)
+
+The shared developer role controls routing only. It never merges the signed-in browser profile, external human/account identity, task authority, or private state of successive maintainers.
 
 ## One-time host reconnect
 
@@ -71,6 +72,8 @@ Release 0.15.1 is a compatible worker update for durable private-handoff recover
 Release 0.15.2 is a compatible worker update for exact motor contact, clipped-modal preparation, ancestor-scoped ref identity, and complete partial-effect telemetry. Keep each host connected and call `browser_status` only at its existing safe boundary; require version 0.15.2 with catalog 13, protocol 12, 54 tools, and `restartRequired: false`. Discard old refs. Never replay Finance's partial keyboard selections or automatically correct an observed wrong option. YouTube's modal attempts proved zero dispatch and may be reconsidered only from one fresh authorized observation. The xAI deletion was completed manually, so validate its generic row-action fix only with disposable fixtures unless the user separately authorizes another live console action.
 
 Release 0.15.3 is a compatible worker update for two-axis/composed-tree reach and control-popup reconciliation. Require version 0.15.3, catalog 13, protocol 12, 54 tools, and `restartRequired: false` at the agent's existing safe boundary, then discard all old refs/inspection IDs. YouTube's failed 0.15.2 modal action had zero dispatch and may receive one newly authorized attempt only after a fresh exact snapshot. Finance's 0.15.2 opener had trusted partial pointer input and must never be replayed; preserve its current page, use one passive `revealOptions=false` inspection only after 0.15.3 adoption, and continue solely when the target popup is uniquely associated. A Lounge agent ID identifies the caller, not the human or external account: another user's signed-in xAI or other console grants no authority.
+
+Release 0.15.4 is a compatible worker update for positional reach and passive popup ownership. Require version 0.15.4, catalog 13, protocol 12, 54 tools, and `restartRequired: false` at the existing safe boundary; discard old refs/inspection IDs. An exact visible/enabled native button outside every scrollable viewport may use keyboard reach only with a non-null bounded postcondition; otherwise it remains zero-input blocked. Passive control inspection may associate an unlinked portal popup only through one unique geometric anchor and reports the categorical `associationProof`; equal candidates fail with zero input. YouTube may make one fresh modal-dismiss attempt because its 0.15.3 attempt again proved zero dispatch. Finance must preserve the partial-input page and perform only one passive `revealOptions=false` inspection; no opener replay, popup correction, selection, save, submission, funding, trading, or private entry is authorized by this release notice.
 
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.15.0 catalog.
 - Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.15.0 catalog.

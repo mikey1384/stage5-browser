@@ -22,6 +22,14 @@ interface PopupCandidate {
   rendered: boolean;
 }
 
+type PopupAssociationProof =
+  | 'explicit'
+  | 'structural'
+  | 'focused'
+  | 'expanded'
+  | 'spatial'
+  | 'post_dispatch_unique';
+
 export const controlOptionOperations = {
   async inspectControlDescriptor(
     handle: ElementHandle<HTMLElement>,
@@ -58,7 +66,7 @@ export const controlOptionOperations = {
     controlHandle: ElementHandle<HTMLElement>,
     deadlineAt: number,
     allowUniqueRenderedAfterDispatch = false,
-  ): Promise<{ locator: Locator; handle: ElementHandle<HTMLElement> } | null | 'ambiguous'> {
+  ): Promise<{ locator: Locator; handle: ElementHandle<HTMLElement>; proof: PopupAssociationProof } | null | 'ambiguous'> {
     const connected = await boundedValue(
       controlHandle.evaluate((control) => control.isConnected),
       Math.max(1, remainingUntil(deadlineAt)),
@@ -121,9 +129,17 @@ export const controlOptionOperations = {
         : structural.length === 1
           ? structural[0]
           : null;
+      let selectedProof: PopupAssociationProof | null = explicit.length === 1
+        ? 'explicit'
+        : structural.length === 1
+          ? 'structural'
+          : null;
       let ownershipAmbiguous = false;
       if (selected === null) {
-        const ownerMatched: PopupCandidate[] = [];
+        const ownerMatched: Array<{
+          candidate: PopupCandidate;
+          proof: 'structural' | 'focused' | 'expanded' | 'spatial';
+        }> = [];
         for (const candidate of rendered) {
           const ownership = await resolveControlPopupOwner(
             frame,
@@ -132,17 +148,22 @@ export const controlOptionOperations = {
             deadlineAt,
           );
           if (ownership.kind === 'resolved') {
-            if (ownership.targetMatch) ownerMatched.push(candidate);
+            if (ownership.targetMatch) ownerMatched.push({ candidate, proof: ownership.proof });
             await ownership.owner.dispose().catch(() => undefined);
           } else if (ownership.kind === 'ambiguous' || ownership.kind === 'unbounded') {
             ownershipAmbiguous = true;
           }
         }
         selected = ownerMatched.length === 1
-          ? ownerMatched[0]
+          ? ownerMatched[0]!.candidate
           : ownerMatched.length === 0 && !ownershipAmbiguous &&
               allowUniqueRenderedAfterDispatch && rendered.length === 1
             ? rendered[0]
+            : null;
+        selectedProof = ownerMatched.length === 1
+          ? ownerMatched[0]!.proof
+          : selected !== null && allowUniqueRenderedAfterDispatch && rendered.length === 1
+            ? 'post_dispatch_unique'
             : null;
         ownershipAmbiguous ||= ownerMatched.length > 1;
       }
@@ -150,7 +171,9 @@ export const controlOptionOperations = {
       for (const candidate of candidates) {
         if (candidate !== selected) await candidate.handle.dispose().catch(() => undefined);
       }
-      return selected ?? (ambiguous ? 'ambiguous' : null);
+      return selected !== null && selected !== undefined && selectedProof !== null
+        ? { locator: selected.locator, handle: selected.handle, proof: selectedProof }
+        : ambiguous ? 'ambiguous' : null;
     } catch (error) {
       await Promise.allSettled(candidates.map(({ handle }) => handle.dispose()));
       throw error;

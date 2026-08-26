@@ -1,7 +1,16 @@
 import { type ElementHandle, type Frame } from '../dependencies.js';
 import { boundedValue, remainingUntil } from '../model.js';
 
-const POPUP_OWNER_SELECTOR = '[aria-controls], [aria-owns], [aria-haspopup]';
+const POPUP_OWNER_SELECTOR = [
+  '[aria-controls]',
+  '[aria-owns]',
+  '[aria-haspopup]',
+  'button',
+  '[role="button"]',
+  '[role="combobox"]',
+  '[role="searchbox"]',
+  'input[list]',
+].join(', ');
 const MAX_POPUP_OWNERS = 100;
 
 export type PopupOwnerResolution =
@@ -9,7 +18,7 @@ export type PopupOwnerResolution =
       kind: 'resolved';
       owner: ElementHandle<HTMLElement>;
       targetMatch: boolean;
-      proof: 'expanded' | 'focused' | 'structural';
+      proof: 'expanded' | 'focused' | 'spatial' | 'structural';
     }
   | { kind: 'ambiguous' | 'missing' | 'unbounded' };
 
@@ -18,6 +27,7 @@ interface OwnerCandidate {
   expanded: boolean;
   focused: boolean;
   structural: boolean;
+  spatial: boolean;
 }
 
 export async function resolveControlPopupOwner(
@@ -54,6 +64,35 @@ export async function resolveControlPopupOwner(
             ...(control.getAttribute('aria-owns') ?? '').split(/\s+/),
           ].filter(Boolean);
           const labelledBy = (surface.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean);
+          const controlRect = control.getBoundingClientRect();
+          const surfaceRect = surface.getBoundingClientRect();
+          const controlStyle = getComputedStyle(control);
+          const surfaceStyle = getComputedStyle(surface);
+          const rendered = (rect: DOMRect, style: CSSStyleDeclaration): boolean =>
+            rect.width > 0 && rect.height > 0 &&
+            rect.right > 0 && rect.bottom > 0 &&
+            rect.left < innerWidth && rect.top < innerHeight &&
+            style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          const overlap = (startA: number, endA: number, startB: number, endB: number): number =>
+            Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
+          const horizontalOverlap = overlap(controlRect.left, controlRect.right, surfaceRect.left, surfaceRect.right);
+          const verticalOverlap = overlap(controlRect.top, controlRect.bottom, surfaceRect.top, surfaceRect.bottom);
+          const horizontalRatio = horizontalOverlap / Math.max(1, Math.min(controlRect.width, surfaceRect.width));
+          const verticalRatio = verticalOverlap / Math.max(1, Math.min(controlRect.height, surfaceRect.height));
+          const verticalGap = surfaceRect.top >= controlRect.bottom
+            ? surfaceRect.top - controlRect.bottom
+            : controlRect.top >= surfaceRect.bottom
+              ? controlRect.top - surfaceRect.bottom
+              : 0;
+          const horizontalGap = surfaceRect.left >= controlRect.right
+            ? surfaceRect.left - controlRect.right
+            : controlRect.left >= surfaceRect.right
+              ? controlRect.left - surfaceRect.right
+              : 0;
+          const spatial = !surface.contains(control) &&
+            rendered(controlRect, controlStyle) && rendered(surfaceRect, surfaceStyle) &&
+            ((horizontalRatio >= 0.5 && verticalGap <= Math.max(48, controlRect.height * 2)) ||
+              (verticalRatio >= 0.5 && horizontalGap <= Math.max(48, controlRect.width * 0.5)));
           return {
             structural: (surface.id.length > 0 && ids.includes(surface.id))
               || control.contains(surface)
@@ -61,12 +100,13 @@ export async function resolveControlPopupOwner(
             focused: control.ownerDocument.activeElement === control
               || control.contains(control.ownerDocument.activeElement),
             expanded: control.getAttribute('aria-expanded') === 'true',
+            spatial,
           };
         }, popup),
         Math.max(1, remainingUntil(deadlineAt)),
         null,
       );
-      if (relation === null || (!relation.structural && !relation.focused && !relation.expanded)) {
+      if (relation === null || (!relation.structural && !relation.focused && !relation.expanded && !relation.spatial)) {
         await handle.dispose().catch(() => undefined);
         continue;
       }
@@ -74,14 +114,19 @@ export async function resolveControlPopupOwner(
     }
 
     const structural = candidates.filter((candidate) => candidate.structural);
-    const focused = candidates.filter((candidate) => !candidate.structural && candidate.focused);
+    const focused = candidates.filter((candidate) =>
+      !candidate.structural && candidate.focused && candidate.spatial);
     const expanded = candidates.filter((candidate) =>
-      !candidate.structural && !candidate.focused && candidate.expanded);
+      !candidate.structural && !candidate.focused && candidate.expanded && candidate.spatial);
+    const spatial = candidates.filter((candidate) =>
+      !candidate.structural && !candidate.focused && !candidate.expanded && candidate.spatial);
     const pool = structural.length > 0
       ? structural
       : focused.length > 0
         ? focused
-        : expanded;
+        : expanded.length > 0
+          ? expanded
+          : spatial;
     if (pool.length !== 1) {
       return { kind: pool.length > 1 ? 'ambiguous' : 'missing' };
     }
@@ -96,7 +141,9 @@ export async function resolveControlPopupOwner(
       ? 'structural' as const
       : selected.focused
         ? 'focused' as const
-        : 'expanded' as const;
+        : selected.expanded
+          ? 'expanded' as const
+          : 'spatial' as const;
     returnedOwner = selected.handle;
     return { kind: 'resolved', owner: selected.handle, targetMatch, proof };
   } catch {

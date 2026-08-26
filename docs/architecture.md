@@ -54,6 +54,8 @@ Every worker command has exactly one owner in `src/protocol/command-contracts.ts
 
 The vocabulary is deliberately compositional. For example, an unfamiliar virtualized dropdown is not a new site adapter: perceive the exact control, inspect its options, prepare its owned popup and scroll surface, select one exact option, and reconcile selected/closed state. Agent discretion resolves what an option means within the user's authority; deterministic code resolves which node it is, whether it is actionable, whether input occurred, and what state resulted. No URL, label, selector, regex, or site name may stand in for business intent.
 
+The hand is positional rather than encyclopedic. It does not try to predict every website move; before applying force it narrows the browser into a controllable position with one exact owner, one reachable input mechanism, one dispatch gate, and one observable effect. Pointer reach requires viewport contact. An exact native button may instead use keyboard reach only behind a non-null bounded postcondition. Portal popup ownership prefers explicit/structural relations, then spatially plausible focused or expanded controls, then one uniquely anchored geometric owner; equal candidates fail with zero input. These generic constraints increase mobility while limiting the page's possible responses.
+
 Consequential physical input follows one canonical loop:
 
 ```text

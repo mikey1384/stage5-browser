@@ -194,7 +194,7 @@ export const inputClickTargetOperations = {
         postcondition,
       );
       const postconditionedKeyboardActivation = activation !== 'pointer' && postcondition !== null;
-      const failure = !targetState.visible || !targetState.inViewport
+      const failure = !targetState.visible || (!targetState.inViewport && !postconditionedKeyboardActivation)
         ? { diagnostic: 'not_visible' as const }
         : !targetState.enabled
           ? { diagnostic: 'not_enabled' as const }

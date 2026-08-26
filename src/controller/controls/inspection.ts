@@ -20,6 +20,7 @@ export const controlInspectionOperations = {
     );
     let popupLocator: Locator | null = null;
     let popupHandle: ElementHandle<HTMLElement> | null = null;
+    let popupAssociationProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['associationProof'] = null;
     let options: ObservedControlInspection['options'] | null = null;
     let retained = false;
     let openerActionDispatched: boolean | 'unknown' = false;
@@ -65,6 +66,7 @@ export const controlInspectionOperations = {
         if (associated !== null) {
           popupLocator = associated.locator;
           popupHandle = associated.handle;
+          popupAssociationProof = associated.proof;
         }
         let rendered = await popupRendered(popupHandle, deadlineAt);
         if (!rendered && input.revealOptions) {
@@ -134,6 +136,7 @@ export const controlInspectionOperations = {
           if (associated !== null && associated !== 'ambiguous') {
             popupLocator = associated.locator;
             popupHandle = associated.handle;
+            popupAssociationProof = associated.proof;
           }
           rendered = await popupRendered(popupHandle, deadlineAt);
           popupOpened = rendered;
@@ -234,6 +237,7 @@ export const controlInspectionOperations = {
             preparationActionDispatched,
             scrollSteps,
             boundaryReached,
+            associationProof: popupAssociationProof,
           },
           choice: {
             responsibility: 'agent',

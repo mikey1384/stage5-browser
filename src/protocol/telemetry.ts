@@ -11,6 +11,7 @@ export interface ViewportPreparationTelemetry {
   documentMovement: boolean;
   composedBoundaryTraversed: boolean;
   completedInViewport: boolean;
+  reachStrategy: 'pointer_viewport' | 'postconditioned_keyboard';
 }
 
 export interface WorkerActionPhaseTelemetry {

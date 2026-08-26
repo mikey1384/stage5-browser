@@ -127,10 +127,96 @@ describe('BrowserController control reveal recovery', () => {
         preparationActionDispatched: false,
         openerActionDispatched: false,
         popupOpened: true,
+        associationProof: 'explicit',
       },
     });
     await expect(page.locator('#prior-options').isVisible()).resolves.toBe(true);
     await expect(page.locator('#target-options').isVisible()).resolves.toBe(true);
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
+  it('passively associates two unlinked portal popups with their unique geometric anchors', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; position: relative; min-height: 500px; }
+      button, [role="listbox"] { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      button { height: 40px; }
+      [role="listbox"] { height: 80px; border: 1px solid black; }
+      #prior { top: 24px; }
+      #prior-options { top: 64px; }
+      #target { top: 210px; }
+      #target-options { top: 250px; }
+    </style></head><body>
+      <button id="prior" type="button">Intended use</button>
+      <button id="target" type="button">Funding source</button>
+      <div id="prior-options" role="listbox"><div role="option">Treasury</div></div>
+      <div id="target-options" role="listbox"><div role="option">Company capital</div></div>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of [prior, target]) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+
+    expect(inspected?.inspection).toMatchObject({
+      expanded: null,
+      options: [{ name: 'Company capital' }],
+      reveal: {
+        requested: false,
+        competingPopupDismissed: false,
+        preparationActionDispatched: false,
+        openerActionDispatched: false,
+        popupOpened: true,
+        associationProof: 'spatial',
+      },
+    });
+    await expect(page.locator('#prior-options').isVisible()).resolves.toBe(true);
+    await expect(page.locator('#target-options').isVisible()).resolves.toBe(true);
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
+  it('fails closed when an unlinked popup has two plausible geometric anchors', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; position: relative; min-height: 400px; }
+      button, [role="listbox"] { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      button { height: 40px; }
+      #first { top: 20px; }
+      #target { top: 60px; }
+      #options { top: 100px; height: 80px; border: 1px solid black; }
+    </style></head><body>
+      <button id="first" type="button">First source</button>
+      <button id="target" type="button">Funding source</button>
+      <div id="options" role="listbox"><div role="option">Company capital</div></div>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of [first, target]) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    await expect(controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      code: 'AMBIGUOUS_TARGET',
+      details: { reason: 'ambiguous_control_popup', actionDispatched: false },
+    });
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });
 });

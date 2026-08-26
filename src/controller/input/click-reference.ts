@@ -345,6 +345,7 @@ export const inputClickReferenceOperations = {
       documentMovement: false,
       composedBoundaryTraversed: false,
       completedInViewport: targetState.inViewport,
+      reachStrategy: 'pointer_viewport',
     };
 
     const identity = targetState.inViewport
@@ -468,7 +469,10 @@ export const inputClickReferenceOperations = {
       postcondition,
     );
     const postconditionedKeyboardActivation = activation !== 'pointer' && postcondition !== null;
-    const failure = !targetState.visible || !targetState.inViewport
+    viewportPreparation.reachStrategy = postconditionedKeyboardActivation
+      ? 'postconditioned_keyboard'
+      : 'pointer_viewport';
+    const failure = !targetState.visible || (!targetState.inViewport && !postconditionedKeyboardActivation)
       ? { diagnostic: 'not_visible' as const, reason: 'target_not_actionable_in_viewport' }
       : !targetState.enabled
         ? { diagnostic: 'not_enabled' as const, reason: 'target_not_enabled_after_scroll' }

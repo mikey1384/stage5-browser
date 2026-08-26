@@ -115,6 +115,7 @@ export const inputHitTestingOperations = {
     page: Page,
     handle: ElementHandle<HTMLElement | SVGElement>,
     lifetimeMs: number,
+    requireViewport: boolean,
   ): Promise<InstalledClickDispatchProbe | null> {
     const token = randomUUID();
     try {
@@ -133,7 +134,7 @@ export const inputHitTestingOperations = {
       }
       this.externalClickDispatchObservations.set(token, { page, evidence: null });
       const controller = await handle.evaluateHandle((element, input) => {
-        const { bindingName, boundedLifetimeMs, observationToken } = input;
+        const { bindingName, boundedLifetimeMs, observationToken, viewportRequired } = input;
         const initialRect = element.getBoundingClientRect();
         const state: RawClickDispatchEvidence = {
           strategy: 'guarded_exact_handle',
@@ -193,7 +194,7 @@ export const inputHitTestingOperations = {
               bottom = Math.min(bottom, ancestorRect.bottom);
             }
           }
-          return visible && enabled && right > left && bottom > top;
+          return visible && enabled && (!viewportRequired || (right > left && bottom > top));
         };
         const block = (event: Event): void => {
           event.preventDefault();
@@ -276,6 +277,7 @@ export const inputHitTestingOperations = {
         bindingName: this.clickDispatchBindingName,
         boundedLifetimeMs: lifetimeMs,
         observationToken: token,
+        viewportRequired: requireViewport,
       });
       return { controller, token };
     } catch {

@@ -114,6 +114,7 @@ export class ActionPhaseSession {
       documentMovement: prior.documentMovement || evidence.documentMovement,
       composedBoundaryTraversed: prior.composedBoundaryTraversed || evidence.composedBoundaryTraversed,
       completedInViewport: evidence.completedInViewport,
+      reachStrategy: evidence.reachStrategy,
     };
   }
 

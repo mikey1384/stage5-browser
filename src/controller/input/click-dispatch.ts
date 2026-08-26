@@ -23,6 +23,7 @@ export const inputClickDispatchOperations = {
         page,
         preparedTarget.handle,
         remainingUntil(finalizationDeadlineAt) + CLICK_REF_DISPATCH_PROBE_GRACE_MS,
+        preparedTarget.activation === 'pointer',
       ),
       Math.max(1, remainingUntil(actionDeadlineAt)),
       null,

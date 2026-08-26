@@ -130,6 +130,14 @@ export interface ControlOptionsInspection {
     preparationActionDispatched: boolean | 'unknown';
     scrollSteps: number;
     boundaryReached: boolean;
+    associationProof:
+      | 'explicit'
+      | 'structural'
+      | 'focused'
+      | 'expanded'
+      | 'spatial'
+      | 'post_dispatch_unique'
+      | null;
   };
   choice: {
     responsibility: 'agent';

@@ -67,6 +67,7 @@ describe('privacy-safe execution telemetry', () => {
             documentMovement: false,
             composedBoundaryTraversed: true,
             completedInViewport: true,
+            reachStrategy: 'pointer_viewport',
           },
           terminalOutcome: 'succeeded',
           completedAtMs: startedAtMs + 100,
@@ -96,6 +97,7 @@ describe('privacy-safe execution telemetry', () => {
           documentMovement: false,
           composedBoundaryTraversed: true,
           completedInViewport: true,
+          reachStrategy: 'pointer_viewport',
         },
       }],
       conclusion: {
