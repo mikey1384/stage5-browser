@@ -4,11 +4,12 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Stage5BrowserError } from './errors.js';
+import { MCP_TOOL_NAMES } from './mcp/tool-names.js';
 
-export const STAGE5_BROWSER_VERSION = '0.12.2';
-export const WORKER_PROTOCOL_VERSION = 9;
-export const TOOL_CATALOG_VERSION = 11;
-export const MCP_TOOL_COUNT = 32;
+export const STAGE5_BROWSER_VERSION = '0.13.0';
+export const WORKER_PROTOCOL_VERSION = 10;
+export const TOOL_CATALOG_VERSION = 12;
+export const MCP_TOOL_COUNT = Object.keys(MCP_TOOL_NAMES).length;
 
 export type RuntimeComponent = 'mcp' | 'worker';
 export type RuntimeRestartReason =

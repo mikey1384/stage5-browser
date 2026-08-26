@@ -29,6 +29,52 @@ Stage5 Browser MCP server
                   dedicated persistent profile
 ```
 
+## Composable browser action system
+
+Stage5 Browser is the physical hand of an agent, not a collection of website scripts. The agent supplies authorized intent and semantic judgment; the runtime supplies a broad, reusable movement vocabulary, exact target binding, bounded force, proprioception, and recovery. A new site should normally be handled by composing existing techniques. A new primitive belongs at a generic manager boundary only when a disposable fixture proves that the hand is physically unable to express the required motion or observation.
+
+Every worker command has exactly one owner in `src/protocol/command-contracts.ts`, including its phase system, dispatch class, and replay rule. Every public MCP tool has exactly one owner in `src/mcp/tool-contracts.ts`; its name comes from the canonical catalog in `src/mcp/tool-names.ts`. `src/protocol/capabilities.ts` is the source of truth for manager responsibilities, the non-overlapping technique vocabulary, context layers, and the shared action loop. Compile-time contracts and `tests/command-manager-contract.test.ts` prevent an unowned command, tool, or manager family from entering the product.
+
+| Manager | Generic action family |
+| --- | --- |
+| lifecycle | browser runtime, isolated profile, process ownership, start/switch/stop |
+| perception | bounded status, diagnostics, page events, semantic/visual/text/frame observation |
+| navigation | URL open, new tab, history, reload, readiness, URL reconciliation |
+| tab | stable identities, selection, activation, passive inspection, exact restoration/close |
+| interaction | click, hover, focus, key press, double/context click, drag, horizontal/vertical scroll |
+| form | redacted summary, text/date fill, option inspection, single/multi-select, checked state, staged plans |
+| transfer | observed file input, upload evidence, durable private download capture |
+| dialog | expected and unexpected alert, confirm, prompt, and before-unload handling |
+| private handoff | field-scoped private input and same-profile authentication handoff |
+| policy | optional deterministic action class plus agent-declared semantic intent |
+| recovery | reservations, terminal status, deadlines, worker handoff, proven-zero-input recovery |
+| coordination | Lounge identity, delivery, acknowledgement, presence, notice, and audited history |
+
+The vocabulary is deliberately compositional. For example, an unfamiliar virtualized dropdown is not a new site adapter: perceive the exact control, inspect its options, prepare its owned popup and scroll surface, select one exact option, and reconcile selected/closed state. Agent discretion resolves what an option means within the user's authority; deterministic code resolves which node it is, whether it is actionable, whether input occurred, and what state resulted. No URL, label, selector, regex, or site name may stand in for business intent.
+
+Consequential physical input follows one canonical loop:
+
+```text
+observe → plan → preflight → prepare → dispatch once → reconcile → finalize
+                         └── one bounded recovery only after proven zero input
+```
+
+The phase session owns one absolute deadline and records the exact dispatch state. Reversible preparation may be repeated only before input. Proven zero input may authorize one recovery through fresh planning; possible or confirmed input proceeds to reconciliation and is never replayed. Specialized lifecycle, navigation, handoff, scrolling, and supervisor state machines use the same evidence principles while retaining transitions appropriate to their domains.
+
+### Scoped context and persistence
+
+The controller runtime is the sole mutable session-context owner. Context narrows as work approaches physical input:
+
+| Layer | Lifetime and examples |
+| --- | --- |
+| durable | ownership lease, terminal operation journal, Lounge state, sanitized download/dialog/page-lifecycle manifests |
+| session | controlled browser identity, selected profile/page, stable tab IDs, policy, handoff state |
+| document | frame/document versions and one-use snapshot, scroll, form, and option capabilities |
+| action | absolute deadline, phase transitions, exact prepared handles, dispatch and postcondition evidence |
+| private ephemeral | fill/prompt/private-field/authentication values consumed only at the dispatch or human boundary |
+
+Only privacy-minimized records cross the durable boundary. Browser objects, element handles, refs, rendered state, and dispatch probes are always re-observed at their owning scope. Private values never become shared context, journals, diagnostics, Lounge messages, or recovery material. This boundary makes persistence useful for continuity without turning stale state into a second source of truth.
+
 ## Boundary decisions
 
 ### Keep agent coordination out of the browser queue
@@ -97,7 +143,7 @@ Active-page ownership is explicit during controlled work. A newly created auxili
 
 Tab capabilities are random and session-scoped. Passive exact-tab inspection never activates a background renderer. When no modal is visible, a capture may append up to three novel visible outermost article/standalone-quotation detail sections at depth 20, bounded to 30,000 total characters and stripped of every ref. When the caller explicitly requests temporary activation for a hidden loading document, the worker pins both exact pages and the target document, observes bounded generic loader/content evidence, switches only the renderer inside the controlled browser, withholds every action ref, and restores the prior selected renderer in `finally`. It does not invoke native application activation or mutate controller selection, and an unproven restoration fails closed.
 
-Scrolling and rendered-text search use fixed internal operations rather than exposing arbitrary script execution or fragile one-off selectors. Each snapshot independently inventories a bounded set of visible nested vertical scroll surfaces, retaining exact element handles behind opaque refs. A targeted scroll validates the latest snapshot/frame/document, consumes the capability once, and operates on that exact element. The default remains the frame document.
+Scrolling and rendered-text search use fixed internal operations rather than exposing arbitrary script execution or fragile one-off selectors. Each snapshot independently inventories a bounded set of visible nested vertical or horizontal scroll surfaces, retaining exact element handles behind opaque refs. A targeted scroll validates the latest snapshot/frame/document, consumes the capability once, and operates on that exact element and axis. The default remains the frame document.
 
 Scroll first activates the controller-selected page and requires a visible renderer before measuring its baseline and before each movement step. If activation fails before movement, dispatch is definitely false; if visibility is lost between steps, completed steps are retained and never replayed. One observation root—the exact nested target, one uniquely visible semantic feed, or the viewport—is pinned for the entire operation so virtualized layout changes cannot make before/after counts incomparable. If that exact root detaches, the operation promptly returns structured surface-loss and completed-step evidence; it cannot become false loader disappearance or consume the remaining content wait. Outermost standalone quotations join articles as content units, while nested quotations are not double-counted. Loading-only content shells are represented as unresolved loading indicators rather than rendered units, while statuses inside otherwise substantive content are not treated as placeholder shells. When no explicit semantic loader exists, an exact generic loading-text leaf may be recognized by a bounded scan; disappearance is usable only when that scan remained complete. Candidate processing is internally bounded; exhausting an authoritative semantic limit produces structured incomplete-observation failure instead of saturated counts. The optional animated-empty-element heuristic tracks its completeness separately: it cannot block semantic content growth or explicit loader disappearance, but Stage5 will not infer animation-only disappearance from a truncated scan. Movement and content waiting stop before a reserved result-finalization window.
 

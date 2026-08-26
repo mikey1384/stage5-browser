@@ -120,6 +120,16 @@ describe("BrowserController tab capabilities", () => {
     expect(selected.page.url).toBe(applicationUrl);
     expect(selected.page.index).toBe(feedTab.index - 1);
     expect(bringFeedToFront).toHaveBeenCalledTimes(1);
+    const activated = await controller.activateSelectedPage({ timeoutMs: 5_000 });
+    expect(activated).toMatchObject({
+      page: { tabId: feedTab.tabId },
+      postcondition: {
+        controllerSelected: true,
+        rendererVisible: true,
+        documentFocused: true,
+        nativeApplicationFrontmost: null,
+      },
+    });
     const selectedSnapshot = await controller.snapshot({
       depth: 8,
       boxes: false,
@@ -330,5 +340,67 @@ describe("BrowserController tab capabilities", () => {
     expect((await controller.tabs()).activePageIndex).toBe(draftIndex);
     expect(await draftPage.evaluate(() => document.visibilityState)).toBe("visible");
     expect(await feedPage.evaluate(() => document.visibilityState)).toBe("hidden");
+  });
+
+  it("uses one bounded exact-tab recovery when the first temporary restore remains hidden", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><head><title>Restore fixture</title></head><body><h1>Read-only tab</h1></body></html>");
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "stage5-browser-tab-restore-recovery-"));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const internals = controller as unknown as { activePage: Page };
+    const feedPage = internals.activePage;
+    await controller.open({
+      url: `http://127.0.0.1:${port}/draft`,
+      newTab: true,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const draftPage = internals.activePage;
+    const listed = await controller.tabs();
+    const feedTab = listed.pages.find((page) => page.url.endsWith("/feed"));
+    expect(feedTab).toBeDefined();
+    if (feedTab === undefined) throw new Error("Restore fixture did not expose its background tab.");
+
+    const originalRestore = draftPage.bringToFront.bind(draftPage);
+    let restoreAttempts = 0;
+    const restore = vi.spyOn(draftPage, "bringToFront").mockImplementation(async () => {
+      await originalRestore();
+      restoreAttempts += 1;
+      await draftPage.evaluate((visible) => {
+        const fixture = window as typeof window & { __restoreVisibility?: "hidden" | "visible" };
+        fixture.__restoreVisibility = visible ? "visible" : "hidden";
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          get: () => fixture.__restoreVisibility,
+        });
+      }, restoreAttempts > 1);
+    });
+
+    const inspected = await controller.inspectTab({
+      tabId: feedTab.tabId,
+      depth: 8,
+      temporaryActivation: true,
+      waitFor: null,
+      timeoutMs: 5_000,
+    });
+    expect(inspected).toMatchObject({
+      activationAttempted: true,
+      activationRestored: true,
+      activationRestoreRecoveryUsed: true,
+      controllerSelectionUnchanged: true,
+    });
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect((await controller.tabs()).activePageIndex).toBe(listed.activePageIndex);
+    expect(await draftPage.evaluate(() => document.visibilityState)).toBe("visible");
+    expect(feedPage.isClosed()).toBe(false);
   });
 });

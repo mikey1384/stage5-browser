@@ -39,10 +39,11 @@ Requirements: Node.js 22.5 or newer.
 npm install
 npm run browser:install
 npm test
+npm run test:focused -- tests/path/to/regression.test.ts
 npm run smoke
 ```
 
-The ordinary build and test suite is headless and must not take desktop focus. The opt-in macOS native-window smoke deliberately verifies foreground recovery and therefore moves focus; it requires both `STAGE5_BROWSER_NATIVE_WINDOW_SMOKE=1` and `STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1`. Use it only when native activation is the actual boundary under test and disclose the expected interruption; it is an intentional technical gate, not a repetitive approval workflow.
+The ordinary build and test suite is headless and must not take desktop focus. Browser-heavy files run serially. On macOS, each run receives an automatically removed directory under `/private/tmp/stage5-browser-tests.noindex`, keeping fixture churn away from Spotlight and preventing stale profiles from contaminating later runs. Shared teardown is bounded and can terminate only an exact process proven to belong to that disposable run. During implementation, `test:focused` skips an unchanged build; `npm test` remains the single build plus complete release gate. The opt-in macOS native-window smoke deliberately verifies foreground recovery and therefore moves focus; it requires both `STAGE5_BROWSER_NATIVE_WINDOW_SMOKE=1` and `STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1`. Use it only when native activation is the actual boundary under test and disclose the expected interruption; it is an intentional technical gate, not a repetitive approval workflow.
 
 Run the MCP server directly:
 
@@ -64,6 +65,8 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `lounge_status` | Inspect this agent's Lounge membership, manager access, pinned notice, presence, and aggregate pending delivery state |
 | `lounge_pin` | Manager-only compare-and-set update or clear of the durable pinned notice |
 | `lounge_history` | Manager-only audited paginated read of all room messages without claiming recipient delivery |
+| `browser_operation_status` | Recover a reserved or completed operation result without replaying its action, including terminal delivery timing |
+| `browser_page_events` | Read durable sanitized page/document replacement events and explicit unsaved-state risk |
 | `browser_status` | Report MCP/build freshness plus worker, browser, configured and actual runtime profile identity, tab, and active-page state |
 | `browser_available` | Report whether every backend is installed and actually startable, already owned, recoverable, busy in another Stage5 session, or externally owned—without launching or closing it |
 | `browser_diagnostics` | Diagnose build freshness, durable profile ownership, executable/profile state, sandbox policy, automation exposure, sanitized page events, and successful/error requests around the last action |
@@ -72,19 +75,38 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_open` | Navigate with bounded commit, readiness, and client-redirect stabilization; report redirects and HTTP warnings |
 | `browser_tabs` | List live tabs with session-scoped opaque identities, preserve the agent-selected tab across auxiliary pages, and recover the sole remaining tab after closure |
 | `browser_select_tab` | Select one exact fresh opaque tab identity without falling back to duplicate URL/title or positional index |
+| `browser_activate_selected_page` | Reconcile the exact selected renderer, document focus, and verified owned native application when foreground activation is required |
 | `browser_inspect_tab` | Read a ref-free exact-tab document passively, or explicitly activate its renderer within the controlled browser for bounded loading evidence and prove restoration of the prior selected tab |
+| `browser_close_tab` | Close one exact fresh opaque tab without index/title/URL fallback |
 | `browser_frames` | Inventory the active page's main document and nested frames |
 | `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound element, hidden-file-input, and nested-scroll references |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
+| `browser_reserve_operation` | Reserve a stable operation ID before a consequential action so completion remains queryable across caller delivery failures |
 | `browser_click_by_role` | Resolve one unique role/name target and use the shared deadline-safe exact-target engine, optionally verifying URL, selected, visible, or exact hidden state |
 | `browser_click_ref` | Incrementally prepare one fresh reference, uniquely rebind feed virtualization, then use the same deadline-safe exact-target engine and postconditions |
+| `browser_motion` | Compose exact hover, focus, key press, double-click, context-click, and drag motions through the shared phase/no-replay system |
 | `browser_set_input_files` | Select authorized regular local files through a fresh file-input ref and report attachment preview, progress, completion, and error evidence |
+| `browser_downloads` | List privacy-minimized durable download artifacts captured from the owned browser |
+| `browser_wait_for_download` | Wait for a new captured download without replaying its triggering action |
+| `browser_dialog_status` | Read sanitized expected/unexpected JavaScript-dialog history without retaining dialog text or prompt values |
 | `browser_fill_by_role` | Fill one unique role/name target in the main document or an observed frame |
 | `browser_fill_ref` | Fill one fresh snapshot-bound textbox/contenteditable, including unnamed active editors, with privacy-safe input/value-match evidence |
-| `browser_scroll` | Scroll the document or an observed nested container, optionally wait for article growth/loading completion, and distinguish confirmed ends from stalled feeds |
+| `browser_form_summary` | Inspect a bounded redacted form schema, required/valid state, and value presence without exposing values |
+| `browser_apply_form_plan` | Apply a staged sequence of exact authorized field operations, stopping at the first unconfirmed effect without replay |
+| `browser_set_checked` | Reconcile one exact checkbox/switch/radio to its requested state without blindly toggling |
+| `browser_inspect_control` | Inspect one exact select/autocomplete/custom control and its bounded available options |
+| `browser_select_option` | Select one exact native or custom option and prove selected state |
+| `browser_select_options` | Select several exact multi-select options, refreshing capabilities between physical inputs and preserving completed evidence |
+| `browser_navigate_history` | Perform bounded back, forward, or reload navigation with document-capability invalidation |
+| `browser_scroll` | Scroll the document or an observed nested container vertically or horizontally, optionally wait for article growth/loading completion, and distinguish confirmed ends from stalled feeds |
 | `browser_find_text` | Search bounded rendered page/frame text and return matching lines with nearby unique rendered context |
 | `browser_wait_for_url` | Wait for an exact, prefix, or substring URL postcondition |
+| `browser_policy_status` | Read the optional deterministic command-class and agent-declared-intent review policy |
+| `browser_set_policy` | Enter or leave review-only mode without inferring business meaning from page text, selectors, or regexes |
 | `browser_auth_status` | Report the private-interaction lifecycle, actual runtime profile, three-phase storage boundary, native application, marker label, and exact profile binding |
+| `browser_private_field_status` | Report a field-scoped private handoff without exposing the private value |
+| `browser_request_private_field_handoff` | Yield one exact observed private field to the user while agent page access is blocked |
+| `browser_resume_private_field_handoff` | Resume control and return only completed/unchanged/validation-error evidence for that field |
 | `browser_request_login_handoff` | Retain the controlled release phase, then launch the same isolated profile with a Stage5 marker tab for private user input; instructions distinguish continuous Chromium attachment from Firefox restart |
 | `browser_resume_after_login` | Resume after private input by attaching to the same Chromium process or restarting a normally exited, actually unlocked Firefox profile; then require fresh visible verification |
 | `browser_recover` | Replace the worker process group and optionally reopen the last URL |
@@ -119,14 +141,24 @@ MCP server
 
 The worker boundary is intentional. A stalled browser transport cannot wedge the MCP event loop, and recovery can kill browser descendants rather than merely dropping a stale JavaScript object.
 
+Every consequential motion is governed by the same composable loop:
+
+```text
+observe → plan → preflight → prepare → dispatch once → reconcile → finalize
+                         └── one recovery to preflight only after proven zero input
+```
+
+The controller runtime is the single session-context owner. Live handles and refs remain document/action scoped and disposable; only privacy-minimized ownership, terminal outcomes, page-lifecycle risk, transfer/dialog manifests, and Lounge coordination cross an explicit durability boundary. The exhaustive manager and technique matrix lives in `src/protocol/capabilities.ts`, while `src/protocol/command-contracts.ts` assigns every worker command to one manager, phase system, dispatch class, and replay rule. `src/mcp/tool-names.ts` is the canonical 53-tool name catalog, and `src/mcp/tool-contracts.ts` assigns every public browser, host-recovery, and Lounge tool to exactly one manager.
+
 Key implementation files:
 
-- `src/mcp-server.ts` — agent-facing MCP tools and safety annotations
-- `src/lounge-service.ts` — per-connection identity, bounded wake waits, and Lounge lifecycle
-- `src/lounge-store-client.ts` / `src/lounge-store-worker.ts` — non-blocking access to the shared durable Lounge database
-- `src/supervisor.ts` — serialization, deadlines, process-tree replacement, and journaling
+- `src/mcp/` and `src/mcp-server.ts` — canonical public tool names/owners, agent-facing schemas, registrations, annotations, and stable facade
+- `src/lounge/` and `src/lounge-service.ts` — identity, bounded wake waits, durable store operations, and stable facade
+- `src/operations/` — reservation, terminal outcomes, and durable delivery timing
+- `src/supervisor/` and `src/supervisor.ts` — serialization, deadlines, process-tree replacement, and stable facade
 - `src/browser-worker.ts` — IPC command dispatch
-- `src/browser-controller.ts` — direct Playwright browser operations
+- `src/controller/` and `src/browser-controller.ts` — manager-owned controller domains and stable public facade
+- `src/protocol/` and `src/protocol.ts` — command schemas, capability/context matrix, policy, and stable protocol facade
 - `src/browser-provider.ts` — trusted browser selection and installed-browser discovery
 - `src/profile-ownership-lease.ts` — atomic cross-worker profile ownership, heartbeats, orphan proof, and exact owned-process recovery
 - `src/chromium-profile-owner.ts` — privacy-safe legacy Chromium lock/CDP ownership reconstruction
@@ -134,6 +166,7 @@ Key implementation files:
 - `docs/agent-setup.md` — Claude connection checks, session restart, and login lifecycle
 - `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/agent-lounge.md` — cross-vendor join, wake, acknowledgement, and relay instructions
+- `docs/action-system-acceptance-2026-08-26.md` — privacy-safe 0.13 architecture, reported-defect, capability, and regression acceptance matrix
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
 - `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, consumed-input, active-tab, selected-state, and dynamic-feed regressions plus the 0.5.0–0.5.1 remedies
@@ -203,7 +236,7 @@ Key implementation files:
 - A live agent-selected tab remains active when a transient popup or auxiliary player page appears. Native Chromium control also stores a private opaque target identity so compatible worker replacement restores the exact tab even when duplicate tabs share a URL. Its bounded privacy-safe last-action diagnostic is restored only when that target, its opaque main-document identity, and the sanitized URL all still match. If the selected page disappears and exactly one live page remains, the controller deterministically selects that sole page instead of returning `activePageIndex: null`.
 - Explicit temporary tab inspection guards target renderer visibility throughout its bounded loading wait and immediately before semantic capture. It may bring only that same pinned renderer forward one additional time when visibility is lost; another loss, failed recovery, or hidden capture boundary fails with zero element input. The prior exact selected renderer is restored in `finally` on both success and failure.
 - Ref-free tab inspection may supplement a document capture with at most three novel visible outermost article/standalone-quotation detail sections at depth 20 and 30,000 total characters when no modal is visible. Every ref is stripped and no handle or action capability is retained.
-- Snapshots expose a bounded set of visible nested vertical scroll containers as opaque one-use refs. Container scrolling requires the exact latest snapshot/frame/document capability and never accepts selectors or guesses a target.
+- Snapshots expose a bounded set of visible nested vertical or horizontal scroll containers as opaque one-use refs. Container scrolling requires the exact latest snapshot/frame/document capability and never accepts selectors or guesses a target.
 - Downward scrolling uses a one-CSS-pixel boundary tolerance and reports target geometry separately from a confirmed feed end. Earlier growth, a remaining loading indicator, or an unmet bounded article/loading wait followed by no movement is `dynamic_content_stalled`, not `endReached: true`, unless the caller supplies a visible end marker.
 - Before collecting a scroll baseline and before every scroll step, Stage5 activates the controller-selected page and requires a visible renderer. A pre-dispatch activation failure returns definite false dispatch evidence; visibility loss after completed steps reports those steps and never replays them.
 - Loading waits pin one observation root for the full operation and count only indicators intersecting that selected surface's visible region. A uniquely visible semantic feed may scope a document wait, but a later viewport change cannot silently replace it; detachment returns prompt structured surface-loss evidence with completed-step facts instead of becoming false loader disappearance or consuming the remaining wait. Outermost standalone quotations count as article-shaped semantic content without double-counting quotations nested inside articles. Loading-only semantic status shells remain loaders rather than content; an exact generic loading-text leaf is considered only through a bounded complete scan, while explicit semantic loaders take precedence. Unrelated page loaders and statuses inside substantive posts do not prevent feed completion evidence. Reaching a bounded authoritative semantic candidate limit returns structured incomplete-observation evidence instead of treating truncated counts as definitive. The separately bounded animation heuristic cannot block semantic content growth or explicit loader disappearance; animation-only disappearance requires a complete heuristic scan.

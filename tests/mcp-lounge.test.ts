@@ -6,6 +6,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { MCP_TOOL_CONTRACTS } from '../src/mcp/tool-contracts.js';
 import { MCP_TOOL_COUNT, STAGE5_BROWSER_VERSION } from '../src/runtime-info.js';
 
 interface ConnectedClient {
@@ -72,6 +73,9 @@ describe('MCP Agent Lounge', () => {
 
     const tools = await browser.client.listTools();
     expect(tools.tools).toHaveLength(MCP_TOOL_COUNT);
+    expect(tools.tools.map(({ name }) => name).sort()).toEqual(
+      Object.keys(MCP_TOOL_CONTRACTS).sort(),
+    );
     for (const name of [
       'lounge_join',
       'lounge_send',

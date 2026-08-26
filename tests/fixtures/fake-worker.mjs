@@ -5,6 +5,8 @@ let initialized = false;
 let browser = 'chromium';
 let humanAuthenticationInProgress = false;
 let browserRunning = false;
+const testDocumentId = `test-document-${process.pid}`;
+const testFormValues = new Map();
 const startedAt = new Date().toISOString();
 const buildFingerprint = process.env.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT ?? 'fake-worker';
 const runtime = {
@@ -59,6 +61,41 @@ process.on('message', (message) => {
   }
 
   if (message.command === 'testHang') {
+    return;
+  }
+
+  if (
+    message.command === process.env.STAGE5_BROWSER_TEST_HANG_COMMAND
+    || (message.command === 'status' && process.env.STAGE5_BROWSER_TEST_HANG_STATUS === '1')
+  ) {
+    return;
+  }
+
+  if (process.env.STAGE5_BROWSER_TEST_FORM_STATE === '1' && message.command === 'fillByRole') {
+    testFormValues.set(message.payload.name, message.payload.value);
+    respond(message.id, {
+      page: { url: 'https://fixture.invalid/form' },
+      frame: { frameId: 'main' },
+      input: { actionDispatched: true, valueMatches: true },
+    });
+    return;
+  }
+
+  if (process.env.STAGE5_BROWSER_TEST_FORM_STATE === '1' && message.command === 'snapshot') {
+    respond(message.id, {
+      page: { url: 'https://fixture.invalid/form' },
+      frame: { frameId: 'main' },
+      snapshotId: 'test-snapshot',
+      refCount: 0,
+      fileInputCount: 0,
+      fileInputs: [],
+      scrollContainerCount: 0,
+      scrollContainers: [],
+      scope: 'document',
+      visibleModalCount: 0,
+      warnings: [],
+      snapshot: JSON.stringify({ documentId: testDocumentId, values: Object.fromEntries(testFormValues) }),
+    });
     return;
   }
 

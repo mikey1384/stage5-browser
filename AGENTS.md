@@ -6,6 +6,43 @@ When this project is checked out inside the Stage5 workspace, read the parent `.
 
 A browser action may fail, but the controller must never leave the agent or user in an ambiguous state. Every operation must succeed, fail with structured evidence, or complete a defined recovery within a bounded time.
 
+Treat Stage5 Browser as the agent's hand. The model supplies intent and judgment; this runtime supplies perception, reach, controlled force, proprioception, and recovery against unfamiliar interfaces. It must adapt structurally to ordinary website variation instead of requiring a special-case patch or human relay for every new shape. A change that is locally safe but routinely prevents completion of an ordinary authorized workflow is still a product failure.
+
+The product outcome is autonomous browser work, not safety ceremony. Within the user's clearly authorized scope, an agent should be able to inspect unfamiliar sites, exercise reasonable judgment, fill forms, select options, scroll, press buttons, and submit the intended workflow without avoidable human relay. Internal phases, evidence, reservations, and recovery must reduce bottlenecks and remain invisible unless they materially help recovery.
+
+Pause for `decision_required` only when semantic ambiguity could materially change the user's outcome, existing authority does not cover the action, or a private-value boundary requires the user. Do not escalate ordinary layout differences, implementation patterns, or low-risk reversible choices that the agent can resolve from observed context. Optional recovery features must never become mandatory round trips for normal browsing.
+
+## Source of truth and bug workflow
+
+- Treat the controlled browser/runtime and its canonical observations as the source of truth. Cached controller state, a dispatched event, an accepted native activation request, a transport response, or a locally predicted transition is never proof of the resulting browser state.
+- Do not optimistically toggle, increment, synthesize, or retain user-visible/browser-owned state. Observe the authoritative boundary after a mutation and update controller/shared state from that observation. When the outcome cannot be observed within the bounded evidence reserve, preserve the action evidence and fail closed without replay.
+- Start a concrete defect by reading the complete relevant pipeline: tool schema and caller intent -> MCP handler -> supervisor queue/deadline -> worker dispatch -> controller state and browser input -> canonical browser observation -> sanitized result/journal -> caller-visible recovery guidance. Read adjacent invariants and tests before building a reproduction.
+- Reproduce first only when the pipeline leaves multiple materially different causes, runtime evidence is required to choose a fix, or the failure depends on unknown environment state. Use a disposable local fixture at the narrowest decisive boundary; never use a live account merely to prove a generic controller defect.
+- Implement the smallest coherent root-cause fix for the complete failure class. Convert every reproduced defect into a behavioral regression, then verify the canonical result boundary rather than treating command success as proof.
+
+## Module design and ownership
+
+- `AGENTS.md` is the sole canonical engineering guide for this repository. `CLAUDE.md` only points here; do not duplicate rules across agent guides because copied policy inevitably drifts.
+- Keep one canonical owner for every mutable lifecycle, selected-page, snapshot-capability, action-diagnostic, handoff, supervisor, and Lounge state. Domain modules receive that owner or an explicit narrow interface; they must not mirror it in parallel caches or infer it from transport state.
+- Follow DRY at behavior boundaries. Before adding a locator rule, deadline calculation, activation path, sanitizer, result classifier, state transition, or fixture helper, find and extend the existing canonical implementation. Extract shared behavior when two paths enforce the same invariant; do not create abstractions for merely similar syntax or hypothetical reuse.
+- Keep orchestration thin and organize implementation by domain under named folders (for example lifecycle, observation, input, tabs, handoff, diagnostics, supervisor, and Lounge). Imports must make the owning layer clear; avoid circular domain ownership, deep inheritance chains, and catch-all `utils` modules.
+- No hand-authored TypeScript source or test file may exceed 1,000 physical lines. Aim for roughly 500 lines or fewer. A file may exceed the target only when splitting it would obscure one cohesive invariant, but it must remain below the hard limit. Generated output, vendored code, and lockfiles are excluded.
+- Split tests by behavior and failure boundary, not by arbitrary line ranges. Put reusable fixture construction in focused test-support modules; keep assertions with the behavior they specify.
+- Refactors must preserve public schemas, protocol versions, tool counts, fail-closed behavior, and no-replay semantics unless the task explicitly changes that contract. Structural cleanup is not permission to weaken evidence or interaction gates.
+- Follow YAGNI. Add a capability, abstraction, compatibility bridge, or configuration only for a current demonstrated workflow or invariant.
+- Never classify human-language intent with regular expressions, keyword lists, or phrase heuristics. Deterministic code may enforce structural browser and protocol facts only.
+- Run every consequential browser action through the canonical phases: observe authoritative state -> plan a structural strategy -> preflight invariants -> perform reversible preparation -> enter one dispatch gate -> reconcile authoritative effects -> finalize sanitized state and persistence. One bounded recovery may return from dispatch to preflight only after exact evidence proves zero input; possible input proceeds only to reconciliation and must never be replayed.
+- Keep one explicit host/controller context per scoped runtime. Browser objects, handles, one-use refs, live visibility, and dispatch probes are ephemeral and must be re-observed; only sanitized operation outcomes, ownership/handoff identity, update state, and Lounge coordination cross a durability boundary through their canonical narrow store.
+- Deterministic planning may return a typed, privacy-safe `decision_required` checkpoint when structural facts are insufficient to choose the user's intended meaning. Let the agent exercise judgment only within existing user authority, and escalate consequential or materially ambiguous choices to Mikey. After a choice, re-observe and bind one exact target before dispatch. Do not encode business meaning in selectors, regexes, scoring heuristics, or site-specific core patches.
+
+## Efficient validation
+
+- Use the cheapest decisive validation for the changed boundary. During implementation, run only the focused regression files or static checks that can falsify the current change.
+- Do not repeatedly run the build or broad suite after each edit. Once implementation is stable, run one build/typecheck. Run the complete headless suite exactly once immediately before a release commit/push; rerun it only if code changes afterward or the prior run was invalid.
+- Run focused regressions with `npm run test:focused -- <test files>` so they do not rebuild unchanged code. On macOS the test runner keeps every run in its own automatically removed `/private/tmp/stage5-browser-tests.noindex` root, and Vitest keeps files serial; do not bypass that runner with a parallel browser-heavy suite. Shared fixture teardown must be bounded and may terminate only an exact process proven to belong to that disposable run, so one slow browser exit cannot poison the next test.
+- Do not run native focus-changing, live-account, or production probes unless that exact boundary is under test and cannot be established safely with a disposable fixture. Ordinary validation remains headless.
+- Record what each expensive check is expected to prove before running it. Stop a path that cannot add material evidence, and do not treat elapsed activity as progress.
+
 ## Development model
 
 - Build capabilities only for a real Stage5 dogfooding workflow or a demonstrated reliability gap.
@@ -123,6 +160,7 @@ npm install
 npm run browser:install
 npm run build
 npm test
+npm run test:focused -- tests/path/to/regression.test.ts
 npm run smoke
 
 # Opt-in native handoff release gates (use only dedicated temporary profiles)

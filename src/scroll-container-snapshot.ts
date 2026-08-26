@@ -63,13 +63,22 @@ export async function inspectScrollContainer(
         style.display !== "none" &&
         style.visibility !== "hidden" &&
         style.opacity !== "0";
-      const overflowAllowsScrolling =
+      const verticalOverflowAllowsScrolling =
         style.overflowY === "auto" ||
         style.overflowY === "scroll" ||
         style.overflowY === "overlay" ||
         element.scrollTop > 0;
+      const horizontalOverflowAllowsScrolling =
+        style.overflowX === "auto" ||
+        style.overflowX === "scroll" ||
+        style.overflowX === "overlay" ||
+        element.scrollLeft > 0;
+      const maxX = Math.max(0, element.scrollWidth - element.clientWidth);
       const maxY = Math.max(0, element.scrollHeight - element.clientHeight);
-      if (!visible || !overflowAllowsScrolling || maxY <= 1) return null;
+      if (!visible || !(
+        (verticalOverflowAllowsScrolling && maxY > 1) ||
+        (horizontalOverflowAllowsScrolling && maxX > 1)
+      )) return null;
       const inViewport =
         rect.bottom > 0 &&
         rect.right > 0 &&
@@ -109,7 +118,7 @@ export async function inspectScrollContainer(
         position: {
           x: element.scrollLeft,
           y: element.scrollTop,
-          maxX: Math.max(0, element.scrollWidth - element.clientWidth),
+          maxX,
           maxY,
           viewportWidth: element.clientWidth,
           viewportHeight: element.clientHeight,
@@ -143,16 +152,21 @@ export async function observeScrollContainers(
             style.display !== "none" &&
             style.visibility !== "hidden" &&
             style.opacity !== "0";
-          const overflowAllowsScrolling =
+          const verticalOverflowAllowsScrolling =
             style.overflowY === "auto" ||
             style.overflowY === "scroll" ||
             style.overflowY === "overlay" ||
             element.scrollTop > 0;
-          if (
-            !visible ||
-            !overflowAllowsScrolling ||
-            element.scrollHeight - element.clientHeight <= 1
-          ) {
+          const horizontalOverflowAllowsScrolling =
+            style.overflowX === "auto" ||
+            style.overflowX === "scroll" ||
+            style.overflowX === "overlay" ||
+            element.scrollLeft > 0;
+          const verticallyScrollable = verticalOverflowAllowsScrolling &&
+            element.scrollHeight - element.clientHeight > 1;
+          const horizontallyScrollable = horizontalOverflowAllowsScrolling &&
+            element.scrollWidth - element.clientWidth > 1;
+          if (!visible || (!verticallyScrollable && !horizontallyScrollable)) {
             return null;
           }
           const inViewport =

@@ -62,6 +62,7 @@ describe('BrowserSupervisor', () => {
       STAGE5_BROWSER_TEST_MODE: '1',
       STAGE5_BROWSER_TEST_BUILD_FINGERPRINT: 'build-1',
       STAGE5_BROWSER_TEST_SHUTDOWN_DELAY_MS: '300',
+      STAGE5_BROWSER_TEST_FORM_STATE: '1',
     };
     let runtime: RuntimeProcessInfo = {
       component: 'mcp',
@@ -90,6 +91,17 @@ describe('BrowserSupervisor', () => {
 
     await supervisor.execute('start', {});
     const before = await supervisor.execute('status', {});
+    await supervisor.execute('fillByRole', {
+      role: 'textbox', name: 'Public field one', exact: true, frameId: null,
+      value: 'draft-one', timeoutMs: 500,
+    });
+    await supervisor.execute('fillByRole', {
+      role: 'textbox', name: 'Public field two', exact: true, frameId: null,
+      value: 'draft-two', timeoutMs: 500,
+    });
+    const draftBeforeUpdate = await supervisor.execute('snapshot', {
+      depth: 1, boxes: false, frameId: null, timeoutMs: 500,
+    });
 
     environment.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT = 'build-2';
     runtime = {
@@ -100,8 +112,18 @@ describe('BrowserSupervisor', () => {
       suggestedAction: 'No host restart is needed.',
     };
     const deferred = await supervisor.execute('status', {});
+    const draftAfterUpdate = await supervisor.execute('snapshot', {
+      depth: 1, boxes: false, frameId: null, timeoutMs: 500,
+    });
 
     expect(deferred.result.workerPid).toBe(before.result.workerPid);
+    expect(deferred.runtimeTransition).toBeNull();
+    expect(draftAfterUpdate.runtimeTransition).toBeNull();
+    expect(draftAfterUpdate.result.snapshot).toBe(draftBeforeUpdate.result.snapshot);
+    expect(JSON.parse(draftAfterUpdate.result.snapshot)).toMatchObject({
+      documentId: `test-document-${before.result.workerPid}`,
+      values: { 'Public field one': 'draft-one', 'Public field two': 'draft-two' },
+    });
     expect(supervisor.workerRuntimeInfo).toMatchObject({
       version: '0.6.5',
       artifactFingerprint: 'build-1',
@@ -113,6 +135,11 @@ describe('BrowserSupervisor', () => {
     expect(supervisor.workerRuntimeInfo).toMatchObject({
       version: '0.6.5',
       artifactFingerprint: 'build-2',
+    });
+    expect(after.runtimeTransition).toMatchObject({
+      kind: 'compatible_worker_replaced',
+      allReferencesInvalid: true,
+      pageStatePreserved: false,
     });
   });
 
@@ -267,6 +294,11 @@ describe('BrowserSupervisor', () => {
     const after = await supervisor.execute('status', {});
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
     expect(supervisor.workerRuntimeInfo).toMatchObject({ artifactFingerprint: 'build-2' });
+    expect(after.runtimeTransition).toMatchObject({
+      kind: 'compatible_worker_replaced',
+      allReferencesInvalid: true,
+      pageStatePreserved: true,
+    });
   });
 
   it('kills and replaces a worker that exceeds the outer hard deadline', async () => {
@@ -285,14 +317,28 @@ describe('BrowserSupervisor', () => {
     expect(before.result.browser).toBe('firefox');
     expect(isProcessAlive(beforeWithDescendant.descendantPid)).toBe(true);
     let caught: unknown;
+    const deadlineStartedAt = performance.now();
     try {
       await supervisor.execute('testHang', {}, 100);
     } catch (error) {
       caught = error;
     }
+    const deadlineElapsedMs = performance.now() - deadlineStartedAt;
 
     expect(caught).toBeInstanceOf(SupervisedOperationError);
     expect(caught).toMatchObject({ code: 'OPERATION_TIMEOUT', recovery: 'succeeded' });
+    expect(deadlineElapsedMs).toBeLessThan(5_000);
+    if (!(caught instanceof SupervisedOperationError)) throw new Error('Expected the supervised timeout error.');
+    await expect(supervisor.operationStatus(caught.operationId, false)).resolves.toMatchObject({
+      terminal: true,
+      outcome: 'timed_out',
+      timing: {
+        workerRequestAtMs: expect.any(Number),
+        workerResponseAtMs: expect.any(Number),
+        terminalAtMs: expect.any(Number),
+        persistedAtMs: expect.any(Number),
+      },
+    });
 
     const after = await supervisor.execute('status', {});
     expect(after.result.workerPid).not.toBe(before.result.workerPid);

@@ -21,6 +21,8 @@ export interface NativeControlRecord {
   createdAt: string;
   /** Opaque CDP target identity used only to preserve exact tab selection across worker replacement. */
   selectedTargetId?: string | null;
+  /** Opaque loader identity used only to detect document replacement across worker reattachment. */
+  selectedDocumentId?: string | null;
   /** Privacy-safe action evidence retained only for the exact selected target across worker replacement. */
   retainedAction?: {
     selectedTargetId: string;
@@ -308,6 +310,11 @@ function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
       candidate.selectedTargetId === undefined ||
       candidate.selectedTargetId === null ||
       (typeof candidate.selectedTargetId === 'string' && candidate.selectedTargetId.length > 0 && candidate.selectedTargetId.length <= 256)
+    )
+    && (
+      candidate.selectedDocumentId === undefined ||
+      candidate.selectedDocumentId === null ||
+      (typeof candidate.selectedDocumentId === 'string' && candidate.selectedDocumentId.length > 0 && candidate.selectedDocumentId.length <= 256)
     );
   if (!valid) return null;
   const restoredAction = retainedAction(candidate.retainedAction);
@@ -320,6 +327,7 @@ function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
     port: candidate.port as number,
     createdAt: candidate.createdAt as string,
     ...(candidate.selectedTargetId === undefined ? {} : { selectedTargetId: candidate.selectedTargetId }),
+    ...(candidate.selectedDocumentId === undefined ? {} : { selectedDocumentId: candidate.selectedDocumentId }),
     ...(restoredAction === undefined ? {} : { retainedAction: restoredAction }),
   };
 }

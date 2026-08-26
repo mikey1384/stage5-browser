@@ -60,7 +60,9 @@ Release 0.12.1 is a compatible worker-only behavior update: one same-tab rendere
 
 Release 0.12.2 is another compatible worker update. It adds bounded ref-free deep detail for visible article/standalone-quotation content and recognizes standalone quotations plus exact generic loading leaves in content waits. Keep the host connected, call `browser_status` once at a safe boundary, and require worker version 0.12.2 with `restartRequired: false`.
 
-- ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once if `lounge_pin` or `lounge_history` is absent.
-- Claude Code: exit and resume the same conversation with `claude --continue` if its existing process does not expose both manager tools.
+Release 0.13.0 changes both public contracts: tool catalog 12, worker protocol 10, and 53 tools. Reconnect every host exactly once without reinstalling or duplicating the existing `stage5_browser` registration. Reach a safe boundary first: direct-Playwright contexts close with the old host and therefore must contain no unsaved work; an exact proven native-CDP Chromium-family browser may stay open and is reattached by the new host through `browser_start`. Rejoin the same Lounge identity after reconnect, require version 0.13.0/catalog 12/protocol 10/53 tools with `restartRequired: false`, take fresh status/tabs/page-event observations, and discard all pre-reconnect capabilities. A frozen or possibly dispatched action is observation-only on resume and is never replayed.
+
+- ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.13.0 catalog.
+- Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.13.0 catalog.
 
 After that catalog reconnect, compatible fixes load without another host restart unless `browser_status.restartRequired` explicitly reports a later contract change. Lounge bindings remain intact across browser-worker replacement; only a real MCP connection replacement requires rejoining.

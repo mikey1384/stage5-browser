@@ -4,6 +4,7 @@ import type {
   BrowserWorkerRequest,
   BrowserWorkerResponse,
 } from './protocol.js';
+import { browserCommandContract, dialogExpectationFromPayload } from './protocol.js';
 import {
   buildStampUrlFor,
   negotiateWorkerInitialization,
@@ -22,11 +23,13 @@ function send(message: BrowserWorkerResponse): void {
 }
 
 async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
+  browserCommandContract(request.command);
   if (request.command === 'initialize') {
     runtimeMonitor.assertCurrent();
     const workerRuntime = runtimeMonitor.inspect();
     const initializedRuntime = negotiateWorkerInitialization(request.payload, workerRuntime);
     controller = new BrowserController(request.payload.config, request.payload.browser);
+    controller.restoreActionPolicy(request.payload.actionPolicyMode);
     return { ready: true, workerPid: process.pid, runtime: initializedRuntime };
   }
 
@@ -35,10 +38,11 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
       recoverable: true,
     });
   }
+  const currentController = controller;
 
   const runtime = runtimeMonitor.inspect();
   if (runtime.restartRequired) {
-    const authentication = await controller.authStatus();
+    const authentication = await currentController.authStatus();
     const humanBootstrapOwnsProfile =
       authentication.controlMode === 'human_bootstrap' && authentication.state === 'awaiting_user';
     if (!humanBootstrapOwnsProfile) {
@@ -46,57 +50,101 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
     }
   }
 
+  currentController.authorizeBrowserCommand(request.command, request.payload);
+
+  return currentController.withDialogHandling(
+    request.command,
+    dialogExpectationFromPayload(request.payload),
+    async () => {
   switch (request.command) {
     case 'status':
-      return controller.status();
+      return currentController.status();
     case 'start':
-      return controller.start(request.payload);
+      return currentController.start(request.payload);
     case 'availableBrowsers':
-      return controller.availableBrowsers();
+      return currentController.availableBrowsers();
     case 'diagnostics': {
-      const status = await controller.status();
-      return { browser: await controller.diagnostics(status), status, worker: runtimeMonitor.inspect() };
+      const status = await currentController.status();
+      return { browser: await currentController.diagnostics(status), status, worker: runtimeMonitor.inspect() };
     }
+    case 'pageEvents':
+      return currentController.pageEvents(request.payload);
     case 'switchBrowser':
-      return controller.switchBrowser(request.payload);
+      return currentController.switchBrowser(request.payload);
     case 'stop':
-      return controller.stop();
+      return currentController.stop();
     case 'open':
-      return controller.open(request.payload);
+      return currentController.open(request.payload);
+    case 'navigateHistory':
+      return currentController.navigateHistory(request.payload);
     case 'snapshot':
-      return controller.snapshot(request.payload);
+      return currentController.snapshot(request.payload);
     case 'screenshot':
-      return controller.screenshot(request.payload);
+      return currentController.screenshot(request.payload);
     case 'tabs':
-      return controller.tabs();
+      return currentController.tabs();
     case 'selectTab':
-      return controller.selectTab(request.payload);
+      return currentController.selectTab(request.payload);
+    case 'activateSelectedPage':
+      return currentController.activateSelectedPage(request.payload);
+    case 'closeTab':
+      return currentController.closeTab(request.payload);
     case 'inspectTab':
-      return controller.inspectTab(request.payload);
+      return currentController.inspectTab(request.payload);
     case 'frames':
-      return controller.frames();
+      return currentController.frames();
     case 'clickByRole':
-      return controller.clickByRole(request.payload);
+      return currentController.clickByRole(request.payload);
     case 'clickRef':
-      return controller.clickRef(request.payload);
+      return currentController.clickRef(request.payload);
     case 'setInputFiles':
-      return controller.setInputFiles(request.payload);
+      return currentController.setInputFiles(request.payload);
+    case 'downloads':
+      return currentController.downloads(request.payload);
+    case 'waitForDownload':
+      return currentController.waitForDownload(request.payload);
+    case 'dialogStatus':
+      return currentController.dialogStatus(request.payload);
     case 'fillByRole':
-      return controller.fillByRole(request.payload);
+      return currentController.fillByRole(request.payload);
     case 'fillRef':
-      return controller.fillRef(request.payload);
+      return currentController.fillRef(request.payload);
+    case 'inspectControl':
+      return currentController.inspectControl(request.payload);
+    case 'selectOption':
+      return currentController.selectOption(request.payload);
+    case 'selectOptions':
+      return currentController.selectOptions(request.payload);
+    case 'formSummary':
+      return currentController.formSummary(request.payload);
+    case 'applyFormPlan':
+      return currentController.applyFormPlan(request.payload);
+    case 'setChecked':
+      return currentController.setChecked(request.payload);
+    case 'motion':
+      return currentController.motion(request.payload);
     case 'scroll':
-      return controller.scroll(request.payload);
+      return currentController.scroll(request.payload);
     case 'findText':
-      return controller.findText(request.payload);
+      return currentController.findText(request.payload);
     case 'waitForUrl':
-      return controller.waitForUrl(request.payload);
+      return currentController.waitForUrl(request.payload);
     case 'authStatus':
-      return controller.authStatus();
+      return currentController.authStatus();
+    case 'privateFieldStatus':
+      return currentController.privateFieldStatus();
+    case 'requestPrivateFieldHandoff':
+      return currentController.requestPrivateFieldHandoff(request.payload);
+    case 'resumePrivateFieldHandoff':
+      return currentController.resumePrivateFieldHandoff(request.payload);
+    case 'policyStatus':
+      return currentController.policyStatus();
+    case 'setPolicy':
+      return currentController.setPolicy(request.payload);
     case 'requestLoginHandoff':
-      return controller.requestLoginHandoff(request.payload);
+      return currentController.requestLoginHandoff(request.payload);
     case 'resumeAfterLogin':
-      return controller.resumeAfterLogin(request.payload);
+      return currentController.resumeAfterLogin(request.payload);
     case 'testHang':
       if (process.env.STAGE5_BROWSER_TEST_MODE !== '1') {
         throw new Stage5BrowserError('OPERATION_FAILED', 'The test-only command is disabled.');
@@ -105,6 +153,8 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
     default:
       return assertNever(request);
   }
+    },
+  );
 }
 
 function assertNever(value: never): never {

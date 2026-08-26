@@ -1,0 +1,14 @@
+export { fork, type ChildProcess } from 'node:child_process';
+export { randomUUID } from 'node:crypto';
+export { fileURLToPath } from 'node:url';
+export { SUPPORTED_BROWSER_PRODUCTS, type BrowserProduct } from '../browser-provider.js';
+export { profileDirForBrowser, type Stage5BrowserConfig } from '../config.js';
+export { isLaunchFailureReason } from '../diagnostics.js';
+export { Stage5BrowserError, serializeUnknownError, type SerializedStage5BrowserError } from '../errors.js';
+export { OperationJournal, type OperationOutcome } from '../operation-journal.js';
+export { OperationRegistry } from '../operations/registry.js';
+export type { OperationStatusResult } from '../operations/types.js';
+export { readNativeControlRecord } from '../native-control-channel.js';
+export type { BrowserActionPolicyMode, BrowserCommandInput, BrowserCommandName, BrowserCommandOutput, BrowserStatus, BrowserWorkerRequest, BrowserWorkerResponse } from '../protocol.js';
+export { SerialQueue } from '../serial-queue.js';
+export { STAGE5_BROWSER_VERSION, WORKER_PROTOCOL_VERSION, type RuntimeProcessInfo } from '../runtime-info.js';

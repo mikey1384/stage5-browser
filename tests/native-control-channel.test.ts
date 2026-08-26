@@ -33,6 +33,7 @@ describe('native browser control record', () => {
       port: 29_123,
       createdAt: '2026-08-24T12:00:00.000Z',
       selectedTargetId: 'opaque-target-1',
+      selectedDocumentId: 'opaque-document-1',
       retainedAction: {
         selectedTargetId: 'opaque-target-1',
         documentId: 'opaque-document-1',
@@ -75,6 +76,7 @@ describe('native browser control record', () => {
       port: 29_123,
       createdAt: '2026-08-24T12:00:00.000Z',
       selectedTargetId: 'opaque-target-1',
+      selectedDocumentId: 'opaque-document-1',
       retainedAction: {
         selectedTargetId: 'opaque-target-1',
         documentId: 'opaque-document-1',
@@ -100,6 +102,7 @@ describe('native browser control record', () => {
       port: 29_123,
       createdAt: '2026-08-24T12:00:00.000Z',
       selectedTargetId: 'opaque-target-1',
+      selectedDocumentId: 'opaque-document-1',
     };
 
     await writeFile(nativeControlRecordPath(root), JSON.stringify(baseRecord));

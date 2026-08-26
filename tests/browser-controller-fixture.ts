@@ -1,9 +1,12 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
+import os from "node:os";
 import path from "node:path";
 
 import type { BrowserController } from "../src/browser-controller.js";
+import { resolveBrowserLaunchTarget } from "../src/browser-provider.js";
 import type { Stage5BrowserConfig } from "../src/config.js";
+import { Stage5BrowserError } from "../src/errors.js";
 import type {
   HumanBrowserLaunchInput,
   HumanBrowserLauncher,
@@ -12,6 +15,133 @@ import type {
 } from "../src/human-auth-bootstrap.js";
 import type { ProfileStorageInspection } from "../src/profile-binding.js";
 import { launchIdentityForTarget } from "../src/profile-binding.js";
+import {
+  inspectProfileOwnershipLease,
+  readProfileOwnershipLease,
+} from "../src/profile-ownership-lease.js";
+
+const DEFAULT_TEST_CLEANUP_GRACE_MS = 8_000;
+const EXACT_PROCESS_EXIT_GRACE_MS = 2_000;
+const MAX_RETAINED_RELEASE_CONTINUATIONS = 2;
+
+async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const settled = await Promise.race([
+    operation.then(() => true, () => true),
+    new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(1, timeoutMs));
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  return settled;
+}
+
+function isDisposableTestRoot(candidate: string): boolean {
+  const resolved = path.resolve(candidate);
+  const tempRoot = path.resolve(os.tmpdir());
+  return resolved.startsWith(`${tempRoot}${path.sep}`)
+    && path.basename(resolved).startsWith("stage5-browser-");
+}
+
+async function findOwnershipRoots(directory: string, depth = 0): Promise<string[]> {
+  if (depth > 5) return [];
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const roots = entries.some((entry) => entry.isFile() && entry.name === ".stage5-browser-ownership.json")
+    ? [directory]
+    : [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    roots.push(...await findOwnershipRoots(path.join(directory, entry.name), depth + 1));
+  }
+  return roots;
+}
+
+async function waitForProcessExit(processId: number, timeoutMs: number): Promise<boolean> {
+  const deadlineAt = Date.now() + timeoutMs;
+  while (Date.now() < deadlineAt) {
+    try {
+      process.kill(processId, 0);
+    } catch {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  try {
+    process.kill(processId, 0);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+async function terminateExactDisposableProcesses(temporaryRoot: string): Promise<boolean> {
+  if (!isDisposableTestRoot(temporaryRoot)) return false;
+  let signaled = false;
+  for (const profileRoot of await findOwnershipRoots(temporaryRoot)) {
+    const lease = await readProfileOwnershipLease(profileRoot);
+    if (
+      lease === null
+      || lease.ownerWorkerProcessId !== process.pid
+      || lease.browserProcessId === null
+      || lease.browserProcessId === process.pid
+    ) continue;
+    let inspection;
+    try {
+      const target = await resolveBrowserLaunchTarget({
+        browser: lease.browser,
+        executablePath: null,
+      });
+      inspection = await inspectProfileOwnershipLease(
+        profileRoot,
+        launchIdentityForTarget(target, profileRoot),
+        lease.leaseId,
+      );
+    } catch {
+      continue;
+    }
+    if (
+      inspection.state !== "current_owner"
+      || !inspection.ownershipProven
+      || inspection.browserProcess !== "matched"
+    ) continue;
+    try {
+      process.kill(lease.browserProcessId, "SIGTERM");
+      signaled = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") continue;
+      throw error;
+    }
+    if (await waitForProcessExit(lease.browserProcessId, EXACT_PROCESS_EXIT_GRACE_MS)) continue;
+    const current = await readProfileOwnershipLease(profileRoot);
+    if (current?.leaseId !== lease.leaseId) continue;
+    const target = await resolveBrowserLaunchTarget({
+      browser: lease.browser,
+      executablePath: null,
+    });
+    const rechecked = await inspectProfileOwnershipLease(
+      profileRoot,
+      launchIdentityForTarget(target, profileRoot),
+      lease.leaseId,
+    );
+    if (
+      rechecked.state === "current_owner"
+      && rechecked.ownershipProven
+      && rechecked.browserProcess === "matched"
+    ) {
+      try {
+        process.kill(lease.browserProcessId, "SIGKILL");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+  }
+  return signaled;
+}
 
 export class FakeHumanBrowserSession implements HumanBrowserSession {
   private running = true;
@@ -127,11 +257,26 @@ export async function requestFakeLoginHandoff(
   candidate: BrowserController,
   config: Stage5BrowserConfig,
   input: Parameters<BrowserController["requestLoginHandoff"]>[0],
+  continueRetainedRelease = true,
 ): ReturnType<BrowserController["requestLoginHandoff"]> {
   const originalHeadless = config.headless;
   config.headless = false;
   try {
-    return await candidate.requestLoginHandoff(input);
+    for (let continuation = 0; ; continuation += 1) {
+      try {
+        return await candidate.requestLoginHandoff(input);
+      } catch (error) {
+        if (
+          !continueRetainedRelease
+          || continuation >= MAX_RETAINED_RELEASE_CONTINUATIONS
+          || !(error instanceof Stage5BrowserError)
+          || error.code !== "AUTH_HANDOFF_REQUIRED"
+          || error.details?.reason !== "handoff_release_pending"
+        ) throw error;
+        // Closing the already-owned process is not authentication input. Continue only
+        // the retained release state, under a fixed cap, without relaunch or action replay.
+      }
+    }
   } finally {
     // The injected launcher is the only headed side of this unit-test boundary. Restoring
     // headless mode before any resume prevents a real Chrome-for-Testing window from opening.
@@ -169,13 +314,22 @@ export interface BrowserControllerTestState {
   humanLauncher?: FakeHumanBrowserLauncher;
   server?: Server;
   temporaryRoot?: string;
+  cleanupGraceMs?: number;
 }
 
 export async function cleanBrowserControllerTestState(
   state: BrowserControllerTestState,
 ): Promise<void> {
   await state.humanLauncher?.finish().catch(() => undefined);
-  await state.controller?.stop().catch(() => undefined);
+  const stop = state.controller?.stop().catch(() => undefined);
+  if (
+    stop !== undefined
+    && !(await settlesWithin(stop, state.cleanupGraceMs ?? DEFAULT_TEST_CLEANUP_GRACE_MS))
+    && state.temporaryRoot !== undefined
+  ) {
+    const signaled = await terminateExactDisposableProcesses(state.temporaryRoot);
+    if (signaled) await settlesWithin(stop, EXACT_PROCESS_EXIT_GRACE_MS);
+  }
   await Promise.all([
     closeServer(state.server),
     closeServer(state.frameServer),

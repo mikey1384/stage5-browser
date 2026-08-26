@@ -1,5 +1,6 @@
-import { appendFile, chmod, mkdir } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 import type { BrowserProduct } from './browser-provider.js';
 import type { LaunchFailureReason } from './diagnostics.js';
@@ -20,7 +21,19 @@ export interface OperationJournalRecord {
   browser?: BrowserProduct;
   browserState?: BrowserLifecycleState;
   currentUrl?: string;
+  completedAt?: string;
+  timing?: {
+    queuedAtMs: number;
+    workerRequestAtMs: number | null;
+    workerResponseAtMs: number | null;
+    terminalAtMs: number;
+    persistedAtMs?: number | null;
+    responseCreatedAtMs?: number | null;
+  };
 }
+
+const MAX_JOURNAL_BYTES = 4 * 1_024 * 1_024;
+const RETAINED_JOURNAL_BYTES = 2 * 1_024 * 1_024;
 
 export class OperationJournal {
   private readonly journalPath: string;
@@ -36,7 +49,9 @@ export class OperationJournal {
       this.initialized = true;
     }
 
-    const safeRecord = {
+    await this.compactIfNeeded();
+    const safeCurrentUrl = sanitizeUrlForJournal(record.currentUrl);
+    const safeRecord: OperationJournalRecord = {
       operationId: record.operationId,
       command: record.command,
       startedAt: record.startedAt,
@@ -47,15 +62,64 @@ export class OperationJournal {
       ...(record.diagnosticCause === undefined ? {} : { diagnosticCause: record.diagnosticCause }),
       ...(record.browser === undefined ? {} : { browser: record.browser }),
       ...(record.browserState === undefined ? {} : { browserState: record.browserState }),
-      ...(sanitizeUrlForJournal(record.currentUrl) === undefined
-        ? {}
-        : { currentUrl: sanitizeUrlForJournal(record.currentUrl) }),
+      ...(record.completedAt === undefined ? {} : { completedAt: record.completedAt }),
+      ...(record.timing === undefined ? {} : { timing: { ...record.timing } }),
+      ...(safeCurrentUrl === undefined ? {} : { currentUrl: safeCurrentUrl }),
     };
 
     await appendFile(this.journalPath, `${JSON.stringify(safeRecord)}\n`, {
       encoding: 'utf8',
       mode: 0o600,
     });
+    await chmod(this.journalPath, 0o600);
+  }
+
+  async find(operationId: string): Promise<OperationJournalRecord | null> {
+    let contents: string;
+    try {
+      contents = await readFile(this.journalPath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    const lines = contents.trimEnd().split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      try {
+        const record = JSON.parse(lines[index] ?? '') as Partial<OperationJournalRecord>;
+        if (
+          record.operationId === operationId &&
+          typeof record.command === 'string' &&
+          typeof record.startedAt === 'string' &&
+          typeof record.durationMs === 'number' &&
+          (record.outcome === 'succeeded' || record.outcome === 'failed' || record.outcome === 'timed_out')
+        ) {
+          return record as OperationJournalRecord;
+        }
+      } catch {
+        // Ignore an incomplete or invalid diagnostic line; it is not canonical browser state.
+      }
+    }
+    return null;
+  }
+
+  private async compactIfNeeded(): Promise<void> {
+    let size: number;
+    try {
+      size = (await stat(this.journalPath)).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    if (size < MAX_JOURNAL_BYTES) return;
+    const contents = await readFile(this.journalPath, 'utf8');
+    const retainedStart = Math.max(0, contents.length - RETAINED_JOURNAL_BYTES);
+    const firstCompleteLine = retainedStart === 0
+      ? 0
+      : contents.indexOf('\n', retainedStart) + 1;
+    const retained = firstCompleteLine <= 0 ? '' : contents.slice(firstCompleteLine);
+    const temporaryPath = `${this.journalPath}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporaryPath, retained, { encoding: 'utf8', mode: 0o600 });
+    await rename(temporaryPath, this.journalPath);
     await chmod(this.journalPath, 0o600);
   }
 }
