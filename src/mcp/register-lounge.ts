@@ -28,12 +28,16 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
         openWorldHint: false,
       },
     },
-    async (input) => safely(() => lounge.join({
-      agentId: input.agentId,
-      room: input.room,
-      ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-      ...(input.provider === undefined ? {} : { provider: input.provider }),
-    })),
+    async (input) => safely(async () => {
+      const joined = await lounge.join({
+        agentId: input.agentId,
+        room: input.room,
+        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+        ...(input.provider === undefined ? {} : { provider: input.provider }),
+      });
+      const browserContext = await context.supervisor.bindAgentContext(input.agentId);
+      return { ...joined, browserContext };
+    }),
   );
 
   server.registerTool(

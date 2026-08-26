@@ -6,8 +6,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Stage5BrowserError } from './errors.js';
 import { MCP_TOOL_NAMES } from './mcp/tool-names.js';
 
-export const STAGE5_BROWSER_VERSION = '0.13.0';
-export const WORKER_PROTOCOL_VERSION = 10;
+export const STAGE5_BROWSER_VERSION = '0.14.0';
+export const WORKER_PROTOCOL_VERSION = 11;
+export const MCP_HOST_BEHAVIOR_VERSION = 1;
 export const TOOL_CATALOG_VERSION = 12;
 export const MCP_TOOL_COUNT = Object.keys(MCP_TOOL_NAMES).length;
 
@@ -15,6 +16,7 @@ export type RuntimeComponent = 'mcp' | 'worker';
 export type RuntimeRestartReason =
   | 'runtime_artifact_changed'
   | 'runtime_artifact_unreadable'
+  | 'mcp_host_behavior_changed'
   | 'tool_catalog_changed'
   | 'worker_protocol_changed';
 
@@ -23,6 +25,7 @@ export interface RuntimeBuildStamp {
   buildId: string;
   builtAt: string;
   workerProtocolVersion: number;
+  hostBehaviorVersion: number;
   toolCatalogVersion: number;
   toolCount: number;
 }
@@ -31,6 +34,7 @@ export interface RuntimeProcessInfo {
   component: RuntimeComponent;
   version: string;
   protocolVersion: number;
+  hostBehaviorVersion: number;
   processId: number;
   startedAt: string;
   buildModifiedAt: string;
@@ -38,6 +42,7 @@ export interface RuntimeProcessInfo {
   currentArtifactFingerprint: string | null;
   currentVersion: string | null;
   currentProtocolVersion: number | null;
+  currentHostBehaviorVersion: number | null;
   currentToolCatalogVersion: number | null;
   compatibleUpdateAvailable: boolean;
   restartRequired: boolean;
@@ -117,6 +122,7 @@ function readBuildStamp(filePath: string): RuntimeBuildStamp {
     typeof parsed.buildId !== 'string' ||
     typeof parsed.builtAt !== 'string' ||
     typeof parsed.workerProtocolVersion !== 'number' ||
+    typeof parsed.hostBehaviorVersion !== 'number' ||
     typeof parsed.toolCatalogVersion !== 'number' ||
     typeof parsed.toolCount !== 'number'
   ) {
@@ -170,6 +176,8 @@ export class RuntimeArtifactMonitor {
           restartReason = 'tool_catalog_changed';
         } else if (currentBuild.workerProtocolVersion !== this.loadedBuild.workerProtocolVersion) {
           restartReason = 'worker_protocol_changed';
+        } else if (currentBuild.hostBehaviorVersion !== this.loadedBuild.hostBehaviorVersion) {
+          restartReason = 'mcp_host_behavior_changed';
         } else {
           compatibleUpdateAvailable = true;
         }
@@ -183,6 +191,7 @@ export class RuntimeArtifactMonitor {
       component: this.component,
       version: this.loadedBuild.version,
       protocolVersion: this.loadedBuild.workerProtocolVersion,
+      hostBehaviorVersion: this.loadedBuild.hostBehaviorVersion,
       processId: this.processId,
       startedAt: this.startedAt,
       buildModifiedAt: this.buildModifiedAt,
@@ -190,13 +199,14 @@ export class RuntimeArtifactMonitor {
       currentArtifactFingerprint: currentFingerprint,
       currentVersion: currentBuild?.version ?? null,
       currentProtocolVersion: currentBuild?.workerProtocolVersion ?? null,
+      currentHostBehaviorVersion: currentBuild?.hostBehaviorVersion ?? null,
       currentToolCatalogVersion: currentBuild?.toolCatalogVersion ?? null,
       compatibleUpdateAvailable,
       restartRequired,
       restartReason,
       suggestedAction: restartRequired
         ? this.component === 'mcp'
-          ? 'Reconnect the MCP host so it reloads the changed Stage5 Browser tool or worker protocol contract.'
+          ? 'Reconnect the MCP host so it reloads the changed Stage5 Browser tool, worker protocol, or host lifecycle behavior.'
           : 'The Stage5 Browser supervisor must replace this worker before the next operation.'
         : compatibleUpdateAvailable
           ? 'No host restart is needed. Stage5 Browser will load the compatible runtime automatically.'
@@ -212,7 +222,7 @@ export class RuntimeArtifactMonitor {
     throw new Stage5BrowserError(
       this.component === 'mcp' ? 'MCP_RESTART_REQUIRED' : 'WORKER_DISCONNECTED',
       this.component === 'mcp'
-        ? 'The Stage5 Browser tool or worker protocol contract changed after this MCP process started.'
+        ? 'The Stage5 Browser tool, worker protocol, or host lifecycle behavior changed after this MCP process started.'
         : 'The Stage5 Browser worker build changed and must be replaced.',
       {
         recoverable: this.component === 'worker',

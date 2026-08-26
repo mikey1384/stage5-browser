@@ -282,6 +282,68 @@ describe('BrowserController generic control inspection and selection', () => {
     expect(await page.locator('#target-clicks').textContent()).toBe('1');
   });
 
+  it('surfaces a document replacement instead of replaying or returning only the opener postcondition', async () => {
+    let signInRequests = 0;
+    server = createServer((request, response) => {
+      const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      if (requestUrl.pathname === '/sign-in') {
+        signInRequests += 1;
+        response.end(`<!doctype html><html><body><h1>Session refresh</h1>
+          <script>location.replace('/form?returned=1')</script></body></html>`);
+        return;
+      }
+      response.end(`<!doctype html><html><body>
+        <h1>${requestUrl.searchParams.has('returned') ? 'Replacement form' : 'Original form'}</h1>
+        <button aria-haspopup="listbox" aria-expanded="false" onclick="location.href='/sign-in'">
+          Intended dropdown
+        </button>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-control-document-replacement-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/form`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const baseline = await controller.pageEvents({ afterSequence: null, limit: 50 });
+
+    await expect(controller.inspectControl({
+      control: { role: 'button', name: 'Intended dropdown', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: 'TARGET_NOT_FOUND',
+      details: {
+        reason: 'document_changed_during_control_inspection',
+        actionDispatched: true,
+        inspectionAborted: true,
+        stateRisk: 'read_page_events_before_resuming',
+      },
+    });
+
+    expect(signInRequests).toBe(1);
+    const events = await controller.pageEvents({ afterSequence: baseline.cursor, limit: 50 });
+    expect(events.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'document_replaced',
+        stateRisk: 'all_unsaved_form_state_may_be_lost',
+      }),
+    ]));
+    const fresh = await controller.snapshot({
+      depth: 5,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(fresh.snapshot).toContain('Replacement form');
+  });
+
   it('composes idempotent native and custom multi-selection without toggling satisfied choices', async () => {
     await openFixture(`<!doctype html><html><body>
       <label for="native">Native interests</label>

@@ -4,11 +4,14 @@ import { executeOperations, type ExecuteOperations } from './execute.js';
 import { workerLifecycleOperations, type WorkerLifecycleOperations } from './worker-lifecycle.js';
 import { transportOperations, type TransportOperations } from './transport.js';
 import { policyOperations, type PolicyOperations } from './policy.js';
+import { agentContextOperations, type AgentContextOperations } from './agent-context.js';
+import { BrowserAgentContextStore } from './agent-context-store.js';
 export interface BrowserSupervisorContext extends
   ExecuteOperations,
   WorkerLifecycleOperations,
   TransportOperations,
-  PolicyOperations {
+  PolicyOperations,
+  AgentContextOperations {
   config: Stage5BrowserConfig;
   queue: SerialQueue;
   operations: OperationRegistry;
@@ -24,6 +27,13 @@ export interface BrowserSupervisorContext extends
   browserWasConnected: boolean;
   humanAuthenticationInProgress: boolean;
   actionPolicyMode: BrowserActionPolicyMode;
+  agentContextStore: BrowserAgentContextStore;
+  agentContextQueue: SerialQueue;
+  agentContextId: string | null;
+  agentContextBrowserKnown: boolean;
+  agentContextPolicyKnown: boolean;
+  pendingAgentBrowser: BrowserProduct | null;
+  pendingAgentPolicyMode: BrowserActionPolicyMode | null;
   closing: boolean;
 }
 
@@ -31,7 +41,8 @@ export interface BrowserSupervisor extends
   ExecuteOperations,
   WorkerLifecycleOperations,
   TransportOperations,
-  PolicyOperations {}
+  PolicyOperations,
+  AgentContextOperations {}
 
 export class BrowserSupervisor {
   private readonly queue = new SerialQueue();
@@ -48,6 +59,13 @@ export class BrowserSupervisor {
   private browserWasConnected = false;
   private humanAuthenticationInProgress = false;
   private actionPolicyMode: BrowserActionPolicyMode = 'normal';
+  private readonly agentContextStore: BrowserAgentContextStore;
+  private readonly agentContextQueue = new SerialQueue();
+  private agentContextId: string | null = null;
+  private agentContextBrowserKnown = false;
+  private agentContextPolicyKnown = false;
+  private pendingAgentBrowser: BrowserProduct | null = null;
+  private pendingAgentPolicyMode: BrowserActionPolicyMode | null = null;
   private closing = false;
 
   constructor(
@@ -60,6 +78,7 @@ export class BrowserSupervisor {
     this.runtimeInfoProvider = options.runtimeInfoProvider;
     this.operations = new OperationRegistry(config.artifactsDir);
     this.selectedBrowser = config.browser;
+    this.agentContextStore = new BrowserAgentContextStore(config.profilesDir);
   }
 
   get pendingOperationCount(): number {
@@ -82,4 +101,5 @@ for (const operations of [
   workerLifecycleOperations,
   transportOperations,
   policyOperations,
+  agentContextOperations,
 ]) installOperations(BrowserSupervisor.prototype, operations);

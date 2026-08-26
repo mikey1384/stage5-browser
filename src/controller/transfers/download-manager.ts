@@ -8,7 +8,7 @@ import {
   stat,
   type WaitForDownloadOutput,
 } from '../dependencies.js';
-import { DurableJsonFile } from '../persistence/durable-json.js';
+import { DurableJsonFile } from '../../persistence/durable-json.js';
 
 const MANIFEST_VERSION = 1;
 const MAX_RETAINED_RECORDS = 200;

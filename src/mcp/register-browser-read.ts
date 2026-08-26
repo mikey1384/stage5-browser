@@ -58,7 +58,7 @@ export function registerBrowserReadTools(server: McpServer, context: McpHostCont
     TOOL.browserStatus,
     {
       title: 'Browser status',
-      description: 'Report MCP/build freshness, worker build, dedicated browser context, tabs, actual runtime profile when observable, controller state, profile-lock ownership state, and current recovery state. A stopped controller may still report a profile owned externally or awaiting release. A stale build reports restartRequired without starting a worker.',
+      description: 'Report MCP/build freshness including host-behavior version, worker build, the joined agent\'s restored backend context, dedicated browser context, tabs, actual runtime profile when observable, controller state, profile-lock ownership state, and current recovery state. A stopped controller may still report a profile owned externally or awaiting release. A stale build reports restartRequired without starting a worker.',
       inputSchema: z.object({}),
       annotations: {
         readOnlyHint: true,

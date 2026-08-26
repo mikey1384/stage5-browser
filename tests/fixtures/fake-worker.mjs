@@ -5,6 +5,7 @@ let initialized = false;
 let browser = 'chromium';
 let humanAuthenticationInProgress = false;
 let browserRunning = false;
+let actionPolicyMode = 'normal';
 const testDocumentId = `test-document-${process.pid}`;
 const testFormValues = new Map();
 const startedAt = new Date().toISOString();
@@ -13,6 +14,7 @@ const runtime = {
   component: 'worker',
   version: '0.6.5',
   protocolVersion: 0,
+  hostBehaviorVersion: 1,
   processId: process.pid,
   startedAt,
   buildModifiedAt: startedAt,
@@ -20,6 +22,7 @@ const runtime = {
   currentArtifactFingerprint: buildFingerprint,
   currentVersion: '0.6.5',
   currentProtocolVersion: 0,
+  currentHostBehaviorVersion: 1,
   currentToolCatalogVersion: 5,
   compatibleUpdateAvailable: false,
   restartRequired: false,
@@ -50,6 +53,7 @@ process.on('message', (message) => {
   if (message.command === 'initialize') {
     initialized = true;
     browser = message.payload.browser;
+    actionPolicyMode = message.payload.actionPolicyMode;
     runtime.protocolVersion = message.payload.protocolVersion;
     runtime.currentProtocolVersion = message.payload.protocolVersion;
     respond(message.id, { ready: true, workerPid: process.pid, runtime });
@@ -164,6 +168,7 @@ process.on('message', (message) => {
   }
 
   if (message.command === 'start') {
+    if (message.payload.browser !== undefined) browser = message.payload.browser;
     browserRunning = true;
     respond(message.id, {
       browser,
@@ -187,6 +192,25 @@ process.on('message', (message) => {
       activePageIndex: null,
       lastKnownUrl: null,
       descendantPid: descendant.pid,
+    });
+    return;
+  }
+
+  if (message.command === 'setPolicy') {
+    actionPolicyMode = message.payload.mode;
+    respond(message.id, {
+      mode: actionPolicyMode,
+      source: 'agent_declared_intent',
+      deterministicEnforcement: 'structural_and_scope_only',
+    });
+    return;
+  }
+
+  if (message.command === 'policyStatus') {
+    respond(message.id, {
+      mode: actionPolicyMode,
+      source: 'agent_declared_intent',
+      deterministicEnforcement: 'structural_and_scope_only',
     });
     return;
   }

@@ -7,7 +7,7 @@ import {
   randomUUID,
   sanitizeUrlForJournal,
 } from '../dependencies.js';
-import { DurableJsonFile } from '../persistence/durable-json.js';
+import { DurableJsonFile } from '../../persistence/durable-json.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
 const MANIFEST_VERSION = 1;

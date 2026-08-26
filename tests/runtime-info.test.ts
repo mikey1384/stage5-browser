@@ -25,6 +25,7 @@ describe('RuntimeArtifactMonitor', () => {
     buildId: 'build-1',
     builtAt: '2026-08-24T01:00:00.000Z',
     workerProtocolVersion: 5,
+    hostBehaviorVersion: 1,
     toolCatalogVersion: 5,
     toolCount: 23,
     ...overrides,
@@ -76,6 +77,24 @@ describe('RuntimeArtifactMonitor', () => {
     expect(() => monitor.assertCurrent()).toThrowError(expect.objectContaining({ code: 'MCP_RESTART_REQUIRED' }));
   });
 
+  it('requires an MCP restart when host lifecycle behavior changes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-host-behavior-'));
+    temporaryRoots.push(root);
+    const artifact = path.join(root, 'build-stamp.json');
+    await writeFile(artifact, JSON.stringify(stamp()));
+    const monitor = new RuntimeArtifactMonitor('mcp', pathToFileURL(artifact));
+
+    await writeFile(
+      artifact,
+      JSON.stringify(stamp({ buildId: 'build-2', hostBehaviorVersion: 2 })),
+    );
+    expect(monitor.inspect()).toMatchObject({
+      compatibleUpdateAvailable: false,
+      restartRequired: true,
+      restartReason: 'mcp_host_behavior_changed',
+    });
+  });
+
   it('marks a rebuilt worker for bounded supervisor replacement', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-worker-runtime-'));
     temporaryRoots.push(root);
@@ -97,6 +116,7 @@ describe('worker initialization compatibility', () => {
     component: 'worker',
     version: '0.6.8',
     protocolVersion: WORKER_PROTOCOL_VERSION,
+    hostBehaviorVersion: 1,
     processId: 456,
     startedAt: '2026-08-25T01:00:00.000Z',
     buildModifiedAt: '2026-08-25T01:00:00.000Z',
@@ -104,6 +124,7 @@ describe('worker initialization compatibility', () => {
     currentArtifactFingerprint: 'worker-build-2',
     currentVersion: '0.6.8',
     currentProtocolVersion: WORKER_PROTOCOL_VERSION,
+    currentHostBehaviorVersion: 1,
     currentToolCatalogVersion: 6,
     compatibleUpdateAvailable: false,
     restartRequired: false,

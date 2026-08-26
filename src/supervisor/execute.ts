@@ -18,8 +18,10 @@ export const executeOperations = {
       const { operationId, startedAt } = operation;
       const startedAtMs = Date.parse(startedAt);
       let runtimeTransition: RuntimeTransition | null = null;
+      const browserWasConnectedBefore = this.browserWasConnected;
 
       try {
+        await this.applyPendingAgentContext();
         this.operations.transition(operationId, 'worker_preflight');
         runtimeTransition = await this.reloadCompatibleRuntimeIfNeeded();
         await this.ensureWorker();
@@ -35,6 +37,7 @@ export const executeOperations = {
         this.captureBrowserConnection(result);
         this.captureAuthenticationState(result);
         this.captureActionPolicyState(result);
+        await this.noteAgentContextResult(command, browserWasConnectedBefore, result);
         this.operations.succeed(operationId, result, 'not_needed');
         const timing = this.operations.timing(operationId);
         await this.appendJournal({
@@ -125,6 +128,7 @@ export const executeOperations = {
       }
 
       try {
+        await this.applyPendingAgentContext();
         this.operations.transition(operationId, 'worker_request_sent');
         await this.replaceWorker();
         let reopenedUrl: string | null = null;
@@ -139,6 +143,9 @@ export const executeOperations = {
         }
         const status = await this.request('status', {}, this.config.operationTimeoutMs);
         this.operations.transition(operationId, 'worker_result_received');
+        this.captureSelectedBrowser(status);
+        this.captureBrowserConnection(status);
+        await this.noteAgentContextResult('recover', false, status);
         const browserRecovered = status.browserConnected;
         const outcome = browserRecovered
           ? 'worker_recovered_browser_running'

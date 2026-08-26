@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -26,6 +26,7 @@
       "Audited manager history",
       "Durable agent inboxes",
       "Persistent sessions",
+      "Agent-scoped reconnect context",
       "Durable profile ownership leases",
       "Truthful backend availability",
       "Private interaction handoff",

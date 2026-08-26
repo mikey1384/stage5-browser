@@ -32,7 +32,7 @@ Pause for `decision_required` only when semantic ambiguity could materially chan
 - Follow YAGNI. Add a capability, abstraction, compatibility bridge, or configuration only for a current demonstrated workflow or invariant.
 - Never classify human-language intent with regular expressions, keyword lists, or phrase heuristics. Deterministic code may enforce structural browser and protocol facts only.
 - Run every consequential browser action through the canonical phases: observe authoritative state -> plan a structural strategy -> preflight invariants -> perform reversible preparation -> enter one dispatch gate -> reconcile authoritative effects -> finalize sanitized state and persistence. One bounded recovery may return from dispatch to preflight only after exact evidence proves zero input; possible input proceeds only to reconciliation and must never be replayed.
-- Keep one explicit host/controller context per scoped runtime. Browser objects, handles, one-use refs, live visibility, and dispatch probes are ephemeral and must be re-observed; only sanitized operation outcomes, ownership/handoff identity, update state, and Lounge coordination cross a durability boundary through their canonical narrow store.
+- Keep one explicit host/controller context per scoped runtime. A stable Lounge identity durably scopes only its selected Stage5 browser backend and explicit review-policy mode so a host reconnect cannot silently fall back to another profile; different agents never share a global last-browser value. Browser objects, handles, one-use refs, URLs, pages, live visibility, and dispatch probes are ephemeral and must be re-observed. Only that minimal agent context, sanitized operation outcomes, ownership/handoff identity, update state, and Lounge coordination cross a durability boundary through their canonical narrow stores.
 - Deterministic planning may return a typed, privacy-safe `decision_required` checkpoint when structural facts are insufficient to choose the user's intended meaning. Let the agent exercise judgment only within existing user authority, and escalate consequential or materially ambiguous choices to Mikey. After a choice, re-observe and bind one exact target before dispatch. Do not encode business meaning in selectors, regexes, scoring heuristics, or site-specific core patches.
 
 ## Efficient validation
@@ -58,6 +58,7 @@ Pause for `decision_required` only when semantic ambiguity could materially chan
 - `online` means the agent has a live bounded `lounge_wait` or is briefly processing a message before renewing it. A connected MCP process without an active wait is `connected_non_wakeable`, never online.
 - While assigned collaborative work remains active, keep one `lounge_wait` pending whenever idle. After a timeout, renew it immediately. After a message, acknowledge it as seen, act or reply, acknowledge it as acted, then return to the wait. Do not require Mikey to relay subsequent messages.
 - Lounge waits and storage never enter the browser supervisor queue. SQLite access stays in a worker thread so database contention cannot block browser deadlines or the MCP event loop.
+- `lounge_join` binds the same stable identity to its privacy-minimized browser context on a separate context-storage lane. It must not wait behind, cancel, or reorder a browser action. The next browser operation reconciles any restored backend/policy inside the browser queue before worker initialization or input.
 - An unrelated browser tool-catalog or worker-protocol change may block browser operations until reconnect, but must not disable the already-loaded Lounge coordination tools. Keep send/wait/ack/status available so agents can coordinate that reconnect without human relay; the Lounge still grants no browser authority.
 - Messages are durable and at-least-once until acknowledged. Sending requires an idempotency key; acknowledgements are monotonic and idempotent. Never infer that delivery, sight, action, or task completion occurred from an earlier phase.
 - Never send passwords, OTPs, cookies, API keys, tax identifiers, payment details, private addresses, identity documents, form values, or chain-of-thought through the Lounge. Share only the minimum conclusion, evidence identifiers, repository artifacts, and next action needed.
@@ -127,16 +128,17 @@ Before browser work, distinguish a missing host connection from a failed browser
 3. If the CLI entry is enabled but ChatGPT does not expose the tools or show the server, the running ChatGPT host predates the registration. Fully quit and reopen ChatGPT once, then start or resume an agent run. Do not rebuild, redeploy, reinstall, or rewrite the registration.
 4. When the tools are present, call `browser_status`. A normal build reports the version and tool count declared in `package.json`, plus `restartRequired: false`.
 5. `compatibleUpdateAvailable: true` is not a blocker. The next browser operation automatically rolls the worker onto the compatible completed build.
-6. Reconnect the MCP host only when `restartRequired: true`. That flag is reserved for a real tool-catalog or MCP-to-worker protocol change; exact build-fingerprint drift alone is never sufficient.
+6. Reconnect the MCP host only when `restartRequired: true`. That flag is reserved for a real tool-catalog, MCP-to-worker protocol, or MCP-host lifecycle-behavior change; exact build-fingerprint drift alone is never sufficient.
 
 Do not kill an observed MCP or worker PID merely because it is old; other active agent sessions may own it. Do not use `browser_recover` as an update mechanism. After a launch failure, call `browser_diagnostics` and follow its structured action.
 
 When changing Stage5 Browser itself:
 
-- Ordinary behavior fixes keep the existing tool-catalog and worker-protocol versions. `npm run build` publishes a completed build stamp last, and live hosts pick up the compatible worker automatically.
+- Worker-only behavior fixes keep the existing tool-catalog, worker-protocol, and host-behavior versions. `npm run build` publishes a completed build stamp last, and live hosts pick up the compatible worker automatically.
 - Never close and reconstruct a connected direct-Playwright context merely to load a compatible update; defer until explicit stop. A proven native-CDP process may roll forward in place because the browser remains running and its exact selected target is retained.
 - Adding, removing, or changing an MCP tool schema requires a tool-catalog version bump.
 - Changing the MCP-to-worker command contract requires a worker-protocol version bump.
+- Changing lifecycle behavior implemented by the already-running MCP host requires a host-behavior version bump. When introducing a new host-version field that an older host cannot read, also change a contract version that the older monitor already understands so it fails closed and requests one reconnect.
 - Keep the contract metadata in `package.json`, constants in `src/runtime-info.ts`, package/plugin versions, and regression tests aligned.
 - Never tell the user to patch or deploy this local integration. The registered launcher reads this checkout directly.
 

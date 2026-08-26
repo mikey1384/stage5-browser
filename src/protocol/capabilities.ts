@@ -9,7 +9,7 @@ export interface BrowserManagerCapability {
 export const BROWSER_MANAGER_CAPABILITIES = {
   lifecycle_manager: {
     responsibility: 'Own browser runtime, isolated profile, process identity, and controlled start/switch/stop transitions.',
-    techniques: ['preflight_backend', 'start_profile', 'switch_profile', 'stop_profile', 'reconcile_process_ownership'],
+    techniques: ['restore_agent_backend_context', 'preflight_backend', 'start_profile', 'switch_profile', 'stop_profile', 'reconcile_process_ownership'],
     compositionBoundary: 'Produces or retires the controlled browser context used by every other manager.',
   },
   perception_manager: {
@@ -66,6 +66,8 @@ export const BROWSER_MANAGER_CAPABILITIES = {
 
 export const BROWSER_CONTEXT_LAYERS = {
   durable: [
+    'agent_browser_selection',
+    'agent_action_policy_mode',
     'profile_ownership_lease',
     'operation_terminal_journal',
     'lounge_inbox_and_acknowledgements',
@@ -75,10 +77,9 @@ export const BROWSER_CONTEXT_LAYERS = {
   ],
   session: [
     'controlled_browser_identity',
-    'selected_profile',
+    'controlled_profile_identity',
     'stable_tab_ids',
     'selected_page',
-    'action_policy_mode',
     'handoff_state',
   ],
   document: [

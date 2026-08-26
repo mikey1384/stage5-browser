@@ -9,6 +9,7 @@ const contract = packageJson.stage5Browser;
 if (
   typeof packageJson.version !== 'string' ||
   typeof contract?.workerProtocolVersion !== 'number' ||
+  typeof contract?.hostBehaviorVersion !== 'number' ||
   typeof contract?.toolCatalogVersion !== 'number' ||
   typeof contract?.toolCount !== 'number'
 ) {
@@ -23,6 +24,7 @@ await writeFile(
     buildId: randomUUID(),
     builtAt: new Date().toISOString(),
     workerProtocolVersion: contract.workerProtocolVersion,
+    hostBehaviorVersion: contract.hostBehaviorVersion,
     toolCatalogVersion: contract.toolCatalogVersion,
     toolCount: contract.toolCount,
   })}\n`,

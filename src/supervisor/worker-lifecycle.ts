@@ -34,6 +34,7 @@ export const workerLifecycleOperations = {
           mcpBuildFingerprint: this.expectedBuildFingerprint,
           buildFingerprintPolicy: 'diagnostic_only',
           actionPolicyMode: this.actionPolicyMode,
+          contextScope: this.agentContextId === null ? 'connection' : 'durable_agent',
         },
         this.config.workerStartupTimeoutMs,
       );

@@ -27,6 +27,7 @@ export interface BrowserCommandMap {
       mcpBuildFingerprint: string | null;
       buildFingerprintPolicy?: 'diagnostic_only';
       actionPolicyMode: BrowserActionPolicyMode;
+      contextScope: 'connection' | 'durable_agent';
     };
     output: { ready: true; workerPid: number; runtime: RuntimeProcessInfo };
   };

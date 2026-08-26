@@ -58,6 +58,11 @@ export const controlInspectionOperations = {
         );
         competingPopupDismissed = preparation.competingPopupDismissed;
         preparationActionDispatched = preparation.preparationActionDispatched;
+        if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
+          throwControlDocumentChanged(
+            combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
+          );
+        }
         let associated = await this.associatedControlPopup(frame, controlHandle, deadlineAt);
         if (associated === 'ambiguous') {
           throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'Multiple popup surfaces could belong to the exact control.', {
@@ -99,13 +104,16 @@ export const controlInspectionOperations = {
           } catch (error) {
             revealError = error;
             if (error instanceof Stage5BrowserError) {
-              const dispatched = error.details?.actionDispatched;
-              openerActionDispatched = dispatched === true || dispatched === false || dispatched === 'unknown'
-                ? dispatched
-                : 'unknown';
+              openerActionDispatched = dispatchEvidenceFromError(error);
             } else {
               openerActionDispatched = 'unknown';
             }
+          }
+
+          if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
+            throwControlDocumentChanged(
+              combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
+            );
           }
 
           await controlHandle.dispose().catch(() => undefined);
@@ -176,16 +184,9 @@ export const controlInspectionOperations = {
         this.documentVersion(frame) !== documentVersion ||
         descriptor === null
       ) {
-        throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The control document changed during option inspection.', {
-          recoverable: true,
-          details: {
-            reason: 'document_changed_during_control_inspection',
-            actionDispatched: openerActionDispatched,
-            suggestedAction: openerActionDispatched === false
-              ? 'Inspect the fresh document once. No opener input was dispatched.'
-              : 'Inspect authoritative state without replaying the opener; the prior document changed after possible input.',
-          },
-        });
+        throwControlDocumentChanged(
+          combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
+        );
       }
 
       const inspectionId = `control-${randomUUID()}`;
@@ -234,6 +235,15 @@ export const controlInspectionOperations = {
           },
         },
       };
+    } catch (error) {
+      if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
+        throwControlDocumentChanged(combinedDispatchEvidence(
+          preparationActionDispatched,
+          openerActionDispatched,
+          error instanceof Stage5BrowserError ? dispatchEvidenceFromError(error) : 'unknown',
+        ));
+      }
+      throw error;
     } finally {
       if (!retained) {
         await Promise.allSettled([
@@ -245,6 +255,42 @@ export const controlInspectionOperations = {
     }
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
+
+function combinedDispatchEvidence(
+  ...values: Array<boolean | 'unknown'>
+): boolean | 'unknown' {
+  if (values.includes(true)) return true;
+  if (values.includes('unknown')) return 'unknown';
+  return false;
+}
+
+function dispatchEvidenceFromError(error: Stage5BrowserError): boolean | 'unknown' {
+  const values = [error.details?.actionDispatched, error.details?.clickDispatched]
+    .filter((value): value is boolean | 'unknown' =>
+      value === true || value === false || value === 'unknown');
+  return values.length === 0 ? 'unknown' : combinedDispatchEvidence(...values);
+}
+
+function throwControlDocumentChanged(
+  actionDispatched: boolean | 'unknown',
+): never {
+  throw new Stage5BrowserError(
+    'TARGET_NOT_FOUND',
+    'The page document changed during control inspection, so the prior control and option state are no longer authoritative.',
+    {
+      recoverable: true,
+      details: {
+        reason: 'document_changed_during_control_inspection',
+        actionDispatched,
+        inspectionAborted: true,
+        stateRisk: 'read_page_events_before_resuming',
+        suggestedAction: actionDispatched === false
+          ? 'Read browser_page_events and fresh tabs before inspecting the replacement document once. No control input was dispatched.'
+          : 'Read browser_page_events and fresh tabs without replaying the opener. Treat prior unsaved form state as possibly lost when a document_replaced event is present.',
+      },
+    },
+  );
+}
 
 async function resolveUniqueControl(
     input: BrowserCommandInput<'inspectControl'>['control'],
