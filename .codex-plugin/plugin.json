@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.15.5",
+  "version": "0.15.6",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -49,7 +49,9 @@
       "Postconditioned off-viewport keyboard reach",
       "Unique geometric portal-popup ownership",
       "Generic positioned popup-surface discovery",
+      "Positioned portal option partitioning",
       "Exact hit-tested viewport proof",
+      "Bounded all-match hidden-state proof",
       "Privacy-safe action proprioception",
       "Composable pointer and keyboard motions",
       "Generic form summaries and staged plans",

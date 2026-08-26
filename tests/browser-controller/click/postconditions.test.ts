@@ -156,6 +156,73 @@ describe("BrowserController exact click postcondition reconciliation", () => {
     );
   });
 
+  it("proves every bounded exact match became hidden after one ref click", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Duplicate hidden trigger</title></head><body>
+        <button id="more">More</button>
+        <button hidden>More</button>
+        <section id="expanded" role="region" aria-label="Expanded content" hidden>Complete description</section>
+        <output id="counters">clicks:0</output>
+        <script>
+          let clicks = 0;
+          more.addEventListener('click', () => {
+            clicks += 1;
+            more.hidden = true;
+            expanded.hidden = false;
+            counters.textContent = 'clicks:' + clicks;
+          });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "stage5-browser-all-hidden-matches-"));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/description`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({
+      depth: 6,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 2_000,
+    });
+    const moreRef = observed.snapshot.match(/button "More"[^\n]*\[ref=([^\]]+)\]/)?.[1];
+    expect(moreRef).toBeDefined();
+    if (moreRef === undefined) throw new Error("Description fixture did not expose its exact ref.");
+
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: moreRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: null,
+        expectedHidden: {
+          role: "button",
+          name: "More",
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({
+      dispatch: { clickDispatched: true },
+      postcondition: {
+        passed: true,
+        checks: [{ kind: "visible", passed: true, expected: false, observed: false }],
+      },
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator("#expanded").isVisible()).resolves.toBe(true);
+    await expect(page.locator("#counters").textContent()).resolves.toBe("clicks:1");
+  });
+
   it("accepts exact-option disappearance as terminal success after partial pointer input without replay", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });

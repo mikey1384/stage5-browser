@@ -4,6 +4,7 @@ import { popupRendered } from './rendering.js';
 
 const MAX_POPUP_SURFACES = 50;
 const MAX_POPUP_ANCESTORS = 16;
+const MIN_POPUP_PARTITION_GAP_PX = 32;
 
 export interface DiscoveredPopupSurface {
   locator: Locator | null;
@@ -100,12 +101,53 @@ export async function discoverControlPopupSurfaces(
                 (style.position === 'relative' && style.zIndex !== 'auto') ||
                 candidate.hasAttribute('popover') ||
                 candidate.matches('[aria-modal="true"], dialog[open]');
-              if (positioned) return scrollSurface ?? group ?? candidate;
+              if (positioned) {
+                const options = [...candidate.querySelectorAll(args.optionSelector)]
+                  .filter((option): option is HTMLElement => option instanceof HTMLElement && rendered(option));
+                let partition: HTMLElement | null = null;
+                if (options.length > 1) {
+                  for (
+                    let branch = composedParent(element);
+                    branch !== null && branch !== candidate;
+                    branch = composedParent(branch)
+                  ) {
+                    const branchOptionCount = branch.querySelectorAll(args.optionSelector).length;
+                    if (branchOptionCount > 0 && branchOptionCount < options.length && rendered(branch)) {
+                      partition = branch;
+                    }
+                  }
+                }
+                if (partition !== null) {
+                  const partitionRect = partition.getBoundingClientRect();
+                  const outsideOptions = options.filter((option) => !partition!.contains(option));
+                  const minimumGap = outsideOptions.reduce((minimum, option) => {
+                    const optionRect = option.getBoundingClientRect();
+                    const horizontalGap = Math.max(
+                      0,
+                      partitionRect.left - optionRect.right,
+                      optionRect.left - partitionRect.right,
+                    );
+                    const verticalGap = Math.max(
+                      0,
+                      partitionRect.top - optionRect.bottom,
+                      optionRect.top - partitionRect.bottom,
+                    );
+                    return Math.min(minimum, Math.hypot(horizontalGap, verticalGap));
+                  }, Number.POSITIVE_INFINITY);
+                  if (minimumGap >= args.minimumPartitionGapPx) {
+                    return scrollSurface !== null && partition.contains(scrollSurface)
+                      ? scrollSurface
+                      : partition;
+                  }
+                }
+                return scrollSurface ?? group ?? candidate;
+              }
               candidate = composedParent(candidate);
             }
             return null;
           }, {
             maximumAncestors: MAX_POPUP_ANCESTORS,
+            minimumPartitionGapPx: MIN_POPUP_PARTITION_GAP_PX,
             optionSelector: CONTROL_POPUP_OPTION_SELECTOR,
             semanticSurfaceSelector: CONTROL_POPUP_SELECTOR,
           }),

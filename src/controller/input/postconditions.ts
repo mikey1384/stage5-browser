@@ -2,6 +2,8 @@ import { type ClickPostcondition, type Frame, inspectTargetState, type Locator, 
 import { POPUP_RENDERED_STATE_ROLES, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
+const MAX_HIDDEN_EXPECTATION_MATCHES = 50;
+
 export const inputPostconditionsOperations = {
   async verifyClickPostcondition(
     page: Page,
@@ -252,8 +254,14 @@ export const inputPostconditionsOperations = {
         const count = await locator.count();
         if (count === 0) {
           observed = false;
-        } else if (count === 1) {
-          observed = await locator.isVisible();
+        } else if (count <= MAX_HIDDEN_EXPECTATION_MATCHES) {
+          observed = false;
+          for (let index = 0; index < count; index += 1) {
+            if (await locator.nth(index).isVisible()) {
+              observed = true;
+              break;
+            }
+          }
         }
       } catch {
         // A missing frame or failed observation is not proof that the requested

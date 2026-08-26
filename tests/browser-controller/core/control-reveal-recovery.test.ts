@@ -199,6 +199,103 @@ describe('BrowserController control reveal recovery', () => {
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });
 
+  it('partitions logical option branches inside one broad positioned portal', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; position: relative; min-height: 500px; }
+      button, #portal { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      button { height: 40px; }
+      #prior { top: 24px; }
+      #target { top: 196px; }
+      #portal { top: 64px; height: 212px; display: flex; flex-direction: column; gap: 100px; }
+      .option-branch { height: 32px; border: 1px solid black; }
+      [role="option"] { height: 30px; }
+    </style></head><body>
+      <button id="prior" type="button">Intended use</button>
+      <button id="target" type="button">Funding source</button>
+      <div id="portal">
+        <div id="prior-options" class="option-branch"><div role="option">Treasury</div></div>
+        <div id="target-options" class="option-branch"><div role="option">Company capital</div></div>
+      </div>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of [prior, target]) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+
+    expect(inspected?.inspection).toMatchObject({
+      options: [{ name: 'Company capital' }],
+      reveal: {
+        requested: false,
+        openerActionDispatched: false,
+        preparationActionDispatched: false,
+        popupOpened: true,
+        associationProof: 'spatial',
+        surfaceProof: 'positioned_option_group',
+        renderedPopupCount: 2,
+      },
+    });
+    await expect(page.locator('#prior-options').isVisible()).resolves.toBe(true);
+    await expect(page.locator('#target-options').isVisible()).resolves.toBe(true);
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
+  it('keeps contiguous option wrappers as one positioned popup surface', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; position: relative; min-height: 300px; }
+      #target, #portal { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
+      #target { top: 24px; height: 40px; }
+      #portal { top: 64px; }
+      .option-wrapper, [role="option"] { height: 32px; }
+    </style></head><body>
+      <button id="target" type="button">Funding source</button>
+      <div id="portal">
+        <div class="option-wrapper"><div role="option">Business revenue</div></div>
+        <div class="option-wrapper"><div role="option">Company capital</div></div>
+        <div class="option-wrapper"><div role="option">External financing</div></div>
+      </div>
+      <output id="inputs">0</output>
+      <script>
+        target.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+        target.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+
+    expect(inspected?.inspection.reveal).toMatchObject({
+      openerActionDispatched: false,
+      popupOpened: true,
+      associationProof: 'spatial',
+      surfaceProof: 'positioned_option_group',
+      renderedPopupCount: 1,
+    });
+    expect(inspected?.inspection.options.map(({ name }) => name)).toEqual([
+      'Business revenue',
+      'Company capital',
+      'External financing',
+    ]);
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
   it('fails closed when an unlinked popup has two plausible geometric anchors', async () => {
     const page = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; position: relative; min-height: 400px; }

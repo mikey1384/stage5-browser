@@ -80,7 +80,7 @@ afterEach(async () => {
 });
 
 describe("BrowserController role click activation boundaries", () => {
-  it("does not treat an ambiguous post-click option set as hidden", async () => {
+  it("does not treat multiple visible post-click matches as hidden", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(`<!doctype html><html><head><title>Ambiguous hidden option effect</title></head><body>
@@ -137,7 +137,7 @@ describe("BrowserController role click activation boundaries", () => {
       details: {
         clickDispatched: true,
         checks: [
-          { kind: "visible", passed: false, expected: false, observed: null },
+          { kind: "visible", passed: false, expected: false, observed: true },
         ],
       },
     });
