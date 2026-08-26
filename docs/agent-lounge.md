@@ -79,6 +79,8 @@ Release 0.15.5 changes MCP host behavior to 2 while retaining catalog 13, protoc
 
 Release 0.15.6 is compatible with the 0.15.5 host: host behavior 2, protocol 12, catalog 13, and 54 tools are unchanged. Adopt the worker only at the current safe boundary, require version 0.15.6 with `restartRequired: false`, and discard old refs/inspection IDs. Finance keeps the exact Brave page frozen until one new passive `revealOptions=false` inspection is explicitly released; broad positioned portals now partition only gap-proven option branches. YouTube must not replay its already-successful expansion click; bounded duplicate hidden matches are now reconciled as hidden only when every exact match is hidden. Any visible match or over-limit/failed observation remains closed.
 
+Release 0.15.7 is compatible with the same host contract. It resolves several non-structural popup owners only when one has a decisive normalized edge-gap lead; structural contradictions and positional ties remain zero-input ambiguous. Finance keeps its exact Brave state frozen until the coordinator releases one new passive `revealOptions=false` verification after worker 0.15.7 adoption. YouTube has no replay or new action gate from this release.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.15.0 catalog.
 - Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.15.0 catalog.
 

@@ -296,7 +296,7 @@ describe('BrowserController control reveal recovery', () => {
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });
 
-  it('fails closed when an unlinked popup has two plausible geometric anchors', async () => {
+  it('associates an unlinked popup with its uniquely nearest plausible anchor', async () => {
     const page = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; position: relative; min-height: 400px; }
       button, .popup { position: absolute; left: 24px; width: 240px; box-sizing: border-box; }
@@ -308,6 +308,47 @@ describe('BrowserController control reveal recovery', () => {
       <button id="first" type="button">First source</button>
       <button id="target" type="button">Funding source</button>
       <div id="options" class="popup"><div role="option">Company capital</div></div>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of [first, target]) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+
+    expect(inspected?.inspection).toMatchObject({
+      options: [{ name: 'Company capital' }],
+      reveal: {
+        openerActionDispatched: false,
+        popupOpened: true,
+        associationProof: 'spatial',
+        renderedPopupCount: 1,
+      },
+    });
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
+  it('fails closed when two popup anchors are positionally tied', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; position: relative; min-height: 200px; }
+      button, .popup { position: absolute; top: 40px; height: 40px; box-sizing: border-box; }
+      #first { left: 20px; width: 100px; }
+      #options { left: 120px; width: 80px; border: 1px solid black; }
+      #target { left: 200px; width: 100px; }
+    </style></head><body>
+      <button id="first" type="button">First source</button>
+      <div id="options" class="popup"><div role="option">Company capital</div></div>
+      <button id="target" type="button">Funding source</button>
       <output id="inputs">0</output>
       <script>
         for (const control of [first, target]) {

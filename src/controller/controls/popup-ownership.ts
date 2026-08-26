@@ -12,6 +12,7 @@ const POPUP_OWNER_SELECTOR = [
   'input[list]',
 ].join(', ');
 const MAX_POPUP_OWNERS = 100;
+const MIN_NORMALIZED_SPATIAL_LEAD = 0.1;
 
 export type PopupOwnerResolution =
   | {
@@ -28,6 +29,17 @@ interface OwnerCandidate {
   focused: boolean;
   structural: boolean;
   spatial: boolean;
+  spatialDistance: number;
+}
+
+function uniquelyNearestSpatialOwner(candidates: OwnerCandidate[]): OwnerCandidate | null {
+  if (candidates.length === 0) return null;
+  const ranked = [...candidates].sort((left, right) => left.spatialDistance - right.spatialDistance);
+  const nearest = ranked[0]!;
+  const next = ranked[1];
+  return next === undefined || next.spatialDistance - nearest.spatialDistance > MIN_NORMALIZED_SPATIAL_LEAD
+    ? nearest
+    : null;
 }
 
 export async function resolveControlPopupOwner(
@@ -89,6 +101,10 @@ export async function resolveControlPopupOwner(
             : controlRect.left >= surfaceRect.right
               ? controlRect.left - surfaceRect.right
               : 0;
+          const spatialDistance = Math.hypot(
+            horizontalGap / Math.max(1, Math.min(controlRect.width, surfaceRect.width)),
+            verticalGap / Math.max(1, Math.min(controlRect.height, surfaceRect.height)),
+          );
           const spatial = !surface.contains(control) &&
             rendered(controlRect, controlStyle) && rendered(surfaceRect, surfaceStyle) &&
             ((horizontalRatio >= 0.5 && verticalGap <= Math.max(48, controlRect.height * 2)) ||
@@ -101,6 +117,7 @@ export async function resolveControlPopupOwner(
               || control.contains(control.ownerDocument.activeElement),
             expanded: control.getAttribute('aria-expanded') === 'true',
             spatial,
+            spatialDistance,
           };
         }, popup),
         Math.max(1, remainingUntil(deadlineAt)),
@@ -127,10 +144,12 @@ export async function resolveControlPopupOwner(
         : expanded.length > 0
           ? expanded
           : spatial;
-    if (pool.length !== 1) {
-      return { kind: pool.length > 1 ? 'ambiguous' : 'missing' };
-    }
-    const selected = pool[0]!;
+    const selected = pool.length === 1
+      ? pool[0]!
+      : structural.length === 0
+        ? uniquelyNearestSpatialOwner(pool)
+        : null;
+    if (selected === null) return { kind: pool.length > 1 ? 'ambiguous' : 'missing' };
     const targetMatch = await boundedValue(
       selected.handle.evaluate((owner, intended) => owner === intended, target),
       Math.max(1, remainingUntil(deadlineAt)),
