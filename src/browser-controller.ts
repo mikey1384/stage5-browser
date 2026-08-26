@@ -2087,51 +2087,66 @@ export class BrowserController {
     let preparedTarget: PreparedObservedClickTarget | null = null;
     let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
     try {
-      preparedTarget = await this.prepareRoleClickTarget(
-        page,
-        locator,
-        actionStartedAt,
-        actionDeadlineAt,
-        input.role,
-        input.name,
-        input.postcondition,
-      );
-      try {
-        dispatchEvidence = await this.dispatchPreparedObservedClick(
+      let priorActivation: SanitizedPageActivationEvidence | null = null;
+      for (let preparationAttempt = 0; ; preparationAttempt += 1) {
+        preparedTarget = await this.prepareRoleClickTarget(
           page,
-          preparedTarget,
+          locator,
           actionStartedAt,
           actionDeadlineAt,
-          deadlineAt,
-          'click_by_role',
-        );
-      } catch (error) {
-        const reconciled = await this.reconcilePartialClickEffect(
-          page,
-          frame,
-          locator,
+          input.role,
+          input.name,
           input.postcondition,
-          error,
-          deadlineAt,
+          (priorActivation?.attemptCount ?? 0) + 1,
+          priorActivation?.nativeWindow,
         );
-        if (reconciled === null) throw error;
-        dispatchEvidence = reconciled.dispatchEvidence;
-        this.pageDiagnostics.recordAction(
-          page,
-          this.reconciledPartialEffectDiagnostic(
-            'click_by_role',
+        try {
+          dispatchEvidence = await this.dispatchPreparedObservedClick(
             page,
-            preparedTarget.targetState,
+            preparedTarget,
             actionStartedAt,
-            reconciled,
-          ),
-        );
-        this.lastKnownUrl = page.url();
-        return {
-          page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
-          frame: this.frameSummary(frame, page),
-          postcondition: reconciled.postcondition,
-        };
+            actionDeadlineAt,
+            deadlineAt,
+            'click_by_role',
+          );
+          break;
+        } catch (error) {
+          if (
+            preparationAttempt === 0 &&
+            this.canRecoverDispatchTimeActivationLoss(error, actionDeadlineAt)
+          ) {
+            priorActivation = preparedTarget.pageActivation;
+            await preparedTarget.handle.dispose().catch(() => undefined);
+            preparedTarget = null;
+            continue;
+          }
+          const reconciled = await this.reconcilePartialClickEffect(
+            page,
+            frame,
+            locator,
+            input.postcondition,
+            error,
+            deadlineAt,
+          );
+          if (reconciled === null) throw error;
+          dispatchEvidence = reconciled.dispatchEvidence;
+          this.pageDiagnostics.recordAction(
+            page,
+            this.reconciledPartialEffectDiagnostic(
+              'click_by_role',
+              page,
+              preparedTarget.targetState,
+              actionStartedAt,
+              reconciled,
+            ),
+          );
+          this.lastKnownUrl = page.url();
+          return {
+            page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
+            frame: this.frameSummary(frame, page),
+            postcondition: reconciled.postcondition,
+          };
+        }
       }
       const postcondition = await this.verifyClickPostcondition(
         page,
@@ -2211,91 +2226,111 @@ export class BrowserController {
     let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
     this.pageDiagnostics.beginAction(page, actionStartedAt);
     try {
-      const pageActivation = await this.primeSelectedPageForTargetPreparation(
-        page,
-        actionDeadlineAt,
-        actionStartedAt,
-        'click_by_ref',
-      );
-      const resolution = await this.resolveObservedReferenceAfterActivation(
-        frame,
-        observed,
-        input.ref,
-        actionDeadlineAt,
-      );
-      if (resolution.kind !== 'resolved') {
-        const ambiguous = resolution.kind === 'ambiguous';
-        const timedOut = resolution.kind === 'timeout';
-        const scopeChanged = resolution.kind === 'scope_changed';
-        this.failClickBeforeDispatch(
+      const prepareTarget = async (
+        priorActivation: SanitizedPageActivationEvidence | null,
+      ): Promise<PreparedObservedClickTarget> => {
+        const pageActivation = await this.primeSelectedPageForTargetPreparation(
           page,
-          actionStartedAt,
-          null,
-          ambiguous ? 'ambiguous_target' : timedOut ? 'timeout' : 'target_missing',
-          ambiguous
-            ? 'reference_semantic_rebind_ambiguous'
-            : timedOut
-              ? 'reference_resolution_deadline_expired'
-              : scopeChanged
-                ? 'snapshot_scope_changed'
-                : 'reference_resolution_changed',
-          ambiguous
-            ? 'More than one live element matched the fresh reference semantic inside its retained snapshot scope.'
-            : timedOut
-              ? 'The fresh reference could not be resolved before the shared click deadline.'
-              : scopeChanged
-                ? 'The retained snapshot scope changed before the fresh reference could be resolved.'
-                : 'The fresh reference no longer resolves and no unique semantic replacement exists inside its retained snapshot scope.',
-          'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
-          ambiguous ? 'AMBIGUOUS_TARGET' : timedOut ? 'OPERATION_FAILED' : 'TARGET_NOT_FOUND',
-        );
-      }
-      preparedTarget = await this.prepareObservedClickTarget(
-        page,
-        frame,
-        resolution.locator,
-        actionStartedAt,
-        actionDeadlineAt,
-        input.postcondition,
-        pageActivation,
-        resolution.handle,
-      );
-      try {
-        dispatchEvidence = await this.dispatchPreparedObservedClick(
-          page,
-          preparedTarget,
-          actionStartedAt,
           actionDeadlineAt,
-          deadlineAt,
+          actionStartedAt,
           'click_by_ref',
+          (priorActivation?.attemptCount ?? 0) + 1,
+          priorActivation?.nativeWindow,
         );
-      } catch (error) {
-        const reconciled = await this.reconcilePartialClickEffect(
+        const resolution = await this.resolveObservedReferenceAfterActivation(
+          frame,
+          observed,
+          input.ref,
+          actionDeadlineAt,
+        );
+        if (resolution.kind !== 'resolved') {
+          const ambiguous = resolution.kind === 'ambiguous';
+          const timedOut = resolution.kind === 'timeout';
+          const scopeChanged = resolution.kind === 'scope_changed';
+          this.failClickBeforeDispatch(
+            page,
+            actionStartedAt,
+            null,
+            ambiguous ? 'ambiguous_target' : timedOut ? 'timeout' : 'target_missing',
+            ambiguous
+              ? 'reference_semantic_rebind_ambiguous'
+              : timedOut
+                ? 'reference_resolution_deadline_expired'
+                : scopeChanged
+                  ? 'snapshot_scope_changed'
+                  : 'reference_resolution_changed',
+            ambiguous
+              ? 'More than one live element matched the fresh reference semantic inside its retained snapshot scope.'
+              : timedOut
+                ? 'The fresh reference could not be resolved before the shared click deadline.'
+                : scopeChanged
+                  ? 'The retained snapshot scope changed before the fresh reference could be resolved.'
+                  : 'The fresh reference no longer resolves and no unique semantic replacement exists inside its retained snapshot scope.',
+            'Take one fresh semantic snapshot; Stage5 Browser confirmed that no input was dispatched.',
+            ambiguous ? 'AMBIGUOUS_TARGET' : timedOut ? 'OPERATION_FAILED' : 'TARGET_NOT_FOUND',
+          );
+        }
+        return this.prepareObservedClickTarget(
           page,
           frame,
-          preparedTarget.locator,
+          resolution.locator,
+          actionStartedAt,
+          actionDeadlineAt,
           input.postcondition,
-          error,
-          deadlineAt,
+          pageActivation,
+          resolution.handle,
         );
-        if (reconciled === null) throw error;
-        dispatchEvidence = reconciled.dispatchEvidence;
-        this.pageDiagnostics.recordAction(
-          page,
-          this.reconciledPartialEffectDiagnostic(
-            'click_by_ref',
+      };
+      let priorActivation: SanitizedPageActivationEvidence | null = null;
+      for (let preparationAttempt = 0; ; preparationAttempt += 1) {
+        preparedTarget = await prepareTarget(priorActivation);
+        try {
+          dispatchEvidence = await this.dispatchPreparedObservedClick(
             page,
-            preparedTarget.targetState,
+            preparedTarget,
             actionStartedAt,
-            reconciled,
-          ),
-        );
-        this.lastKnownUrl = page.url();
-        return {
-          page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
-          frame: this.frameSummary(frame, page),
-          postcondition: reconciled.postcondition,
-        };
+            actionDeadlineAt,
+            deadlineAt,
+            'click_by_ref',
+          );
+          break;
+        } catch (error) {
+          if (
+            preparationAttempt === 0 &&
+            this.canRecoverDispatchTimeActivationLoss(error, actionDeadlineAt)
+          ) {
+            priorActivation = preparedTarget.pageActivation;
+            await preparedTarget.handle.dispose().catch(() => undefined);
+            preparedTarget = null;
+            continue;
+          }
+          const reconciled = await this.reconcilePartialClickEffect(
+            page,
+            frame,
+            preparedTarget.locator,
+            input.postcondition,
+            error,
+            deadlineAt,
+          );
+          if (reconciled === null) throw error;
+          dispatchEvidence = reconciled.dispatchEvidence;
+          this.pageDiagnostics.recordAction(
+            page,
+            this.reconciledPartialEffectDiagnostic(
+              'click_by_ref',
+              page,
+              preparedTarget.targetState,
+              actionStartedAt,
+              reconciled,
+            ),
+          );
+          this.lastKnownUrl = page.url();
+          return {
+            page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
+            frame: this.frameSummary(frame, page),
+            postcondition: reconciled.postcondition,
+          };
+        }
       }
       try {
         const postcondition = await this.verifyClickPostcondition(
@@ -6893,6 +6928,8 @@ export class BrowserController {
     role: string,
     name: string,
     postcondition: ClickPostcondition | null,
+    activationAttemptCount = 1,
+    priorNativeWindow?: SanitizedNativeWindowActivationEvidence,
   ): Promise<PreparedObservedClickTarget> {
     let lastTargetState = await this.requireUniqueClickTarget(
       page,
@@ -6907,6 +6944,8 @@ export class BrowserController {
       actionDeadlineAt,
       startedAt,
       'click_by_role',
+      activationAttemptCount,
+      priorNativeWindow,
     );
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -7032,12 +7071,14 @@ export class BrowserController {
     actionDeadlineAt: number,
     startedAt: string,
     action: SanitizedActionDiagnostic['action'],
+    attemptCount = 1,
+    priorNativeWindow?: SanitizedNativeWindowActivationEvidence,
   ): Promise<SanitizedPageActivationEvidence> {
     let pageActivation = await boundedValue(
-      this.activateSelectedPageForInput(page, 1),
+      this.activateSelectedPageForInput(page, attemptCount, priorNativeWindow),
       Math.max(1, remainingUntil(actionDeadlineAt)),
       {
-        attemptCount: 1,
+        attemptCount,
         controllerSelected: this.preferredPage() === page,
         bringToFrontAttempted: false,
         bringToFrontSucceeded: false,
@@ -7045,7 +7086,9 @@ export class BrowserController {
         visibilityAfter: 'unknown',
         documentFocusedBefore: null,
         documentFocusedAfter: null,
-        nativeWindow: this.nativeWindowActivationNotRequired(),
+        nativeWindow: priorNativeWindow?.attempted === true
+          ? priorNativeWindow
+          : this.nativeWindowActivationNotRequired(),
       },
     );
     const failBeforeTargetPreparation = (
@@ -8216,6 +8259,36 @@ export class BrowserController {
     return evidence.controllerSelected &&
       (!evidence.bringToFrontAttempted || evidence.bringToFrontSucceeded) &&
       evidence.visibilityAfter === 'visible';
+  }
+
+  private canRecoverDispatchTimeActivationLoss(
+    error: unknown,
+    actionDeadlineAt: number,
+  ): error is Stage5BrowserError {
+    if (
+      remainingUntil(actionDeadlineAt) <= CLICK_REF_REBIND_SETTLE_MS ||
+      !(error instanceof Stage5BrowserError) ||
+      error.code !== 'OPERATION_FAILED' ||
+      error.details?.reason !== 'page_not_active' ||
+      error.details.actionDispatched !== false ||
+      error.details.clickDispatched !== false
+    ) {
+      return false;
+    }
+    const rawEvidence = error.details.dispatchEvidence;
+    if (rawEvidence === null || typeof rawEvidence !== 'object') return false;
+    const evidence = rawEvidence as Partial<SanitizedClickDispatchEvidence>;
+    return evidence.guardExpired === false &&
+      evidence.trustedEventObserved === false &&
+      evidence.keyDownOnTarget === false &&
+      evidence.keyUpOnTarget === false &&
+      evidence.pointerDownOnTarget === false &&
+      evidence.mouseDownOnTarget === false &&
+      evidence.pointerUpOnTarget === false &&
+      evidence.mouseUpOnTarget === false &&
+      evidence.clickOnTarget === false &&
+      evidence.misdirectedEventBlocked === false &&
+      evidence.targetStateChangeBlocked === false;
   }
 
   private async freshMainFrameTargetPoint(

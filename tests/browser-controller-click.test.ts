@@ -1862,6 +1862,105 @@ describe("BrowserController exact input", () => {
     });
   });
 
+  it("reprepares a unique role target once after zero-dispatch activation loss", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Late role activation loss</title></head><body>
+        <button id="target" type="button" aria-selected="false"
+          onclick="this.setAttribute('aria-selected', 'true'); document.querySelector('#counter').textContent = 'clicks:1'">
+          Confirm business use
+        </button>
+        <output id="counter">clicks:0</output>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-late-role-activation-"),
+    );
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const internals = controller as unknown as {
+      activateSelectedPageForInput: (
+        page: Page,
+        attemptCount: number,
+      ) => Promise<SanitizedPageActivationEvidence>;
+      nativeWindowActivationNotRequired: () =>
+        SanitizedPageActivationEvidence["nativeWindow"];
+      observePageActivation: () => Promise<{
+        documentFocused: boolean | null;
+        visibility: "hidden" | "prerender" | "unknown" | "visible";
+      }>;
+    };
+    const inactiveNativeEvidence =
+      internals.nativeWindowActivationNotRequired();
+    const activation = vi
+      .spyOn(internals, "activateSelectedPageForInput")
+      .mockImplementation(async (_page, attemptCount) => {
+        const reactivating = attemptCount === 2;
+        return {
+          attemptCount,
+          controllerSelected: true,
+          bringToFrontAttempted: reactivating,
+          bringToFrontSucceeded: reactivating,
+          visibilityBefore: reactivating ? "hidden" : "visible",
+          visibilityAfter: "visible",
+          documentFocusedBefore: false,
+          documentFocusedAfter: reactivating,
+          nativeWindow: reactivating
+            ? {
+                ...inactiveNativeEvidence,
+                required: true,
+                attempted: true,
+                result: "activated",
+              }
+            : inactiveNativeEvidence,
+        };
+      });
+    vi.spyOn(internals, "observePageActivation")
+      .mockResolvedValueOnce({
+        documentFocused: false,
+        visibility: "hidden",
+      })
+      .mockResolvedValue({
+        documentFocused: true,
+        visibility: "visible",
+      });
+
+    await expect(
+      controller.clickByRole({
+        role: "button",
+        name: "Confirm business use",
+        exact: true,
+        frameId: null,
+        postcondition: {
+          expectedUrl: null,
+          expectedSelected: true,
+          expectedVisible: null,
+          timeoutMs: 1_000,
+        },
+        timeoutMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect(activation).toHaveBeenCalledTimes(2);
+    expect(activation).toHaveBeenLastCalledWith(page, 2, expect.any(Object));
+    await expect(page.locator("#counter").textContent()).resolves.toBe(
+      "clicks:1",
+    );
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: "click_by_role",
+      outcome: "succeeded",
+      actionDispatched: true,
+      clickDispatched: true,
+    });
+  });
+
   it("re-resolves a unique role target after page activation replaces it before input", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -2273,6 +2372,281 @@ describe("BrowserController exact input", () => {
       actionDispatched: true,
       clickDispatched: true,
     });
+  });
+
+  it("reactivates and rebinds once when the selected page becomes hidden before dispatch", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Late activation loss</title></head><body>
+        <div role="listbox" aria-label="Business use">
+          <div id="target" role="option" aria-selected="false"
+            onclick="this.setAttribute('aria-selected', 'true'); document.querySelector('#counter').textContent = 'clicks:1 replacements:1'">
+            Proprietary trading / investing
+          </div>
+          <output id="counter">clicks:0 replacements:0</output>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-late-activation-rebind-"),
+    );
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({
+      depth: 6,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 2_000,
+    });
+    const targetRef = observed.snapshot.match(
+      /option "Proprietary trading \/ investing"[^\n]*\[ref=([^\]]+)\]/,
+    )?.[1];
+    expect(targetRef).toBeDefined();
+    if (targetRef === undefined) {
+      throw new Error("Late-activation fixture did not expose its option ref.");
+    }
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const internals = controller as unknown as {
+      activateSelectedPageForInput: (
+        page: Page,
+        attemptCount: number,
+      ) => Promise<SanitizedPageActivationEvidence>;
+      observePageActivation: () => Promise<{
+        documentFocused: boolean | null;
+        visibility: "hidden" | "prerender" | "unknown" | "visible";
+      }>;
+    };
+    let activationCount = 0;
+    const activation = vi
+      .spyOn(internals, "activateSelectedPageForInput")
+      .mockImplementation(async (_page, attemptCount) => {
+        activationCount += 1;
+        if (activationCount === 2) {
+          void page
+            .waitForTimeout(25)
+            .then(() =>
+              page.locator("#target").evaluate((target) => {
+                target.replaceWith(target.cloneNode(true));
+                const counter = document.querySelector("#counter");
+                if (counter !== null)
+                  counter.textContent = "clicks:0 replacements:1";
+              }),
+            )
+            .catch(() => undefined);
+        }
+        const reactivating = activationCount === 2;
+        return {
+          attemptCount,
+          controllerSelected: true,
+          bringToFrontAttempted: reactivating,
+          bringToFrontSucceeded: reactivating,
+          visibilityBefore: reactivating ? "hidden" : "visible",
+          visibilityAfter: "visible",
+          documentFocusedBefore: false,
+          documentFocusedAfter: reactivating,
+          nativeWindow: {
+            required: reactivating,
+            attempted: reactivating,
+            supported: true,
+            ownedProcessAvailable: true,
+            ownedProcessRunning: true,
+            targetWindowResolved: true,
+            windowStateBefore: "normal",
+            normalizationAttempted: false,
+            normalizationSucceeded: null,
+            applicationActivationAttempted: reactivating,
+            applicationActivationSucceeded: reactivating,
+            applicationHiddenBefore: false,
+            unhideAttempted: false,
+            unhideSucceeded: null,
+            activationRequestAccepted: reactivating,
+            frontProcessFallbackAttempted: false,
+            frontProcessFallbackProcessResolved: null,
+            frontProcessFallbackRequestSucceeded: null,
+            applicationFrontmostAfter: true,
+            applicationHiddenAfter: false,
+            result: reactivating ? "activated" : "not_required",
+          },
+        };
+      });
+    const observeActivation = vi
+      .spyOn(internals, "observePageActivation")
+      .mockResolvedValueOnce({
+        documentFocused: false,
+        visibility: "hidden",
+      })
+      .mockResolvedValue({
+        documentFocused: true,
+        visibility: "visible",
+      });
+
+    await expect(
+      controller.clickRef({
+        snapshotId: observed.snapshotId,
+        ref: targetRef,
+        frameId: null,
+        postcondition: {
+          expectedUrl: null,
+          expectedSelected: true,
+          expectedVisible: null,
+          timeoutMs: 1_000,
+        },
+        timeoutMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect(activation).toHaveBeenCalledTimes(2);
+    expect(activation).toHaveBeenLastCalledWith(page, 2, expect.any(Object));
+    expect(observeActivation).toHaveBeenCalledTimes(3);
+    await expect(page.locator("#counter").textContent()).resolves.toBe(
+      "clicks:1 replacements:1",
+    );
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      action: "click_by_ref",
+      outcome: "succeeded",
+      actionDispatched: true,
+      clickDispatched: true,
+      dispatchEvidence: {
+        pageActivation: {
+          attemptCount: 2,
+          bringToFrontAttempted: true,
+          visibilityBefore: "hidden",
+          visibilityAfter: "visible",
+          nativeWindow: { attempted: true, result: "activated" },
+        },
+      },
+    });
+  });
+
+  it("fails closed when late reactivation makes a fresh ref semantically ambiguous", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Late ambiguous activation</title></head><body>
+        <div role="listbox" aria-label="Business use">
+          <div id="target" role="option" onclick="document.querySelector('#counter').textContent = 'clicks:1'">
+            Proprietary trading / investing
+          </div>
+          <output id="counter">clicks:0</output>
+        </div>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-late-activation-ambiguous-"),
+    );
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({
+      depth: 6,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 2_000,
+    });
+    const targetRef = observed.snapshot.match(
+      /option "Proprietary trading \/ investing"[^\n]*\[ref=([^\]]+)\]/,
+    )?.[1];
+    expect(targetRef).toBeDefined();
+    if (targetRef === undefined) {
+      throw new Error("Late-ambiguity fixture did not expose its option ref.");
+    }
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const internals = controller as unknown as {
+      activateSelectedPageForInput: (
+        page: Page,
+        attemptCount: number,
+      ) => Promise<SanitizedPageActivationEvidence>;
+      observePageActivation: () => Promise<{
+        documentFocused: boolean | null;
+        visibility: "hidden" | "prerender" | "unknown" | "visible";
+      }>;
+    };
+    let activationCount = 0;
+    vi.spyOn(internals, "activateSelectedPageForInput").mockImplementation(
+      async (_page, attemptCount) => {
+        activationCount += 1;
+        if (activationCount === 2) {
+          await page.locator("#target").evaluate((target) => {
+            target.replaceWith(target.cloneNode(true), target.cloneNode(true));
+          });
+        }
+        const reactivating = activationCount === 2;
+        return {
+          attemptCount,
+          controllerSelected: true,
+          bringToFrontAttempted: reactivating,
+          bringToFrontSucceeded: reactivating,
+          visibilityBefore: reactivating ? "hidden" : "visible",
+          visibilityAfter: "visible",
+          documentFocusedBefore: false,
+          documentFocusedAfter: reactivating,
+          nativeWindow: {
+            required: reactivating,
+            attempted: reactivating,
+            supported: true,
+            ownedProcessAvailable: true,
+            ownedProcessRunning: true,
+            targetWindowResolved: true,
+            windowStateBefore: "normal",
+            normalizationAttempted: false,
+            normalizationSucceeded: null,
+            applicationActivationAttempted: reactivating,
+            applicationActivationSucceeded: reactivating,
+            applicationHiddenBefore: false,
+            unhideAttempted: false,
+            unhideSucceeded: null,
+            activationRequestAccepted: reactivating,
+            frontProcessFallbackAttempted: false,
+            frontProcessFallbackProcessResolved: null,
+            frontProcessFallbackRequestSucceeded: null,
+            applicationFrontmostAfter: true,
+            applicationHiddenAfter: false,
+            result: reactivating ? "activated" : "not_required",
+          },
+        };
+      },
+    );
+    vi.spyOn(internals, "observePageActivation")
+      .mockResolvedValueOnce({
+        documentFocused: false,
+        visibility: "hidden",
+      })
+      .mockResolvedValue({
+        documentFocused: true,
+        visibility: "visible",
+      });
+
+    await expect(
+      controller.clickRef({
+        snapshotId: observed.snapshotId,
+        ref: targetRef,
+        frameId: null,
+        postcondition: null,
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: "AMBIGUOUS_TARGET",
+      details: {
+        reason: "reference_semantic_rebind_ambiguous",
+        actionDispatched: false,
+        clickDispatched: false,
+      },
+    });
+    expect(activationCount).toBe(2);
+    await expect(page.locator("#counter").textContent()).resolves.toBe(
+      "clicks:0",
+    );
   });
 
   it("fails closed when activation creates multiple in-scope semantic replacements for a fresh ref", async () => {
