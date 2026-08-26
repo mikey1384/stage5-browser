@@ -92,6 +92,8 @@ describe("BrowserController tab capabilities", () => {
     const inspected = await controller.inspectTab({
       tabId: feedTab.tabId,
       depth: 8,
+      temporaryActivation: false,
+      waitFor: null,
       timeoutMs: 5_000,
     });
     expect(inspected).toMatchObject({
@@ -132,6 +134,8 @@ describe("BrowserController tab capabilities", () => {
     await expect(controller.inspectTab({
       tabId: feedTab.tabId,
       depth: 8,
+      temporaryActivation: false,
+      waitFor: null,
       timeoutMs: 5_000,
     })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
       code: "TARGET_NOT_FOUND",
@@ -140,5 +144,146 @@ describe("BrowserController tab capabilities", () => {
         actionDispatched: false,
       },
     });
+  });
+
+  it("temporarily activates a hidden loading tab and proves exact selection restoration", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(
+        "<!doctype html><html><head><title>Bounded tab fixture</title></head><body>Fixture</body></html>",
+      );
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-temporary-tab-activation-"),
+    );
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/placeholder`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    await controller.open({
+      url: `http://127.0.0.1:${port}/feed`,
+      newTab: true,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const internals = controller as unknown as {
+      activePage: Page;
+      context: { pages: () => Page[] };
+    };
+    const feedPage = internals.activePage;
+    await controller.open({
+      url: `http://127.0.0.1:${port}/draft`,
+      newTab: true,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const draftPage = internals.activePage;
+    await draftPage.evaluate(() => {
+      document.title = "Preserved draft";
+      document.body.innerHTML = '<div role="dialog" aria-modal="true"><h1>Unpublished draft</h1></div>';
+    });
+    await feedPage.evaluate(() => {
+      const fixtureWindow = window as typeof window & {
+        __fixtureVisibility?: "visible" | "hidden";
+        __setFixtureVisibility?: (state: "visible" | "hidden") => void;
+      };
+      fixtureWindow.__fixtureVisibility = "hidden";
+      fixtureWindow.__setFixtureVisibility = (state) => {
+        fixtureWindow.__fixtureVisibility = state;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => fixtureWindow.__fixtureVisibility,
+      });
+      document.title = "Prior posts";
+      document.body.innerHTML = '<main><div role="status">Loading...</div></main>';
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        window.setTimeout(() => {
+          document.body.innerHTML = '<main><article><h1>Prior posts loaded</h1><p>Read-only context</p></article></main>';
+        }, 100);
+      });
+    });
+
+    const listed = await controller.tabs();
+    const feedIndex = internals.context.pages().indexOf(feedPage);
+    const draftIndex = internals.context.pages().indexOf(draftPage);
+    const feedTab = listed.pages.find((page) => page.index === feedIndex);
+    expect(feedTab).toBeDefined();
+    if (feedTab === undefined) {
+      throw new Error("Temporary-activation fixture did not expose the feed tab capability.");
+    }
+    const originalFeedBringToFront = feedPage.bringToFront.bind(feedPage);
+    const originalDraftBringToFront = draftPage.bringToFront.bind(draftPage);
+    const bringFeedToFront = vi.spyOn(feedPage, "bringToFront").mockImplementation(async () => {
+      await originalFeedBringToFront();
+      await feedPage.evaluate(() => {
+        (window as typeof window & {
+          __setFixtureVisibility?: (state: "visible" | "hidden") => void;
+        }).__setFixtureVisibility?.("visible");
+      });
+    });
+    const restoreDraftToFront = vi.spyOn(draftPage, "bringToFront").mockImplementation(async () => {
+      await originalDraftBringToFront();
+      await feedPage.evaluate(() => {
+        (window as typeof window & {
+          __setFixtureVisibility?: (state: "visible" | "hidden") => void;
+        }).__setFixtureVisibility?.("hidden");
+      });
+    });
+
+    const passive = await controller.inspectTab({
+      tabId: feedTab.tabId,
+      depth: 8,
+      temporaryActivation: false,
+      waitFor: null,
+      timeoutMs: 5_000,
+    });
+    expect(passive).toMatchObject({
+      activationAttempted: false,
+      activationRestored: null,
+      rendererVisibility: "hidden",
+      rendererVisibilityAfterRestore: "hidden",
+      loadingWait: null,
+      controllerSelectionUnchanged: true,
+    });
+    expect(passive.snapshot).toContain("Loading...");
+    expect(bringFeedToFront).not.toHaveBeenCalled();
+    expect(restoreDraftToFront).not.toHaveBeenCalled();
+
+    const activated = await controller.inspectTab({
+      tabId: feedTab.tabId,
+      depth: 8,
+      temporaryActivation: true,
+      waitFor: { condition: "either", timeoutMs: 2_000 },
+      timeoutMs: 5_000,
+    });
+    expect(activated).toMatchObject({
+      activationAttempted: true,
+      activationRestored: true,
+      rendererVisibility: "visible",
+      rendererVisibilityAfterRestore: "hidden",
+      loadingWait: {
+        requested: true,
+        satisfied: true,
+      },
+      refCount: 0,
+      elementActionsAvailable: false,
+      controllerSelectionUnchanged: true,
+      warnings: [],
+    });
+    expect(activated.snapshot).toContain("Prior posts loaded");
+    expect(activated.snapshot).toContain("Read-only context");
+    expect(activated.snapshot).not.toContain("[ref=");
+    expect(bringFeedToFront).toHaveBeenCalledTimes(1);
+    expect(restoreDraftToFront).toHaveBeenCalledTimes(1);
+    expect((await controller.tabs()).activePageIndex).toBe(draftIndex);
+    expect(await draftPage.evaluate(() => document.visibilityState)).toBe("visible");
+    expect(await feedPage.evaluate(() => document.visibilityState)).toBe("hidden");
   });
 });

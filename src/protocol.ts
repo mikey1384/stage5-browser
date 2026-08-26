@@ -397,19 +397,31 @@ export interface BrowserCommandMap {
     output: { page: BrowserTabSummary; authenticationTargetUpdated: boolean };
   };
   inspectTab: {
-    input: { tabId: string; depth: number; timeoutMs: number };
+    input: {
+      tabId: string;
+      depth: number;
+      temporaryActivation: boolean;
+      waitFor: { condition: ScrollWaitCondition; timeoutMs: number } | null;
+      timeoutMs: number;
+    };
     output: {
       page: BrowserTabSummary;
       snapshot: string;
       scope: 'document';
       refCount: 0;
       elementActionsAvailable: false;
-      activationAttempted: false;
+      activationAttempted: boolean;
+      activationRestored: boolean | null;
       rendererVisibility: 'visible' | 'hidden' | 'unknown';
+      rendererVisibilityAfterRestore: 'visible' | 'hidden' | 'unknown';
+      loadingWait: ScrollWaitResult | null;
       visibleModalCount: number;
       controllerSelectionUnchanged: boolean;
       warnings: Array<{
-        code: 'visible_modal_in_document' | 'controller_selection_changed_externally';
+        code:
+          | 'visible_modal_in_document'
+          | 'controller_selection_changed_externally'
+          | 'loading_expectation_not_satisfied';
         message: string;
         suggestedAction: string;
       }>;

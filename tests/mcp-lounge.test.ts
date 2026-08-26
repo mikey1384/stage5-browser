@@ -93,6 +93,15 @@ describe('MCP Agent Lounge', () => {
     });
     expect((selectTabTool?.inputSchema as { properties?: Record<string, unknown> } | undefined)
       ?.properties).not.toHaveProperty('index');
+    const inspectTabTool = tools.tools.find((tool) => tool.name === 'browser_inspect_tab');
+    expect(inspectTabTool?.inputSchema).toMatchObject({
+      required: ['tabId'],
+      properties: {
+        tabId: expect.objectContaining({ type: 'string' }),
+        temporaryActivation: expect.objectContaining({ type: 'boolean', default: false }),
+        waitFor: expect.any(Object),
+      },
+    });
 
     for (const [connection, agentId, displayName, provider] of [
       [browser, 'browser-agent', 'Browser Agent', 'codex'],

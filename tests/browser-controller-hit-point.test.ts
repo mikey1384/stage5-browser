@@ -110,4 +110,81 @@ describe("BrowserController exact hit points", () => {
     });
     expect(await page.locator("#counter").innerText()).toBe("clicks:1");
   });
+
+  it("accepts a slotted composed-tree descendant that covers a native button", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Slotted native control</title></head><body>
+        <stage5-native-control><span id="slotted-cover" slot="label">Annual revenue</span></stage5-native-control>
+        <p id="counter">clicks:0</p>
+        <script>
+          customElements.define('stage5-native-control', class extends HTMLElement {
+            constructor() {
+              super();
+              const root = this.attachShadow({ mode: 'open' });
+              root.innerHTML = \`<style>
+                button { position: relative; display: block; width: 240px; height: 60px; }
+                ::slotted(span) { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: auto; }
+              </style><button type="button" aria-expanded="false"><slot name="label"></slot></button>\`;
+              root.querySelector('button').addEventListener('click', (event) => {
+                event.currentTarget.setAttribute('aria-expanded', 'true');
+                document.querySelector('#counter').textContent = 'clicks:1';
+              });
+            }
+          });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-slotted-hit-point-"),
+    );
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    const target = page.getByRole("button", { name: "Annual revenue" });
+    expect(await target.evaluate((element) =>
+      element.contains(document.querySelector("#slotted-cover")))).toBe(false);
+    expect(await inspectTargetState(target as Locator)).toMatchObject({
+      visible: true,
+      enabled: true,
+      inViewport: true,
+      receivesPointerEvents: true,
+      pointerHitPoint: "center",
+      coveredBy: null,
+    });
+
+    await expect(controller.clickByRole({
+      role: "button",
+      name: "Annual revenue",
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: true,
+        expectedVisible: null,
+        timeoutMs: 2_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      outcome: "succeeded",
+      actionDispatched: true,
+      clickDispatched: true,
+      targetState: { pointerHitPoint: "center" },
+      dispatchEvidence: {
+        keyDownOnTarget: true,
+        trustedEventObserved: true,
+        clickOnTarget: true,
+        misdirectedEventBlocked: false,
+        targetStateChangeBlocked: false,
+      },
+    });
+    expect(await page.locator("#counter").innerText()).toBe("clicks:1");
+  });
 });

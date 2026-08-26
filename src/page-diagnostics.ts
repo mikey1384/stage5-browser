@@ -388,14 +388,28 @@ export async function inspectTargetState(
       [0.2, 0.5], [0.8, 0.5], [0.5, 0.2], [0.5, 0.8],
       [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8],
     ] as const;
+    const composedContains = (candidate: Element | null): boolean => {
+      let current: Node | null = candidate;
+      const visited = new Set<Node>();
+      while (current !== null && !visited.has(current)) {
+        if (current === element) return true;
+        visited.add(current);
+        if (current instanceof Element && current.assignedSlot !== null) {
+          current = current.assignedSlot;
+          continue;
+        }
+        const parent = current.parentNode;
+        current = parent instanceof ShadowRoot ? parent.host : parent;
+      }
+      return false;
+    };
     const hits = inViewport
       ? points.map(([xRatio, yRatio]) => document.elementFromPoint(
         visibleLeft + width * xRatio,
         visibleTop + height * yRatio,
       ))
       : [];
-    const safeHitIndex = hits.findIndex((hit) =>
-      hit !== null && (hit === element || element.contains(hit)));
+    const safeHitIndex = hits.findIndex(composedContains);
     const firstHit = hits.find((hit) => hit !== null) ?? null;
     const receivesPointerEvents = safeHitIndex >= 0
       ? true

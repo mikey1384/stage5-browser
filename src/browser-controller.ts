@@ -372,6 +372,7 @@ const CLICK_REF_ELEMENT_CANDIDATES = 5_000;
 const CLICK_REF_NORMAL_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_FORCED_DISPATCH_TIMEOUT_MS = 750;
 const CLICK_REF_DISPATCH_PROBE_GRACE_MS = 1_000;
+const TAB_INSPECTION_RESTORE_RESERVE_MS = 1_000;
 const CLICK_ROLE_RESOLUTION_TIMEOUT_MS = 1_000;
 const CLICK_RESULT_FINALIZATION_RESERVE_MS = 500;
 const POPUP_OPTION_ROLES = new Set([
@@ -2074,17 +2075,175 @@ export class BrowserController {
     const context = this.requireContext();
     const page = this.observedTab(input.tabId, context);
     const selectedBefore = this.preferredPage();
+    const temporaryActivation = input.temporaryActivation;
+    if (temporaryActivation && (selectedBefore === undefined || selectedBefore.isClosed())) {
+      throw new Stage5BrowserError(
+        'BROWSER_NOT_READY',
+        'Temporary tab activation requires one exact live controller-selected tab to restore.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'temporary_tab_activation_requires_selected_tab',
+            activationAttempted: false,
+            suggestedAction: 'Call browser_tabs once and establish the intended controller-selected tab before requesting temporary read-only activation.',
+          },
+        },
+      );
+    }
     const frame = page.mainFrame();
     const documentVersion = this.documentVersion(frame);
     const deadlineAt = Date.now() + input.timeoutMs;
-    const rawSnapshot = await page.locator('body').ariaSnapshot({
-      mode: 'ai',
-      depth: input.depth,
-      boxes: false,
-      timeout: Math.max(1, remainingUntil(deadlineAt)),
-    });
-    const filteredSnapshot = await this.filterInactivePopupSnapshot(frame, rawSnapshot, deadlineAt);
-    const snapshot = filteredSnapshot.replaceAll(/\s*\[ref=[^\]]+\]/gu, '');
+    const workDeadlineAt = temporaryActivation
+      ? Math.max(Date.now() + 1, deadlineAt - TAB_INSPECTION_RESTORE_RESERVE_MS)
+      : deadlineAt;
+    let observationSurface: ScrollContentObservationSurface | null = null;
+    let loadingBefore: ScrollContentSample | null = null;
+    if (input.waitFor !== null) {
+      observationSurface = await this.resolveScrollContentObservationSurface(frame, null);
+      loadingBefore = await boundedValue(
+        this.scrollContentObservation(frame, observationSurface),
+        Math.max(1, remainingUntil(workDeadlineAt)),
+        null,
+      );
+      if (loadingBefore === null) {
+        if (observationSurface.ownsHandle) {
+          await observationSurface.handle?.dispose().catch(() => undefined);
+        }
+        throw new Stage5BrowserError(
+          'OPERATION_FAILED',
+          'The exact background document could not establish a bounded loading observation.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'tab_loading_observation_unavailable',
+              activationAttempted: false,
+              suggestedAction: 'Do not activate or inspect another tab. Call browser_tabs once and report the changed exact tab state.',
+            },
+          },
+        );
+      }
+    }
+
+    let snapshot: string | null = null;
+    let rendererVisibility: 'visible' | 'hidden' | 'unknown' = 'unknown';
+    let visibleModalCount = 0;
+    let loadingWait: BrowserCommandOutput<'inspectTab'>['loadingWait'] = null;
+    let activationAttempted = false;
+    let activationRestored: boolean | null = temporaryActivation ? false : null;
+    let inspectionError: unknown = null;
+    try {
+      if (temporaryActivation && selectedBefore !== page) {
+        activationAttempted = true;
+        await page.bringToFront();
+        const activated = await this.waitForVisiblePageActivation(
+          page,
+          await this.observePageActivation(page),
+        );
+        if (activated.visibility !== 'visible') {
+          throw new Stage5BrowserError(
+            'OPERATION_FAILED',
+            'The exact background renderer did not become visible for bounded read-only inspection.',
+            {
+              recoverable: true,
+              details: {
+                reason: 'temporary_tab_activation_not_visible',
+                activationAttempted: true,
+                suggestedAction: 'Do not select or inspect another tab. Stage5 Browser will first restore the exact controller-selected tab.',
+              },
+            },
+          );
+        }
+      }
+      if (input.waitFor !== null && observationSurface !== null && loadingBefore !== null) {
+        loadingWait = await this.waitForScrollContent(
+          page,
+          frame,
+          observationSurface,
+          loadingBefore,
+          input.waitFor,
+          Math.max(0, remainingUntil(workDeadlineAt)),
+        );
+      }
+      const rawSnapshot = await page.locator('body').ariaSnapshot({
+        mode: 'ai',
+        depth: input.depth,
+        boxes: false,
+        timeout: Math.max(1, remainingUntil(workDeadlineAt)),
+      });
+      const filteredSnapshot = await this.filterInactivePopupSnapshot(
+        frame,
+        rawSnapshot,
+        workDeadlineAt,
+      );
+      snapshot = filteredSnapshot.replaceAll(/\s*\[ref=[^\]]+\]/gu, '');
+      const [observedVisibility, observedModalCount] = await Promise.all([
+        boundedValue(
+          page.evaluate(() => document.visibilityState),
+          Math.max(1, remainingUntil(workDeadlineAt)),
+          'unknown' as const,
+        ),
+        boundedValue(
+          frame.locator('[role="dialog"]:visible, dialog[open]:visible, [aria-modal="true"]:visible').count(),
+          Math.max(1, remainingUntil(workDeadlineAt)),
+          0,
+        ),
+      ]);
+      rendererVisibility = observedVisibility === 'visible' || observedVisibility === 'hidden'
+        ? observedVisibility
+        : 'unknown';
+      visibleModalCount = observedModalCount;
+    } catch (error) {
+      inspectionError = error;
+    } finally {
+      if (observationSurface?.ownsHandle) {
+        await observationSurface.handle?.dispose().catch(() => undefined);
+      }
+      if (temporaryActivation) {
+        if (selectedBefore === page) {
+          activationRestored = true;
+        } else if (selectedBefore !== undefined && !selectedBefore.isClosed()) {
+          try {
+            await selectedBefore.bringToFront();
+            const restored = await this.waitForVisiblePageActivation(
+              selectedBefore,
+              await this.observePageActivation(selectedBefore),
+            );
+            activationRestored = restored.visibility === 'visible';
+          } catch {
+            activationRestored = false;
+          }
+        }
+      }
+    }
+    if (temporaryActivation && activationRestored !== true) {
+      throw new Stage5BrowserError(
+        'OPERATION_FAILED',
+        'Stage5 Browser could not prove restoration of the exact controller-selected tab after temporary read-only activation.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'temporary_tab_activation_restore_failed',
+            activationAttempted,
+            activationRestored: false,
+            elementActionDispatched: false,
+            suggestedAction: 'Do not select, inspect, close, dismiss, or interact with any tab. Call browser_tabs once and report the exact fresh identities and controller selection.',
+          },
+          cause: inspectionError,
+        },
+      );
+    }
+    if (inspectionError !== null) throw inspectionError;
+    if (snapshot === null) {
+      throw new Stage5BrowserError('OPERATION_FAILED', 'The exact tab inspection produced no semantic result.', {
+        recoverable: true,
+        details: {
+          reason: 'tab_inspection_result_unavailable',
+          activationAttempted,
+          activationRestored,
+          suggestedAction: 'Do not repeat the inspection. Call browser_tabs once and report the exact fresh tab state.',
+        },
+      });
+    }
     if (
       frame.isDetached() ||
       page.isClosed() ||
@@ -2105,20 +2264,20 @@ export class BrowserController {
         },
       );
     }
-    const [rendererVisibility, visibleModalCount] = await Promise.all([
-      boundedValue(
-        page.evaluate(() => document.visibilityState),
-        Math.max(1, remainingUntil(deadlineAt)),
-        'unknown' as const,
-      ),
-      boundedValue(
-        frame.locator('[role="dialog"]:visible, dialog[open]:visible, [aria-modal="true"]:visible').count(),
-        Math.max(1, remainingUntil(deadlineAt)),
-        0,
-      ),
-    ]);
+    const visibilityAfterRestore = await boundedValue(
+      page.evaluate(() => document.visibilityState),
+      Math.max(1, remainingUntil(deadlineAt)),
+      'unknown' as const,
+    );
     const controllerSelectionUnchanged = this.preferredPage() === selectedBefore;
     const warnings: BrowserCommandOutput<'inspectTab'>['warnings'] = [];
+    if (loadingWait !== null && !loadingWait.satisfied) {
+      warnings.push({
+        code: 'loading_expectation_not_satisfied',
+        message: 'The bounded loading/content expectation was not satisfied before the read-only snapshot.',
+        suggestedAction: 'Use only the returned ref-free evidence. Do not repeat activation, select the tab, or infer that loading completed.',
+      });
+    }
     if (visibleModalCount > 0) {
       warnings.push({
         code: 'visible_modal_in_document',
@@ -2140,10 +2299,13 @@ export class BrowserController {
       scope: 'document',
       refCount: 0,
       elementActionsAvailable: false,
-      activationAttempted: false,
-      rendererVisibility: rendererVisibility === 'visible' || rendererVisibility === 'hidden'
-        ? rendererVisibility
+      activationAttempted,
+      activationRestored,
+      rendererVisibility,
+      rendererVisibilityAfterRestore: visibilityAfterRestore === 'visible' || visibilityAfterRestore === 'hidden'
+        ? visibilityAfterRestore
         : 'unknown',
+      loadingWait,
       visibleModalCount,
       controllerSelectionUnchanged,
       warnings,
@@ -8498,11 +8660,26 @@ export class BrowserController {
           [0.2, 0.5], [0.8, 0.5], [0.5, 0.2], [0.5, 0.8],
           [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8],
         ] as const;
+        const composedContains = (candidate: Element | null): boolean => {
+          let current: Node | null = candidate;
+          const visited = new Set<Node>();
+          while (current !== null && !visited.has(current)) {
+            if (current === element) return true;
+            visited.add(current);
+            if (current instanceof Element && current.assignedSlot !== null) {
+              current = current.assignedSlot;
+              continue;
+            }
+            const parent = current.parentNode;
+            current = parent instanceof ShadowRoot ? parent.host : parent;
+          }
+          return false;
+        };
         for (const [xRatio, yRatio] of points) {
           const x = left + width * xRatio;
           const y = top + height * yRatio;
           const hit = document.elementFromPoint(x, y);
-          if (hit === null || (hit !== element && !element.contains(hit))) continue;
+          if (!composedContains(hit)) continue;
           return {
             page: { x, y },
             element: { x: x - rect.left, y: y - rect.top },
