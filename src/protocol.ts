@@ -245,6 +245,11 @@ export interface PageSummary {
   readyState: string;
 }
 
+export interface BrowserTabSummary extends PageSummary {
+  /** Session-scoped opaque capability; never a browser/CDP target identifier. */
+  tabId: string;
+}
+
 export interface FrameSummary {
   id: string;
   parentId: string | null;
@@ -385,11 +390,30 @@ export interface BrowserCommandMap {
   };
   tabs: {
     input: Record<string, never>;
-    output: { pages: PageSummary[]; activePageIndex: number | null };
+    output: { pages: BrowserTabSummary[]; activePageIndex: number | null };
   };
   selectTab: {
-    input: { index: number };
-    output: { page: PageSummary; authenticationTargetUpdated: boolean };
+    input: { tabId: string };
+    output: { page: BrowserTabSummary; authenticationTargetUpdated: boolean };
+  };
+  inspectTab: {
+    input: { tabId: string; depth: number; timeoutMs: number };
+    output: {
+      page: BrowserTabSummary;
+      snapshot: string;
+      scope: 'document';
+      refCount: 0;
+      elementActionsAvailable: false;
+      activationAttempted: false;
+      rendererVisibility: 'visible' | 'hidden' | 'unknown';
+      visibleModalCount: number;
+      controllerSelectionUnchanged: boolean;
+      warnings: Array<{
+        code: 'visible_modal_in_document' | 'controller_selection_changed_externally';
+        message: string;
+        suggestedAction: string;
+      }>;
+    };
   };
   frames: {
     input: Record<string, never>;

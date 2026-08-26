@@ -398,7 +398,9 @@ export class LoungeService {
         recoverable: true,
         details: {
           reason: 'lounge_not_joined',
-          suggestedAction: 'Call lounge_join once with this task\'s stable agent ID and the stage5-lounge room.',
+          boundary: 'mcp_connection',
+          browserWorkerReplacementPreservesMembership: true,
+          suggestedAction: 'This MCP connection has not joined. Call lounge_join once with this task\'s stable agent ID and the stage5-lounge room; a browser-worker replacement alone does not clear Lounge membership.',
         },
       });
     }

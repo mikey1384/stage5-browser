@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -32,6 +32,8 @@
       "Verified authentication continuity",
       "Authentication storage-boundary diagnostics",
       "Modal-scoped semantic inspection",
+      "Opaque duplicate-tab selection",
+      "Non-activating background-tab inspection",
       "Snapshot-bound nested scrolling",
       "Virtualization-safe reference actions",
       "Exact-target dispatch evidence",

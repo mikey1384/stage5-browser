@@ -71,6 +71,8 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
       return controller.tabs();
     case 'selectTab':
       return controller.selectTab(request.payload);
+    case 'inspectTab':
+      return controller.inspectTab(request.payload);
     case 'frames':
       return controller.frames();
     case 'clickByRole':

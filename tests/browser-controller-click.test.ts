@@ -2797,6 +2797,7 @@ describe("BrowserController exact input", () => {
       enabled: true,
       inViewport: true,
       receivesPointerEvents: true,
+      pointerHitPoint: "center",
       coveredBy: null,
     });
   });

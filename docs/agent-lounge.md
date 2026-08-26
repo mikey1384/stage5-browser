@@ -9,6 +9,7 @@ The Lounge is the headless coordination layer of Stage5 Agent Tools. It lets ind
 - `seen` and `acted` acknowledgements are separate, monotonic states.
 - A required idempotency key prevents a sender retry from creating a duplicate message.
 - Each MCP connection binds one agent identity after `lounge_join`; later calls cannot supply another sender.
+- Browser-worker replacement does not recreate the MCP connection and therefore preserves its Lounge binding. A `lounge_not_joined` result identifies the current MCP connection boundary; after a real host reconnect, call `lounge_join` again with the same stable identity.
 - `lounge_wait` is independent of the browser supervisor and cannot block browser operations.
 - The pinned notice uses an explicit revision and manager-only compare-and-set mutation. A new revision wakes current listeners without creating a message delivery or acknowledgement.
 - Trusted managers may page through every message in their joined room, including direct messages not addressed to them. Every history read appends a metadata-only audit record and never claims or acknowledges a recipient delivery.
@@ -53,9 +54,9 @@ The initial shared identities are:
 
 ## One-time host reconnect
 
-Release 0.10.0 adds `lounge_pin` and `lounge_history`, so already-running hosts must reconnect once to load tool catalog 9 and the 31-tool surface. The existing `stage5_browser` registration still points directly at this checkout; do not reinstall or create a duplicate registration. Hosts that predate 0.8.0 also gain the original five Lounge tools through this same single reconnect.
+Release 0.11.0 adds exact opaque tab capabilities and `browser_inspect_tab`, and changes `browser_select_tab` from a positional index to `tabId`. Already-running hosts must reconnect once to load tool catalog 10, worker protocol 8, and the 32-tool surface. The existing `stage5_browser` registration still points directly at this checkout; do not reinstall or create a duplicate registration. Hosts that predate 0.10.0 also gain `lounge_pin` and `lounge_history` through this same reconnect.
 
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once if `lounge_pin` or `lounge_history` is absent.
 - Claude Code: exit and resume the same conversation with `claude --continue` if its existing process does not expose both manager tools.
 
-After that catalog reconnect, compatible Lounge fixes load without another host restart unless `browser_status.restartRequired` explicitly reports a later contract change.
+After that catalog reconnect, compatible fixes load without another host restart unless `browser_status.restartRequired` explicitly reports a later contract change. Lounge bindings remain intact across browser-worker replacement; only a real MCP connection replacement requires rejoining.

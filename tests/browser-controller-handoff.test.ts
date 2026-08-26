@@ -311,7 +311,7 @@ describe("BrowserController files, authentication, and reattachment", () => {
     if (backgroundTab === undefined || loginTab === undefined) {
       throw new Error("Fixture did not expose both authentication tabs.");
     }
-    await controller.selectTab({ index: loginTab.index });
+    await controller.selectTab({ tabId: loginTab.tabId });
     expect((await controller.tabs()).activePageIndex).toBe(loginTab.index);
 
     const snapshot = await controller.snapshot({
@@ -330,10 +330,10 @@ describe("BrowserController files, authentication, and reattachment", () => {
     expect(snapshot.refCount).toBeGreaterThanOrEqual(2);
 
     const selectedBackground = await controller.selectTab({
-      index: backgroundTab.index,
+      tabId: backgroundTab.tabId,
     });
     expect(selectedBackground.authenticationTargetUpdated).toBe(false);
-    await controller.selectTab({ index: loginTab.index });
+    await controller.selectTab({ tabId: loginTab.tabId });
 
     await expect(
       controller.clickByRole({

@@ -70,8 +70,9 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_start` | Launch a requested profile without closing another running browser |
 | `browser_switch` | Safely switch to a preflighted isolated browser profile |
 | `browser_open` | Navigate with bounded commit, readiness, and client-redirect stabilization; report redirects and HTTP warnings |
-| `browser_tabs` | List live tabs, preserve the agent-selected tab across auxiliary pages, and recover the sole remaining tab after closure |
-| `browser_select_tab` | Select a tab by an observed index while Stage5 Browser controls the profile |
+| `browser_tabs` | List live tabs with session-scoped opaque identities, preserve the agent-selected tab across auxiliary pages, and recover the sole remaining tab after closure |
+| `browser_select_tab` | Select one exact fresh opaque tab identity without falling back to duplicate URL/title or positional index |
+| `browser_inspect_tab` | Read a ref-free semantic document view from an exact observed background tab without selecting or activating it |
 | `browser_frames` | Inventory the active page's main document and nested frames |
 | `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound element, hidden-file-input, and nested-scroll references |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
@@ -162,6 +163,8 @@ Key implementation files:
 - `docs/dogfooding-2026-08-25-lounge-manager-notice.md` — trusted manager allowlisting, revisioned pinned notices that wake listeners, and audited room-wide history in 0.10.0
 - `docs/dogfooding-2026-08-26-deep-custom-options.md` — postcondition-required partial-key reconciliation and bounded deep semantic detail for visible custom-option scroll surfaces in 0.10.1
 - `docs/dogfooding-2026-08-26-late-activation-rebind.md` — one zero-dispatch activation/settlement/rebind cycle when a selected renderer becomes hidden after target preparation, fixed compatibly in 0.10.2
+- `docs/dogfooding-2026-08-26-opaque-tab-inspection.md` — exact opaque tab capabilities, non-activating ref-free background inspection, and the Lounge worker/MCP-boundary regression in 0.11.0
+- `docs/dogfooding-2026-08-26-alternate-exact-hit-point.md` — bounded alternate exact-target hit testing for controls whose center alone is covered, without weakening full-overlay blocking
 - `docs/dogfooding-2026-08-25-facebook-editor-viewport.md` — Facebook contenteditable viewport preparation no longer waits for Playwright stability when the exact retained editor is already visible, fixed in 0.7.5
 - `docs/first-vertical-slice.md` — dogfooding outcome and acceptance criteria
 - `docs/failure-taxonomy.md` — defined failure and recovery layers

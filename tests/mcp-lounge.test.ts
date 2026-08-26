@@ -80,9 +80,19 @@ describe('MCP Agent Lounge', () => {
       'lounge_status',
       'lounge_pin',
       'lounge_history',
+      'browser_inspect_tab',
     ]) {
       expect(tools.tools.some((tool) => tool.name === name), `${name} should be exposed`).toBe(true);
     }
+    const selectTabTool = tools.tools.find((tool) => tool.name === 'browser_select_tab');
+    expect(selectTabTool?.inputSchema).toMatchObject({
+      required: ['tabId'],
+      properties: {
+        tabId: expect.objectContaining({ type: 'string' }),
+      },
+    });
+    expect((selectTabTool?.inputSchema as { properties?: Record<string, unknown> } | undefined)
+      ?.properties).not.toHaveProperty('index');
 
     for (const [connection, agentId, displayName, provider] of [
       [browser, 'browser-agent', 'Browser Agent', 'codex'],
@@ -418,6 +428,111 @@ describe('MCP Agent Lounge', () => {
         messageId,
         recipients: [expect.objectContaining({ agentId: 'reporter-agent', state: 'acted' })],
       })],
+    });
+  }, 20_000);
+
+  it('preserves the joined Lounge binding across a compatible browser-worker replacement', async () => {
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-agent-lounge-worker-reload-'));
+    const runtimeRoot = path.join(temporaryRoot, 'runtime');
+    await mkdir(runtimeRoot, { recursive: true });
+    await cp(path.resolve('dist'), path.join(runtimeRoot, 'dist'), { recursive: true });
+    await symlink(path.resolve('node_modules'), path.join(runtimeRoot, 'node_modules'), 'dir');
+
+    const coordinator = await connectAgent(temporaryRoot, 'coordinator-agent', runtimeRoot);
+    const reporter = await connectAgent(temporaryRoot, 'reporter-agent', runtimeRoot);
+    for (const [connection, agentId] of [
+      [coordinator, 'coordinator-agent'],
+      [reporter, 'reporter-agent'],
+    ] as const) {
+      expect(structured(await connection.client.callTool({
+        name: 'lounge_join',
+        arguments: { agentId, room: 'stage5-lounge' },
+      }))).toMatchObject({ agentId, authority: 'coordination_only' });
+    }
+
+    const before = structured(await coordinator.client.callTool({
+      name: 'browser_status',
+      arguments: {},
+    })) as {
+      result?: { workerPid?: unknown };
+      mcp?: { processId?: unknown };
+    };
+    expect(typeof before.result?.workerPid).toBe('number');
+    expect(typeof before.mcp?.processId).toBe('number');
+
+    const mcpArtifactPath = path.join(runtimeRoot, 'dist', 'mcp-server.js');
+    const mcpArtifact = await readFile(mcpArtifactPath, 'utf8');
+    await writeFile(mcpArtifactPath, `${mcpArtifact}\n// compatible worker replacement fixture\n`);
+    const stampPath = path.join(runtimeRoot, 'dist', 'build-stamp.json');
+    const stamp = JSON.parse(await readFile(stampPath, 'utf8')) as {
+      buildId: string;
+      toolCatalogVersion: number;
+      workerProtocolVersion: number;
+    };
+    await writeFile(stampPath, JSON.stringify({
+      ...stamp,
+      buildId: `${stamp.buildId}-compatible-worker-reload`,
+    }));
+
+    const after = structured(await coordinator.client.callTool({
+      name: 'browser_status',
+      arguments: {},
+    })) as {
+      result?: { workerPid?: unknown };
+      mcp?: {
+        processId?: unknown;
+        compatibleUpdateAvailable?: unknown;
+        restartRequired?: unknown;
+      };
+    };
+    expect(after.mcp).toMatchObject({
+      processId: before.mcp?.processId,
+      compatibleUpdateAvailable: true,
+      restartRequired: false,
+    });
+    expect(typeof after.result?.workerPid).toBe('number');
+    expect(after.result?.workerPid).not.toBe(before.result?.workerPid);
+
+    const sent = structured(await coordinator.client.callTool({
+      name: 'lounge_send',
+      arguments: {
+        to: ['reporter-agent'],
+        kind: 'finding',
+        body: 'The same joined MCP connection survived its compatible browser-worker replacement.',
+        replyTo: null,
+        taskKey: 'lounge-worker-replacement-regression',
+        idempotencyKey: 'lounge-worker-replacement-regression-message',
+      },
+    }));
+    expect(typeof sent.messageId).toBe('string');
+    expect(structured(await reporter.client.callTool({
+      name: 'lounge_wait',
+      arguments: { timeoutMs: 2_000, limit: 20 },
+    }))).toMatchObject({
+      timedOut: false,
+      messages: [{ messageId: sent.messageId, senderAgentId: 'coordinator-agent' }],
+    });
+
+    const unjoined = await connectAgent(temporaryRoot, 'unjoined-agent', runtimeRoot);
+    const rejected = await unjoined.client.callTool({
+      name: 'lounge_send',
+      arguments: {
+        kind: 'message',
+        body: 'This connection has not joined.',
+        replyTo: null,
+        taskKey: null,
+        idempotencyKey: 'unjoined-connection-regression',
+      },
+    });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.structuredContent).toMatchObject({
+      error: {
+        details: {
+          reason: 'lounge_not_joined',
+          boundary: 'mcp_connection',
+          browserWorkerReplacementPreservesMembership: true,
+        },
+      },
     });
   }, 20_000);
 });

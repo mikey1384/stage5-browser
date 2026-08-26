@@ -55,6 +55,7 @@ export interface SafeTargetState {
   enabled: boolean;
   inViewport: boolean;
   receivesPointerEvents: boolean | null;
+  pointerHitPoint: 'center' | 'alternate' | null;
   tagName: string;
   role: string | null;
   coveredBy: { tagName: string; role: string | null; pointerEvents: string } | null;
@@ -380,19 +381,35 @@ export async function inspectTargetState(
       }
     }
     const inViewport = visible && visibleRight > visibleLeft && visibleBottom > visibleTop;
-    const centerX = visibleLeft + (visibleRight - visibleLeft) / 2;
-    const centerY = visibleTop + (visibleBottom - visibleTop) / 2;
-    const hit = inViewport ? document.elementFromPoint(centerX, centerY) : null;
-    const receivesPointerEvents = hit === null
-      ? null
-      : hit === element || element.contains(hit);
+    const width = Math.max(0, visibleRight - visibleLeft);
+    const height = Math.max(0, visibleBottom - visibleTop);
+    const points = [
+      [0.5, 0.5],
+      [0.2, 0.5], [0.8, 0.5], [0.5, 0.2], [0.5, 0.8],
+      [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8],
+    ] as const;
+    const hits = inViewport
+      ? points.map(([xRatio, yRatio]) => document.elementFromPoint(
+        visibleLeft + width * xRatio,
+        visibleTop + height * yRatio,
+      ))
+      : [];
+    const safeHitIndex = hits.findIndex((hit) =>
+      hit !== null && (hit === element || element.contains(hit)));
+    const firstHit = hits.find((hit) => hit !== null) ?? null;
+    const receivesPointerEvents = safeHitIndex >= 0
+      ? true
+      : firstHit === null ? null : false;
+    const pointerHitPoint = safeHitIndex === 0
+      ? 'center' as const
+      : safeHitIndex > 0 ? 'alternate' as const : null;
     const htmlDisabled = 'disabled' in element && Boolean((element as HTMLButtonElement).disabled);
     const ariaDisabled = element.getAttribute('aria-disabled') === 'true';
-    const coveredBy = receivesPointerEvents === false && hit !== null
+    const coveredBy = receivesPointerEvents === false && firstHit !== null
       ? {
-          tagName: hit.tagName.toLocaleLowerCase(),
-          role: semanticRole(hit),
-          pointerEvents: getComputedStyle(hit).pointerEvents,
+          tagName: firstHit.tagName.toLocaleLowerCase(),
+          role: semanticRole(firstHit),
+          pointerEvents: getComputedStyle(firstHit).pointerEvents,
         }
       : null;
     return {
@@ -400,6 +417,7 @@ export async function inspectTargetState(
       enabled: !htmlDisabled && !ariaDisabled,
       inViewport,
       receivesPointerEvents,
+      pointerHitPoint,
       tagName: element.tagName.toLocaleLowerCase(),
       role: semanticRole(element),
       coveredBy,

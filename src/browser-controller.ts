@@ -110,6 +110,7 @@ import {
 } from './profile-ownership-lease.js';
 import type {
   AuthenticationBoundaryOutcome,
+  BrowserTabSummary,
   BrowserCommandInput,
   BrowserCommandOutput,
   BrowserLifecycleState,
@@ -779,6 +780,8 @@ export class BrowserController {
   private selectedBrowser: BrowserProduct;
   private frameIds = new WeakMap<Frame, string>();
   private readonly framesById = new Map<string, Frame>();
+  private tabIds = new WeakMap<Page, string>();
+  private readonly observedTabsById = new Map<string, Page>();
   private frameDocumentVersions = new WeakMap<Frame, number>();
   private readonly observedSnapshots = new Map<Frame, ObservedSnapshot>();
   private readonly scrollHistories = new WeakMap<Frame, ScrollHistory>();
@@ -1358,8 +1361,10 @@ export class BrowserController {
     this.context = undefined;
     this.activePage = undefined;
     this.framesById.clear();
+    this.observedTabsById.clear();
     this.discardAllObservedSnapshots();
     this.frameIds = new WeakMap<Frame, string>();
+    this.tabIds = new WeakMap<Page, string>();
     this.frameDocumentVersions = new WeakMap<Frame, number>();
     this.boundPages = new WeakSet<Page>();
     this.authenticationHandoff = null;
@@ -2035,7 +2040,8 @@ export class BrowserController {
     const context = this.requireContext();
     await this.reconcileVisiblePage(context);
     const pages = context.pages().filter((page) => !page.isClosed());
-    const summaries = await Promise.all(pages.map((page, index) => this.pageSummary(page, index)));
+    this.observedTabsById.clear();
+    const summaries = await Promise.all(pages.map((page, index) => this.tabSummary(page, index)));
     const reportedActivePage = this.preferredPage();
     const activePageIndex = reportedActivePage === undefined ? -1 : pages.indexOf(reportedActivePage);
     return {
@@ -2047,12 +2053,7 @@ export class BrowserController {
   async selectTab(input: BrowserCommandInput<'selectTab'>): Promise<BrowserCommandOutput<'selectTab'>> {
     const context = this.requireContext();
     const pages = context.pages().filter((page) => !page.isClosed());
-    const page = pages[input.index];
-    if (page === undefined) {
-      throw new Stage5BrowserError('TARGET_NOT_FOUND', 'No open tab exists at that index.', {
-        details: { requestedIndex: input.index, tabCount: pages.length },
-      });
-    }
+    const page = this.observedTab(input.tabId, context);
 
     this.activePage = page;
     const authenticationTargetUpdated = this.authenticationHandoff !== null;
@@ -2063,7 +2064,90 @@ export class BrowserController {
     await page.bringToFront();
     await this.persistNativeSelectedPage(page);
     this.lastKnownUrl = page.url();
-    return { page: await this.pageSummary(page, input.index), authenticationTargetUpdated };
+    return {
+      page: await this.tabSummary(page, pages.indexOf(page)),
+      authenticationTargetUpdated,
+    };
+  }
+
+  async inspectTab(input: BrowserCommandInput<'inspectTab'>): Promise<BrowserCommandOutput<'inspectTab'>> {
+    const context = this.requireContext();
+    const page = this.observedTab(input.tabId, context);
+    const selectedBefore = this.preferredPage();
+    const frame = page.mainFrame();
+    const documentVersion = this.documentVersion(frame);
+    const deadlineAt = Date.now() + input.timeoutMs;
+    const rawSnapshot = await page.locator('body').ariaSnapshot({
+      mode: 'ai',
+      depth: input.depth,
+      boxes: false,
+      timeout: Math.max(1, remainingUntil(deadlineAt)),
+    });
+    const filteredSnapshot = await this.filterInactivePopupSnapshot(frame, rawSnapshot, deadlineAt);
+    const snapshot = filteredSnapshot.replaceAll(/\s*\[ref=[^\]]+\]/gu, '');
+    if (
+      frame.isDetached() ||
+      page.isClosed() ||
+      !context.pages().includes(page) ||
+      this.observedTabsById.get(input.tabId) !== page ||
+      this.documentVersion(frame) !== documentVersion
+    ) {
+      throw new Stage5BrowserError(
+        'TARGET_NOT_FOUND',
+        'The background tab document changed during read-only inspection.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'document_changed_during_tab_inspection',
+            actionDispatched: false,
+            suggestedAction: 'Call browser_tabs once, then inspect the intended fresh opaque tabId once more.',
+          },
+        },
+      );
+    }
+    const [rendererVisibility, visibleModalCount] = await Promise.all([
+      boundedValue(
+        page.evaluate(() => document.visibilityState),
+        Math.max(1, remainingUntil(deadlineAt)),
+        'unknown' as const,
+      ),
+      boundedValue(
+        frame.locator('[role="dialog"]:visible, dialog[open]:visible, [aria-modal="true"]:visible').count(),
+        Math.max(1, remainingUntil(deadlineAt)),
+        0,
+      ),
+    ]);
+    const controllerSelectionUnchanged = this.preferredPage() === selectedBefore;
+    const warnings: BrowserCommandOutput<'inspectTab'>['warnings'] = [];
+    if (visibleModalCount > 0) {
+      warnings.push({
+        code: 'visible_modal_in_document',
+        message: 'The inspected document contains a visible modal; its application may suppress underlying content from the accessibility tree.',
+        suggestedAction: 'Use only the returned ref-free evidence. Do not infer that suppressed background content is absent or close the modal to expose it.',
+      });
+    }
+    if (!controllerSelectionUnchanged) {
+      warnings.push({
+        code: 'controller_selection_changed_externally',
+        message: 'The controller-selected tab changed independently while the background document was being inspected.',
+        suggestedAction: 'Call browser_tabs once and re-establish the intended selected and inspected tab identities before any action.',
+      });
+    }
+    const livePages = context.pages().filter((candidate) => !candidate.isClosed());
+    return {
+      page: await this.tabSummary(page, livePages.indexOf(page)),
+      snapshot,
+      scope: 'document',
+      refCount: 0,
+      elementActionsAvailable: false,
+      activationAttempted: false,
+      rendererVisibility: rendererVisibility === 'visible' || rendererVisibility === 'hidden'
+        ? rendererVisibility
+        : 'unknown',
+      visibleModalCount,
+      controllerSelectionUnchanged,
+      warnings,
+    };
   }
 
   async frames(): Promise<BrowserCommandOutput<'frames'>> {
@@ -4968,8 +5052,10 @@ export class BrowserController {
         this.context = undefined;
         this.activePage = undefined;
         this.framesById.clear();
+        this.observedTabsById.clear();
         this.discardAllObservedSnapshots();
         this.frameIds = new WeakMap<Frame, string>();
+        this.tabIds = new WeakMap<Page, string>();
         this.frameDocumentVersions = new WeakMap<Frame, number>();
         this.boundPages = new WeakSet<Page>();
         this.authenticationHandoff = null;
@@ -4997,10 +5083,12 @@ export class BrowserController {
     page.on('framedetached', (frame) => this.removeFrame(frame));
     page.on('crash', () => {
       this.recoverActivePageAfterLoss(page);
+      this.discardObservedTab(page);
       this.removePageFrames(page);
     });
     page.on('close', () => {
       this.recoverActivePageAfterLoss(page);
+      this.discardObservedTab(page);
       this.removePageFrames(page);
     });
   }
@@ -6681,8 +6769,10 @@ export class BrowserController {
     this.context = undefined;
     this.activePage = undefined;
     this.framesById.clear();
+    this.observedTabsById.clear();
     this.discardAllObservedSnapshots();
     this.frameIds = new WeakMap<Frame, string>();
+    this.tabIds = new WeakMap<Page, string>();
     this.frameDocumentVersions = new WeakMap<Frame, number>();
     this.boundPages = new WeakSet<Page>();
     this.runtimeProfileObservation = null;
@@ -6831,6 +6921,45 @@ export class BrowserController {
       title,
       readyState,
     };
+  }
+
+  private tabId(page: Page): string {
+    const existing = this.tabIds.get(page);
+    if (existing !== undefined) return existing;
+    const tabId = `tab-${randomUUID()}`;
+    this.tabIds.set(page, tabId);
+    return tabId;
+  }
+
+  private async tabSummary(page: Page, suppliedIndex?: number): Promise<BrowserTabSummary> {
+    const tabId = this.tabId(page);
+    this.observedTabsById.set(tabId, page);
+    return {
+      ...await this.pageSummary(page, suppliedIndex),
+      tabId,
+    };
+  }
+
+  private observedTab(tabId: string, context: BrowserContext): Page {
+    const page = this.observedTabsById.get(tabId);
+    if (page === undefined || page.isClosed() || !context.pages().includes(page)) {
+      this.observedTabsById.delete(tabId);
+      throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The observed tab capability is stale or unavailable.', {
+        recoverable: true,
+        details: {
+          reason: 'stale_tab_id',
+          actionDispatched: false,
+          suggestedAction: 'Call browser_tabs once and use only the intended fresh opaque tabId. Stage5 Browser will not fall back to URL, title, or index.',
+        },
+      });
+    }
+    return page;
+  }
+
+  private discardObservedTab(page: Page): void {
+    const tabId = this.tabIds.get(page);
+    if (tabId !== undefined) this.observedTabsById.delete(tabId);
+    this.tabIds.delete(page);
   }
 
   private async requireUniqueClickTarget(
@@ -7736,13 +7865,25 @@ export class BrowserController {
       }
 
       let normalError: unknown = null;
-      try {
-        await this.dispatchExactHandleClick(preparedTarget.handle, {
-          noWaitAfter: true,
-          timeout: normalAttemptTimeoutMs,
-        });
-      } catch (error) {
-        normalError = error;
+      const normalPosition = preparedTarget.targetState.pointerHitPoint === 'alternate'
+        ? await boundedValue(
+          this.freshExactHandleClickPosition(preparedTarget.handle),
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+          null,
+        )
+        : undefined;
+      if (preparedTarget.targetState.pointerHitPoint === 'alternate' && normalPosition === null) {
+        normalError = new Error('The alternate exact-target hit point was no longer available before dispatch.');
+      } else {
+        try {
+          await this.dispatchExactHandleClick(preparedTarget.handle, {
+            noWaitAfter: true,
+            timeout: normalAttemptTimeoutMs,
+            ...(normalPosition === undefined || normalPosition === null ? {} : { position: normalPosition }),
+          });
+        } catch (error) {
+          normalError = error;
+        }
       }
 
       let evidence = await readProbe(false);
@@ -7815,14 +7956,26 @@ export class BrowserController {
         ),
       );
       let forcedError: unknown = null;
-      try {
-        await this.dispatchExactHandleClick(preparedTarget.handle, {
-          force: true,
-          noWaitAfter: true,
-          timeout: remainingTimeoutMs,
-        });
-      } catch (error) {
-        forcedError = error;
+      const forcedPosition = targetState?.pointerHitPoint === 'alternate'
+        ? await boundedValue(
+          this.freshExactHandleClickPosition(preparedTarget.handle),
+          Math.max(1, remainingUntil(actionDeadlineAt)),
+          null,
+        )
+        : undefined;
+      if (targetState?.pointerHitPoint === 'alternate' && forcedPosition === null) {
+        forcedError = new Error('The alternate exact-target hit point was no longer available before guarded fallback dispatch.');
+      } else {
+        try {
+          await this.dispatchExactHandleClick(preparedTarget.handle, {
+            force: true,
+            noWaitAfter: true,
+            timeout: remainingTimeoutMs,
+            ...(forcedPosition === undefined || forcedPosition === null ? {} : { position: forcedPosition }),
+          });
+        } catch (error) {
+          forcedError = error;
+        }
       }
 
       evidence = await readProbe(false);
@@ -7943,7 +8096,12 @@ export class BrowserController {
 
   private async dispatchExactHandleClick(
     handle: ElementHandle<HTMLElement | SVGElement>,
-    options: { force?: boolean; noWaitAfter: boolean; timeout: number },
+    options: {
+      force?: boolean;
+      noWaitAfter: boolean;
+      timeout: number;
+      position?: { x: number; y: number };
+    },
   ): Promise<void> {
     await handle.click(options);
   }
@@ -8291,14 +8449,19 @@ export class BrowserController {
       evidence.targetStateChangeBlocked === false;
   }
 
-  private async freshMainFrameTargetPoint(
-    page: Page,
+  private async freshExactHandleClickPosition(
     handle: ElementHandle<HTMLElement | SVGElement>,
   ): Promise<{ x: number; y: number } | null> {
+    return (await this.freshExactHandleHitPoint(handle))?.element ?? null;
+  }
+
+  private async freshExactHandleHitPoint(
+    handle: ElementHandle<HTMLElement | SVGElement>,
+  ): Promise<{
+    page: { x: number; y: number };
+    element: { x: number; y: number };
+  } | null> {
     try {
-      if (await handle.ownerFrame() !== page.mainFrame()) {
-        return null;
-      }
       return await handle.evaluate((element) => {
         if (!element.isConnected) return null;
         const rect = element.getBoundingClientRect();
@@ -8328,12 +8491,39 @@ export class BrowserController {
           }
         }
         if (right <= left || bottom <= top) return null;
-        const x = left + (right - left) / 2;
-        const y = top + (bottom - top) / 2;
-        const hit = document.elementFromPoint(x, y);
-        if (hit === null || (hit !== element && !element.contains(hit))) return null;
-        return { x, y };
+        const width = right - left;
+        const height = bottom - top;
+        const points = [
+          [0.5, 0.5],
+          [0.2, 0.5], [0.8, 0.5], [0.5, 0.2], [0.5, 0.8],
+          [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8],
+        ] as const;
+        for (const [xRatio, yRatio] of points) {
+          const x = left + width * xRatio;
+          const y = top + height * yRatio;
+          const hit = document.elementFromPoint(x, y);
+          if (hit === null || (hit !== element && !element.contains(hit))) continue;
+          return {
+            page: { x, y },
+            element: { x: x - rect.left, y: y - rect.top },
+          };
+        }
+        return null;
       });
+    } catch {
+      return null;
+    }
+  }
+
+  private async freshMainFrameTargetPoint(
+    page: Page,
+    handle: ElementHandle<HTMLElement | SVGElement>,
+  ): Promise<{ x: number; y: number } | null> {
+    try {
+      if (await handle.ownerFrame() !== page.mainFrame()) {
+        return null;
+      }
+      return (await this.freshExactHandleHitPoint(handle))?.page ?? null;
     } catch {
       return null;
     }

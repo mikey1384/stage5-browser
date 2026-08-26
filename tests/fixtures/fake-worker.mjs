@@ -10,14 +10,14 @@ const buildFingerprint = process.env.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT ?? 'f
 const runtime = {
   component: 'worker',
   version: '0.6.5',
-  protocolVersion: 7,
+  protocolVersion: 0,
   processId: process.pid,
   startedAt,
   buildModifiedAt: startedAt,
   artifactFingerprint: buildFingerprint,
   currentArtifactFingerprint: buildFingerprint,
   currentVersion: '0.6.5',
-  currentProtocolVersion: 5,
+  currentProtocolVersion: 0,
   currentToolCatalogVersion: 5,
   compatibleUpdateAvailable: false,
   restartRequired: false,
@@ -48,6 +48,8 @@ process.on('message', (message) => {
   if (message.command === 'initialize') {
     initialized = true;
     browser = message.payload.browser;
+    runtime.protocolVersion = message.payload.protocolVersion;
+    runtime.currentProtocolVersion = message.payload.protocolVersion;
     respond(message.id, { ready: true, workerPid: process.pid, runtime });
     return;
   }

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   negotiateWorkerInitialization,
   RuntimeArtifactMonitor,
+  WORKER_PROTOCOL_VERSION,
   type RuntimeBuildStamp,
   type RuntimeProcessInfo,
 } from '../src/runtime-info.js';
@@ -95,14 +96,14 @@ describe('worker initialization compatibility', () => {
   const workerRuntime = (overrides: Partial<RuntimeProcessInfo> = {}): RuntimeProcessInfo => ({
     component: 'worker',
     version: '0.6.8',
-    protocolVersion: 7,
+    protocolVersion: WORKER_PROTOCOL_VERSION,
     processId: 456,
     startedAt: '2026-08-25T01:00:00.000Z',
     buildModifiedAt: '2026-08-25T01:00:00.000Z',
     artifactFingerprint: 'worker-build-2',
     currentArtifactFingerprint: 'worker-build-2',
     currentVersion: '0.6.8',
-    currentProtocolVersion: 7,
+    currentProtocolVersion: WORKER_PROTOCOL_VERSION,
     currentToolCatalogVersion: 6,
     compatibleUpdateAvailable: false,
     restartRequired: false,
@@ -114,7 +115,7 @@ describe('worker initialization compatibility', () => {
   it('treats a build fingerprint as diagnostic identity for a current supervisor', () => {
     const runtime = negotiateWorkerInitialization(
       {
-        protocolVersion: 7,
+        protocolVersion: WORKER_PROTOCOL_VERSION,
         mcpVersion: '0.6.7',
         mcpBuildFingerprint: 'mcp-build-1',
         buildFingerprintPolicy: 'diagnostic_only',
@@ -133,7 +134,7 @@ describe('worker initialization compatibility', () => {
   it('bridges the legacy fingerprint gate without hiding the loaded worker identity', () => {
     const runtime = negotiateWorkerInitialization(
       {
-        protocolVersion: 7,
+        protocolVersion: WORKER_PROTOCOL_VERSION,
         mcpVersion: '0.6.6',
         mcpBuildFingerprint: 'mcp-build-1',
       },
