@@ -187,4 +187,89 @@ describe("BrowserController exact hit points", () => {
     });
     expect(await page.locator("#counter").innerText()).toBe("clicks:1");
   });
+
+  it("uses guarded keyboard activation for a covered native button only with a postcondition", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><head><title>Keyboard-actionable native control</title><style>
+        #wrap { position: relative; width: 240px; height: 60px; }
+        #target { display: block; width: 240px; height: 60px; }
+        #visual-label { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; pointer-events: auto; }
+      </style></head><body>
+        <div id="wrap">
+          <button id="target" type="button" aria-label="Annual revenue" aria-expanded="false"
+            onclick="this.setAttribute('aria-expanded', 'true'); document.querySelector('#counter').textContent = 'clicks:1'"></button>
+          <span id="visual-label" aria-hidden="true">Annual revenue</span>
+        </div>
+        <p id="counter">clicks:0</p>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-covered-native-keyboard-"),
+    );
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    expect(await inspectTargetState(page.locator("#target") as Locator)).toMatchObject({
+      visible: true,
+      enabled: true,
+      inViewport: true,
+      receivesPointerEvents: false,
+      pointerHitPoint: null,
+      coveredBy: { tagName: "span", role: null, pointerEvents: "auto" },
+    });
+
+    const observed = await controller.snapshot({
+      depth: 6,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    const targetRef = observed.snapshot.match(
+      /button "Annual revenue"[^\n]*\[ref=([^\]]+)\]/,
+    )?.[1];
+    expect(targetRef).toBeDefined();
+    if (targetRef === undefined) {
+      throw new Error("Covered native-button fixture did not expose the exact ref.");
+    }
+    await expect(controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref: targetRef,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: true,
+        expectedVisible: null,
+        expectedHidden: null,
+        timeoutMs: 2_000,
+      },
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({ postcondition: { passed: true } });
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      outcome: "succeeded",
+      actionDispatched: true,
+      clickDispatched: true,
+      targetState: {
+        receivesPointerEvents: false,
+        pointerHitPoint: null,
+        coveredBy: { tagName: "span" },
+      },
+      dispatchEvidence: {
+        trustedEventObserved: true,
+        keyDownOnTarget: true,
+        clickOnTarget: true,
+        forcedFallbackUsed: false,
+        pageMouseFallbackUsed: false,
+        misdirectedEventBlocked: false,
+        targetStateChangeBlocked: false,
+      },
+    });
+    expect(await page.locator("#counter").innerText()).toBe("clicks:1");
+  });
 });

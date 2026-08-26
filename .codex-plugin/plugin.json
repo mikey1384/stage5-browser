@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -35,11 +35,13 @@
       "Opaque duplicate-tab selection",
       "Non-activating background-tab inspection",
       "Restored temporary tab inspection",
+      "One-recovery temporary tab visibility",
       "Snapshot-bound nested scrolling",
       "Virtualization-safe reference actions",
       "Exact-target dispatch evidence",
       "Deadline-safe shared click engine",
       "React-safe popup activation",
+      "Postconditioned native-button keyboard activation",
       "Snapshot-bound unnamed editor fill",
       "Foreground-verified guarded input",
       "Owned native-window activation",

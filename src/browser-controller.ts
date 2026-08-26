@@ -2130,7 +2130,53 @@ export class BrowserController {
     let loadingWait: BrowserCommandOutput<'inspectTab'>['loadingWait'] = null;
     let activationAttempted = false;
     let activationRestored: boolean | null = temporaryActivation ? false : null;
+    let activationVisibilityRecoveryUsed = false;
     let inspectionError: unknown = null;
+    const ensureTemporaryRendererVisible = async (): Promise<void> => {
+      if (!temporaryActivation) return;
+      const observed = await this.observePageActivation(page);
+      if (observed.visibility === 'visible') return;
+      if (activationVisibilityRecoveryUsed) {
+        throw new Stage5BrowserError(
+          'OPERATION_FAILED',
+          'The exact temporarily activated renderer became hidden again during bounded read-only inspection.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'temporary_tab_activation_visibility_lost',
+              activationAttempted: true,
+              visibilityRecoveryAttempted: true,
+              elementActionDispatched: false,
+              suggestedAction: 'Do not repeat activation or inspection. Stage5 Browser will restore the exact prior selected tab before returning the failure.',
+            },
+          },
+        );
+      }
+      activationVisibilityRecoveryUsed = true;
+      activationAttempted = true;
+      await page.bringToFront();
+      const recovered = await this.waitForVisiblePageActivation(
+        page,
+        await this.observePageActivation(page),
+        Math.max(0, remainingUntil(workDeadlineAt)),
+      );
+      if (recovered.visibility !== 'visible') {
+        throw new Stage5BrowserError(
+          'OPERATION_FAILED',
+          'The exact temporarily activated renderer could not recover visible state for read-only inspection.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'temporary_tab_activation_visibility_recovery_failed',
+              activationAttempted: true,
+              visibilityRecoveryAttempted: true,
+              elementActionDispatched: false,
+              suggestedAction: 'Do not repeat activation or inspection. Stage5 Browser will restore the exact prior selected tab before returning the failure.',
+            },
+          },
+        );
+      }
+    };
     try {
       if (temporaryActivation && selectedBefore !== page) {
         activationAttempted = true;
@@ -2138,6 +2184,7 @@ export class BrowserController {
         const activated = await this.waitForVisiblePageActivation(
           page,
           await this.observePageActivation(page),
+          Math.max(0, remainingUntil(workDeadlineAt)),
         );
         if (activated.visibility !== 'visible') {
           throw new Stage5BrowserError(
@@ -2162,8 +2209,10 @@ export class BrowserController {
           loadingBefore,
           input.waitFor,
           Math.max(0, remainingUntil(workDeadlineAt)),
+          ensureTemporaryRendererVisible,
         );
       }
+      await ensureTemporaryRendererVisible();
       const rawSnapshot = await page.locator('body').ariaSnapshot({
         mode: 'ai',
         depth: input.depth,
@@ -2191,6 +2240,22 @@ export class BrowserController {
       rendererVisibility = observedVisibility === 'visible' || observedVisibility === 'hidden'
         ? observedVisibility
         : 'unknown';
+      if (temporaryActivation && rendererVisibility !== 'visible') {
+        throw new Stage5BrowserError(
+          'OPERATION_FAILED',
+          'The exact temporarily activated renderer was not visible at the semantic capture boundary.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'temporary_tab_activation_hidden_at_capture',
+              activationAttempted,
+              visibilityRecoveryAttempted: activationVisibilityRecoveryUsed,
+              elementActionDispatched: false,
+              suggestedAction: 'Do not repeat activation or inspection. Stage5 Browser will restore the exact prior selected tab before returning the failure.',
+            },
+          },
+        );
+      }
       visibleModalCount = observedModalCount;
     } catch (error) {
       inspectionError = error;
@@ -2207,6 +2272,7 @@ export class BrowserController {
             const restored = await this.waitForVisiblePageActivation(
               selectedBefore,
               await this.observePageActivation(selectedBefore),
+              Math.max(0, remainingUntil(deadlineAt)),
             );
             activationRestored = restored.visibility === 'visible';
           } catch {
@@ -6719,6 +6785,7 @@ export class BrowserController {
     before: ScrollContentSample,
     expectation: BrowserCommandInput<'scroll'>['waitFor'],
     remainingTimeoutMs: number,
+    visibilityGuard?: () => Promise<void>,
   ): Promise<ScrollWaitResult> {
     const observationSurfaceUnavailable = (): Stage5BrowserError => new Stage5BrowserError(
       'OPERATION_FAILED',
@@ -6748,6 +6815,7 @@ export class BrowserController {
     }
     const startedAt = Date.now();
     const budgetMs = Math.max(0, Math.min(expectation.timeoutMs, remainingTimeoutMs));
+    await visibilityGuard?.();
     const initialObservation = await this.scrollContentObservation(frame, surface);
     if (initialObservation === null) {
       throw observationSurfaceUnavailable();
@@ -6819,6 +6887,7 @@ export class BrowserController {
         };
       }
       await page.waitForTimeout(Math.min(100, Math.max(1, budgetMs - elapsed)));
+      await visibilityGuard?.();
       const observed = await this.scrollContentObservation(frame, surface);
       if (observed === null) {
         throw observationSurfaceUnavailable();
@@ -7309,11 +7378,17 @@ export class BrowserController {
         );
       }
 
+      const activation = await this.preferredObservedClickActivation(
+        handle,
+        actionDeadlineAt,
+        postcondition,
+      );
+      const postconditionedKeyboardActivation = activation !== 'pointer' && postcondition !== null;
       const failure = !targetState.visible || !targetState.inViewport
         ? { diagnostic: 'not_visible' as const }
         : !targetState.enabled
           ? { diagnostic: 'not_enabled' as const }
-          : targetState.receivesPointerEvents === false
+          : targetState.receivesPointerEvents === false && !postconditionedKeyboardActivation
             ? { diagnostic: 'pointer_intercepted' as const }
             : null;
       if (failure !== null) {
@@ -7335,11 +7410,7 @@ export class BrowserController {
         locator,
         handle,
         targetState,
-        activation: await this.preferredObservedClickActivation(
-          handle,
-          actionDeadlineAt,
-          postcondition,
-        ),
+        activation,
         pageActivation,
       };
     }
@@ -7788,11 +7859,17 @@ export class BrowserController {
         'TARGET_NOT_FOUND',
       );
     }
+    const activation = await this.preferredObservedClickActivation(
+      handle,
+      actionDeadlineAt,
+      postcondition,
+    );
+    const postconditionedKeyboardActivation = activation !== 'pointer' && postcondition !== null;
     const failure = !targetState.visible || !targetState.inViewport
       ? { diagnostic: 'not_visible' as const, reason: 'target_not_actionable_in_viewport' }
       : !targetState.enabled
         ? { diagnostic: 'not_enabled' as const, reason: 'target_not_enabled_after_scroll' }
-        : targetState.receivesPointerEvents === false
+        : targetState.receivesPointerEvents === false && !postconditionedKeyboardActivation
           ? { diagnostic: 'pointer_intercepted' as const, reason: 'target_covered_after_scroll' }
           : null;
     if (failure !== null) {
@@ -7811,11 +7888,7 @@ export class BrowserController {
       locator: preparedLocator,
       handle,
       targetState,
-      activation: await this.preferredObservedClickActivation(
-        handle,
-        actionDeadlineAt,
-        postcondition,
-      ),
+      activation,
       pageActivation,
     };
   }
@@ -8542,9 +8615,13 @@ export class BrowserController {
   private async waitForVisiblePageActivation(
     page: Page,
     initial: PageActivationObservation,
+    maximumWaitMs = NATIVE_WINDOW_VISIBILITY_WAIT_MS,
   ): Promise<PageActivationObservation> {
     let observed = initial;
-    const deadline = Date.now() + NATIVE_WINDOW_VISIBILITY_WAIT_MS;
+    const deadline = Date.now() + Math.min(
+      NATIVE_WINDOW_VISIBILITY_WAIT_MS,
+      Math.max(0, maximumWaitMs),
+    );
     while (observed.visibility !== 'visible' && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(
         resolve,

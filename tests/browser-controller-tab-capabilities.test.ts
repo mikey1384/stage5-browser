@@ -146,7 +146,7 @@ describe("BrowserController tab capabilities", () => {
     });
   });
 
-  it("temporarily activates a hidden loading tab and proves exact selection restoration", async () => {
+  it("recovers one temporary visibility loss, fails on a second, and restores exact selection", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(
@@ -189,9 +189,13 @@ describe("BrowserController tab capabilities", () => {
     await feedPage.evaluate(() => {
       const fixtureWindow = window as typeof window & {
         __fixtureVisibility?: "visible" | "hidden";
+        __fixtureVisibleTransitions?: number;
+        __fixtureRepeatHide?: boolean;
         __setFixtureVisibility?: (state: "visible" | "hidden") => void;
       };
       fixtureWindow.__fixtureVisibility = "hidden";
+      fixtureWindow.__fixtureVisibleTransitions = 0;
+      fixtureWindow.__fixtureRepeatHide = false;
       fixtureWindow.__setFixtureVisibility = (state) => {
         fixtureWindow.__fixtureVisibility = state;
         document.dispatchEvent(new Event("visibilitychange"));
@@ -204,6 +208,15 @@ describe("BrowserController tab capabilities", () => {
       document.body.innerHTML = '<main><div role="status">Loading...</div></main>';
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "visible") return;
+        fixtureWindow.__fixtureVisibleTransitions =
+          (fixtureWindow.__fixtureVisibleTransitions ?? 0) + 1;
+        if (
+          fixtureWindow.__fixtureRepeatHide ||
+          fixtureWindow.__fixtureVisibleTransitions === 1
+        ) {
+          window.setTimeout(() => fixtureWindow.__setFixtureVisibility?.("hidden"), 25);
+          return;
+        }
         window.setTimeout(() => {
           document.body.innerHTML = '<main><article><h1>Prior posts loaded</h1><p>Read-only context</p></article></main>';
         }, 100);
@@ -280,8 +293,40 @@ describe("BrowserController tab capabilities", () => {
     expect(activated.snapshot).toContain("Prior posts loaded");
     expect(activated.snapshot).toContain("Read-only context");
     expect(activated.snapshot).not.toContain("[ref=");
-    expect(bringFeedToFront).toHaveBeenCalledTimes(1);
+    expect(bringFeedToFront).toHaveBeenCalledTimes(2);
     expect(restoreDraftToFront).toHaveBeenCalledTimes(1);
+    expect(await feedPage.evaluate(() => (
+      window as typeof window & { __fixtureVisibleTransitions?: number }
+    ).__fixtureVisibleTransitions)).toBe(2);
+    expect((await controller.tabs()).activePageIndex).toBe(draftIndex);
+    expect(await draftPage.evaluate(() => document.visibilityState)).toBe("visible");
+    expect(await feedPage.evaluate(() => document.visibilityState)).toBe("hidden");
+
+    await feedPage.evaluate(() => {
+      const fixtureWindow = window as typeof window & {
+        __fixtureVisibleTransitions?: number;
+        __fixtureRepeatHide?: boolean;
+      };
+      fixtureWindow.__fixtureVisibleTransitions = 0;
+      fixtureWindow.__fixtureRepeatHide = true;
+      document.body.innerHTML = '<main><div role="status">Loading again...</div></main>';
+    });
+    await expect(controller.inspectTab({
+      tabId: feedTab.tabId,
+      depth: 8,
+      temporaryActivation: true,
+      waitFor: { condition: "either", timeoutMs: 2_000 },
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: "OPERATION_FAILED",
+      details: {
+        reason: "temporary_tab_activation_visibility_lost",
+        visibilityRecoveryAttempted: true,
+        elementActionDispatched: false,
+      },
+    });
+    expect(bringFeedToFront).toHaveBeenCalledTimes(4);
+    expect(restoreDraftToFront).toHaveBeenCalledTimes(2);
     expect((await controller.tabs()).activePageIndex).toBe(draftIndex);
     expect(await draftPage.evaluate(() => document.visibilityState)).toBe("visible");
     expect(await feedPage.evaluate(() => document.visibilityState)).toBe("hidden");

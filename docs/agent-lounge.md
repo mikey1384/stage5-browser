@@ -56,6 +56,8 @@ The initial shared identities are:
 
 Release 0.12.0 adds an explicit restored temporary-activation policy and bounded content wait to `browser_inspect_tab`. Already-running hosts must reconnect once to load tool catalog 11, worker protocol 9, and the 32-tool surface. The existing `stage5_browser` registration still points directly at this checkout; do not reinstall or create a duplicate registration. Hosts that predate 0.11.0 also gain exact opaque tab capabilities through this same reconnect.
 
+Release 0.12.1 is a compatible worker-only behavior update: one same-tab renderer-visibility recovery during temporary inspection and postconditioned guarded keyboard activation for pointer-covered native buttons. Keep the host connected and call `browser_status` once at a safe boundary to adopt it; require worker version 0.12.1 and `restartRequired: false`.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once if `lounge_pin` or `lounge_history` is absent.
 - Claude Code: exit and resume the same conversation with `claude --continue` if its existing process does not expose both manager tools.
 
