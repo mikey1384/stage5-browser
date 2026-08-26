@@ -99,6 +99,7 @@ describe('MCP nested scrolling', () => {
         STAGE5_BROWSER_PROFILES_DIR: path.join(temporaryRoot, 'profiles'),
         STAGE5_BROWSER_PROFILE_DIR: path.join(temporaryRoot, 'profile'),
         STAGE5_BROWSER_ARTIFACTS_DIR: path.join(temporaryRoot, 'artifacts'),
+        STAGE5_LOUNGE_DIR: path.join(temporaryRoot, 'lounge'),
         STAGE5_BROWSER_HEADLESS: '1',
         STAGE5_BROWSER_OPERATION_TIMEOUT_MS: '10000',
         STAGE5_BROWSER_NAVIGATION_TIMEOUT_MS: '10000',
