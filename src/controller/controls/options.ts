@@ -56,6 +56,7 @@ export const controlOptionOperations = {
     frame: Frame,
     controlHandle: ElementHandle<HTMLElement>,
     deadlineAt: number,
+    allowUniqueRenderedAfterDispatch = false,
   ): Promise<{ locator: Locator; handle: ElementHandle<HTMLElement> } | null | 'ambiguous'> {
     const relation = await boundedValue(
       controlHandle.evaluate((control) => ({
@@ -126,6 +127,8 @@ export const controlOptionOperations = {
           ? structural[0]
           : (relation.expanded || relation.focused) && rendered.length === 1
             ? rendered[0]
+            : allowUniqueRenderedAfterDispatch && rendered.length === 1
+              ? rendered[0]
             : null;
       const ambiguous = explicit.length > 1 || structural.length > 1 ||
         ((relation.expanded || relation.focused) && rendered.length > 1);

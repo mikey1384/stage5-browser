@@ -91,6 +91,8 @@ export const observationTabsOperations = {
     }
 
     let snapshot: string | null = null;
+    let snapshotScope: BrowserCommandOutput<'inspectTab'>['scope'] = 'document';
+    let snapshotRootWarnings: BrowserCommandOutput<'inspectTab'>['warnings'] = [];
     let rendererVisibility: 'visible' | 'hidden' | 'unknown' = 'unknown';
     let visibleModalCount = 0;
     let loadingWait: BrowserCommandOutput<'inspectTab'>['loadingWait'] = null;
@@ -180,7 +182,11 @@ export const observationTabsOperations = {
         );
       }
       await ensureTemporaryRendererVisible();
-      const rawSnapshot = await page.locator('body').ariaSnapshot({
+      const root = await this.snapshotRoot(frame);
+      snapshotScope = root.scope;
+      visibleModalCount = root.visibleModalCount;
+      snapshotRootWarnings = root.warnings;
+      const rawSnapshot = await root.locator.ariaSnapshot({
         mode: 'ai',
         depth: input.depth,
         boxes: false,
@@ -191,14 +197,9 @@ export const observationTabsOperations = {
         rawSnapshot,
         workDeadlineAt,
       );
-      const observedModalCount = await boundedValue(
-        frame.locator('[role="dialog"]:visible, dialog[open]:visible, [aria-modal="true"]:visible').count(),
-        Math.max(1, remainingUntil(workDeadlineAt)),
-        -1,
-      );
-      const detailedSnapshot = observedModalCount === 0
+      const detailedSnapshot = snapshotScope === 'document' && visibleModalCount === 0
         ? await withReadOnlySemanticContentDetails({
-          root: page.locator('body'),
+          root: root.locator,
           snapshot: filteredSnapshot,
           deadlineAt: workDeadlineAt,
           filterInactivePopupSnapshot: (detail) =>
@@ -230,7 +231,6 @@ export const observationTabsOperations = {
           },
         );
       }
-      visibleModalCount = Math.max(0, observedModalCount);
     } catch (error) {
       inspectionError = error;
     } finally {
@@ -302,7 +302,7 @@ export const observationTabsOperations = {
       'unknown' as const,
     );
     const controllerSelectionUnchanged = this.preferredPage() === selectedBefore;
-    const warnings: BrowserCommandOutput<'inspectTab'>['warnings'] = [];
+    const warnings: BrowserCommandOutput<'inspectTab'>['warnings'] = [...snapshotRootWarnings];
     if (loadingWait !== null && !loadingWait.satisfied) {
       warnings.push({
         code: 'loading_expectation_not_satisfied',
@@ -310,7 +310,7 @@ export const observationTabsOperations = {
         suggestedAction: 'Use only the returned ref-free evidence. Do not repeat activation, select the tab, or infer that loading completed.',
       });
     }
-    if (visibleModalCount > 0) {
+    if (visibleModalCount > 0 && snapshotScope === 'document' && snapshotRootWarnings.length === 0) {
       warnings.push({
         code: 'visible_modal_in_document',
         message: 'The inspected document contains a visible modal; its application may suppress underlying content from the accessibility tree.',
@@ -328,7 +328,7 @@ export const observationTabsOperations = {
     return {
       page: await this.tabSummary(page, livePages.indexOf(page)),
       snapshot,
-      scope: 'document',
+      scope: snapshotScope,
       refCount: 0,
       elementActionsAvailable: false,
       activationAttempted,

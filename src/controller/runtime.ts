@@ -1,4 +1,4 @@
-import { type AuthenticationBoundaryOutcome, type Browser, type BrowserContext, type BrowserLaunchIdentity, type BrowserLifecycleState, type BrowserProduct, type Frame, type HumanBrowserLauncher, inspectChromiumProfileOwner, inspectControlledProfileStorage, inspectProfileStorage, inspectRuntimeProfile, type LaunchFailureDiagnostic, type NativeControlRecord, NativeHumanBrowserLauncher, NativeOwnedBrowserWindowActivator, type OwnedBrowserWindowActivator, type OwnedProcessObservation, type Page, PageDiagnosticBuffer, path, ProfileOwnershipLeaseController, randomUUID, type RuntimeProfileObservation, type SafeTargetState, type SanitizedActionDiagnostic, type SanitizedClickDispatchEvidence, type Stage5BrowserConfig } from './dependencies.js';
+import { type AuthenticationBoundaryOutcome, type Browser, type BrowserContext, type BrowserLaunchIdentity, type BrowserLifecycleState, type BrowserProduct, type Frame, type HumanBrowserLauncher, inspectChromiumProfileOwner, inspectControlledProfileStorage, inspectProfileStorage, inspectRuntimeProfile, type LaunchFailureDiagnostic, type NativeControlRecord, NativeHumanBrowserLauncher, NativeOwnedBrowserWindowActivator, type OwnedBrowserWindowActivator, type OwnedProcessObservation, type Page, PageDiagnosticBuffer, path, ProfileOwnershipLeaseController, randomUUID, type RuntimeProfileObservation, type SafeTargetState, type SanitizedActionDiagnostic, type SanitizedClickDispatchEvidence, type Stage5BrowserConfig, type WorkerCommandTelemetry } from './dependencies.js';
 import { ActionPhaseManager } from './action/phase-manager.js';
 import { clickExecutorOperations, type ClickExecutorOperations } from './action/click-executor.js';
 import { type AuthenticationHandoff, type ClickDispatchConclusion, type ControlledStartBoundaryObservation, type ExternalClickDispatchObservation, type ObservedFormInspection, type ObservedSnapshot, type PendingHandoffRelease, type PrivateFieldHandoff, type ScrollHistory } from './model.js';
@@ -309,6 +309,22 @@ export class BrowserController {
     this.downloadManager = new BrowserDownloadManager(path.join(config.artifactsDir, 'downloads'));
     this.dialogManager = new BrowserDialogManager(config.artifactsDir);
     this.pageLifecycleManager = new BrowserPageLifecycleManager(config.artifactsDir);
+  }
+
+  drainActionPhaseTelemetry(): WorkerCommandTelemetry {
+    return {
+      actionPhases: this.actionPhases.drainCompleted().map((snapshot) => ({
+        action: snapshot.action,
+        startedAtMs: snapshot.startedAtMs,
+        deadlineAtMs: snapshot.deadlineAtMs,
+        transitions: snapshot.transitions.map((transition) => ({ ...transition })),
+        dispatchState: snapshot.dispatchState,
+        dispatchAttempts: snapshot.dispatchAttempts,
+        recovery: snapshot.recovery === null ? null : { ...snapshot.recovery },
+        terminalOutcome: snapshot.terminalOutcome,
+        completedAtMs: snapshot.completedAtMs,
+      })),
+    };
   }
 }
 

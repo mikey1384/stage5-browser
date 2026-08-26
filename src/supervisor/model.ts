@@ -29,6 +29,7 @@ export interface RecoveryResult {
 export interface PendingRequest {
   child: ChildProcess;
   timer: NodeJS.Timeout;
+  telemetryOperationId: string | null;
   resolve: (value: unknown) => void;
   reject: (reason: Stage5BrowserError) => void;
 }

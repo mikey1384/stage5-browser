@@ -91,13 +91,7 @@ export const controlInspectionOperations = {
               name: input.control.name,
               exact: input.control.exact,
               frameId: input.frameId,
-              postcondition: {
-                expectedUrl: null,
-                expectedSelected: true,
-                expectedVisible: null,
-                expectedHidden: null,
-                timeoutMs: Math.max(100, Math.min(2_000, remainingUntil(deadlineAt))),
-              },
+              postcondition: null,
               timeoutMs: Math.max(1_000, remainingUntil(deadlineAt)),
             });
             openerActionDispatched = true;
@@ -123,7 +117,12 @@ export const controlInspectionOperations = {
             deadlineAt,
           ));
           descriptor = await this.inspectControlDescriptor(controlHandle, deadlineAt);
-          associated = await this.associatedControlPopup(frame, controlHandle, deadlineAt);
+          associated = await this.associatedControlPopup(
+            frame,
+            controlHandle,
+            deadlineAt,
+            openerActionDispatched !== false,
+          );
           if (associated !== null && associated !== 'ambiguous') {
             popupLocator = associated.locator;
             popupHandle = associated.handle;

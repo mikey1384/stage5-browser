@@ -7,6 +7,7 @@ export const MCP_TOOL_NAMES = {
   loungePin: 'lounge_pin',
   loungeHistory: 'lounge_history',
   browserOperationStatus: 'browser_operation_status',
+  browserExecutionTraces: 'browser_execution_traces',
   browserPageEvents: 'browser_page_events',
   browserStatus: 'browser_status',
   browserAvailable: 'browser_available',

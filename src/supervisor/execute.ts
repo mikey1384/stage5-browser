@@ -19,17 +19,20 @@ export const executeOperations = {
       const startedAtMs = Date.parse(startedAt);
       let runtimeTransition: RuntimeTransition | null = null;
       const browserWasConnectedBefore = this.browserWasConnected;
+      let operationWorkerRuntime = this.workerRuntime;
 
       try {
         await this.applyPendingAgentContext();
         this.operations.transition(operationId, 'worker_preflight');
         runtimeTransition = await this.reloadCompatibleRuntimeIfNeeded();
         await this.ensureWorker();
+        operationWorkerRuntime = this.workerRuntime;
         this.operations.transition(operationId, 'worker_request_sent');
         const result = await this.request(
           command,
           payload,
           hardTimeoutMs ?? this.deadlineFor(command, payload),
+          operationId,
         );
         this.operations.transition(operationId, 'worker_result_received');
         this.captureSelectedBrowser(result);
@@ -40,16 +43,30 @@ export const executeOperations = {
         await this.noteAgentContextResult(command, browserWasConnectedBefore, result);
         this.operations.succeed(operationId, result, 'not_needed');
         const timing = this.operations.timing(operationId);
+        const terminalAtMs = timing.terminalAtMs ?? Date.now();
         await this.appendJournal({
           operationId,
           command,
           startedAt,
-          durationMs: Date.now() - startedAtMs,
+          durationMs: terminalAtMs - startedAtMs,
           outcome: 'succeeded',
           recovery: 'not_needed',
-          completedAt: new Date(timing.terminalAtMs ?? Date.now()).toISOString(),
-          timing: { ...timing, terminalAtMs: timing.terminalAtMs ?? Date.now() },
+          completedAt: new Date(terminalAtMs).toISOString(),
+          timing: { ...timing, terminalAtMs },
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
+        });
+        await this.recordExecutionTrace({
+          operationId,
+          agentId: this.agentContextId,
+          command,
+          startedAt,
+          completedAt: new Date(terminalAtMs).toISOString(),
+          durationMs: terminalAtMs - startedAtMs,
+          outcome: 'succeeded',
+          error: null,
+          result,
+          workerRuntime: operationWorkerRuntime,
+          workerTelemetry: this.takeWorkerTelemetry(operationId),
         });
         return { operationId, result, recovery: 'not_needed', runtimeTransition };
       } catch (error) {
@@ -71,18 +88,32 @@ export const executeOperations = {
         const outcome: OperationOutcome = serialized.code === 'OPERATION_TIMEOUT' ? 'timed_out' : 'failed';
         this.operations.fail(operationId, serialized, recovery);
         const timing = this.operations.timing(operationId);
+        const terminalAtMs = timing.terminalAtMs ?? Date.now();
         await this.appendJournal({
           operationId,
           command,
           startedAt,
-          durationMs: Date.now() - startedAtMs,
+          durationMs: terminalAtMs - startedAtMs,
           outcome,
           recovery,
           errorCode: serialized.code,
-          completedAt: new Date(timing.terminalAtMs ?? Date.now()).toISOString(),
-          timing: { ...timing, terminalAtMs: timing.terminalAtMs ?? Date.now() },
+          completedAt: new Date(terminalAtMs).toISOString(),
+          timing: { ...timing, terminalAtMs },
           ...this.safeJournalDiagnostic(serialized),
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
+        });
+        await this.recordExecutionTrace({
+          operationId,
+          agentId: this.agentContextId,
+          command,
+          startedAt,
+          completedAt: new Date(terminalAtMs).toISOString(),
+          durationMs: terminalAtMs - startedAtMs,
+          outcome,
+          error: serialized,
+          result: null,
+          workerRuntime: operationWorkerRuntime,
+          workerTelemetry: this.takeWorkerTelemetry(operationId),
         });
         throw new SupervisedOperationError(serialized, operationId, recovery, runtimeTransition);
       }
@@ -95,6 +126,7 @@ export const executeOperations = {
       const { operationId, startedAt } = operation;
       const startedAtMs = Date.parse(startedAt);
       const candidateUrl = reopenLastUrl ? this.lastKnownUrl : null;
+      let recoveryWorkerRuntime = this.workerRuntime;
       this.operations.transition(operationId, 'worker_preflight');
 
       if (this.humanAuthenticationInProgress) {
@@ -111,18 +143,32 @@ export const executeOperations = {
         ).serialize();
         this.operations.fail(operationId, serialized, 'not_needed');
         const timing = this.operations.timing(operationId);
+        const terminalAtMs = timing.terminalAtMs ?? Date.now();
         await this.appendJournal({
           operationId,
           command: 'recover',
           startedAt,
-          durationMs: Date.now() - startedAtMs,
+          durationMs: terminalAtMs - startedAtMs,
           outcome: 'failed',
           recovery: 'not_needed',
           errorCode: serialized.code,
-          completedAt: new Date(timing.terminalAtMs ?? Date.now()).toISOString(),
-          timing: { ...timing, terminalAtMs: timing.terminalAtMs ?? Date.now() },
+          completedAt: new Date(terminalAtMs).toISOString(),
+          timing: { ...timing, terminalAtMs },
           browser: this.selectedBrowser,
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
+        });
+        await this.recordExecutionTrace({
+          operationId,
+          agentId: this.agentContextId,
+          command: 'recover',
+          startedAt,
+          completedAt: new Date(terminalAtMs).toISOString(),
+          durationMs: terminalAtMs - startedAtMs,
+          outcome: 'failed',
+          error: serialized,
+          result: null,
+          workerRuntime: recoveryWorkerRuntime,
+          workerTelemetry: null,
         });
         throw new SupervisedOperationError(serialized, operationId, 'not_needed');
       }
@@ -131,6 +177,7 @@ export const executeOperations = {
         await this.applyPendingAgentContext();
         this.operations.transition(operationId, 'worker_request_sent');
         await this.replaceWorker();
+        recoveryWorkerRuntime = this.workerRuntime;
         let reopenedUrl: string | null = null;
         if (candidateUrl !== null && candidateUrl !== 'about:blank') {
           const opened = await this.request(
@@ -161,18 +208,32 @@ export const executeOperations = {
         };
         this.operations.succeed(operationId, result, 'succeeded');
         const timing = this.operations.timing(operationId);
+        const terminalAtMs = timing.terminalAtMs ?? Date.now();
         await this.appendJournal({
           operationId,
           command: 'recover',
           startedAt,
-          durationMs: Date.now() - startedAtMs,
+          durationMs: terminalAtMs - startedAtMs,
           outcome: 'succeeded',
           recovery: 'succeeded',
           browser: status.browser,
           browserState: status.state,
-          completedAt: new Date(timing.terminalAtMs ?? Date.now()).toISOString(),
-          timing: { ...timing, terminalAtMs: timing.terminalAtMs ?? Date.now() },
+          completedAt: new Date(terminalAtMs).toISOString(),
+          timing: { ...timing, terminalAtMs },
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
+        });
+        await this.recordExecutionTrace({
+          operationId,
+          agentId: this.agentContextId,
+          command: 'recover',
+          startedAt,
+          completedAt: new Date(terminalAtMs).toISOString(),
+          durationMs: terminalAtMs - startedAtMs,
+          outcome: 'succeeded',
+          error: null,
+          result,
+          workerRuntime: recoveryWorkerRuntime,
+          workerTelemetry: null,
         });
         return result;
       } catch (error) {
@@ -183,18 +244,32 @@ export const executeOperations = {
         await this.terminateWorker();
         this.operations.fail(operationId, serialized, 'failed');
         const timing = this.operations.timing(operationId);
+        const terminalAtMs = timing.terminalAtMs ?? Date.now();
         await this.appendJournal({
           operationId,
           command: 'recover',
           startedAt,
-          durationMs: Date.now() - startedAtMs,
+          durationMs: terminalAtMs - startedAtMs,
           outcome: 'failed',
           recovery: 'failed',
           errorCode: serialized.code,
-          completedAt: new Date(timing.terminalAtMs ?? Date.now()).toISOString(),
-          timing: { ...timing, terminalAtMs: timing.terminalAtMs ?? Date.now() },
+          completedAt: new Date(terminalAtMs).toISOString(),
+          timing: { ...timing, terminalAtMs },
           ...this.safeJournalDiagnostic(serialized),
           ...(this.lastKnownUrl === null ? {} : { currentUrl: this.lastKnownUrl }),
+        });
+        await this.recordExecutionTrace({
+          operationId,
+          agentId: this.agentContextId,
+          command: 'recover',
+          startedAt,
+          completedAt: new Date(terminalAtMs).toISOString(),
+          durationMs: terminalAtMs - startedAtMs,
+          outcome: 'failed',
+          error: serialized,
+          result: null,
+          workerRuntime: recoveryWorkerRuntime,
+          workerTelemetry: null,
         });
         throw new SupervisedOperationError(serialized, operationId, 'failed');
       }

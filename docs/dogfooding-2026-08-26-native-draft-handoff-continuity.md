@@ -2,22 +2,24 @@
 
 ## Sanitized finding
 
-A social-page workflow had an unpublished composer open when a Stage5 Browser 0.12.2 temporary background-tab inspection could not prove restoration of the exact prior renderer. The reporting agent stopped without retrying or publishing. A later 0.13.0 MCP reconnect inspected configured-default Chromium instead of the intended Chrome backend; 0.14.0 corrected that agent-context error and reattached the uniquely proven Chrome process and all three exact targets. One passive inspection then showed the intended page but no composer modal or unpublished draft.
+A social-page workflow had an unpublished composer open when a Stage5 Browser 0.12.2 temporary background-tab inspection could not prove restoration of the exact prior renderer. The reporting agent stopped without retrying or publishing. A later 0.13.0 MCP reconnect inspected configured-default Chromium instead of the intended Chrome backend; 0.14.0 corrected that agent-context error and reattached the uniquely proven Chrome process and all three exact targets. An initial client-truncated view of a passive inspection appeared to show no composer, but the complete 35,909-character result authoritatively contained the composer textbox, attached media, and Next control near its tail. The unpublished draft survived.
 
-No live input, activation, navigation, close, replay, or publication was used to investigate this finding. The missing draft is not recoverable and must not be reconstructed from agent memory.
+No live input, activation, navigation, close, replay, or publication was used to investigate this finding. The draft remains frozen and intact.
 
 ## Boundary analysis
 
-The exact Chrome process and target set survived. The 0.14 lifecycle stream contained no Facebook document-replacement or close event during reattachment, but the pre-0.13 control record did not always retain a selected loader identity when no action diagnostic existed. Therefore the evidence cannot prove when the site state changed or attribute that change to the 0.14 reattachment.
+The exact Chrome process, target set, document, modal, and draft survived. The false negative came from a separate observation bug: `browser_inspect_tab` captured the whole document even when one unique visible modal existed. Large underlying Page content consumed the front of the result, while decisive modal evidence appeared only after the client's context boundary.
 
-The demonstrated ambiguity belongs to the older boundary:
+Two boundaries remain relevant:
 
 - 0.12.2 had already reported `temporary_tab_activation_restore_failed`, so controller selection was not proof that the composer renderer was actually active;
 - the long uncontrolled gap left same-document application state subject to autonomous site behavior, renderer lifecycle, and memory pressure;
 - 0.13.0 added one exact same-target restoration recovery and began retaining target plus loader identity even when no last-action diagnostic exists;
 - 0.14.0 added per-agent backend restoration so a reconnect no longer silently inspects configured-default Chromium instead of the agent's Chrome profile.
+- the tab-inspection path bypassed the canonical snapshot-root selector even though ordinary snapshots already promoted one unique active modal.
+- 0.15.0 routes passive exact-tab inspection through that canonical selector and bounds priority-first MCP results so decisive action evidence cannot be displaced by underlying page detail.
 
-This is correlation, not a claim that Chrome discarded the tab or that Facebook performed a particular transition.
+The later complete snapshot supersedes the earlier absence inference. There is no evidence that Chrome discarded the tab or that the site erased the draft.
 
 ## Decisive current-version regression
 
@@ -31,8 +33,8 @@ This is correlation, not a claim that Chrome discarded the tab or that Facebook 
 6. prove the same process, target, loader, modal, and unsaved textarea value remain;
 7. prove no selected-document replacement was emitted after the handoff cursor, then close only the disposable owned browser.
 
-The regression passes on 0.14.0. It demonstrates that the current Stage5 worker handoff does not itself reload or erase the selected document. Existing replacement-document tests separately prove truthful state-risk events and no replay when loader continuity fails.
+The handoff regression and the new modal-root regression pass on 0.15.0. Together they demonstrate that current worker handoff does not itself reload or erase the selected document and that passive inspection exposes the surviving unique modal compactly. Existing replacement-document tests separately prove truthful state-risk events and no replay when loader continuity fails.
 
 ## Safe workflow disposition
 
-The historical unpublished draft remains lost and the live workflow remains paused. No Stage5 or Lounge authority permits reconstructing it. A future user-authorized workflow must begin from a fresh page observation and newly supplied intent. A future reproduction on the current runtime should report the exact version, target/loader continuity result, and durable page events; it must not retry or publish merely because the prior UI state is absent.
+The unpublished draft remains frozen and the live workflow remains paused. After the reporting agent reconnects once to 0.15.0 and reattaches only its uniquely proven intended Chrome profile, one passive exact-tab inspection may verify the unique modal through a compact `scope: "modal"` result. That read-only evidence does not authorize editing, advancing, discarding, or publishing. A future reproduction should report the exact version, operation ID, target/loader continuity result, durable page events, semantic scope, bounded-delivery state, and privacy-safe execution trace; it must never infer absence from a truncated result.

@@ -64,7 +64,9 @@ Release 0.13.0 changes both public contracts: tool catalog 12, worker protocol 1
 
 Release 0.14.0 retains catalog 12 and 53 tools, changes worker protocol to 11, and adds host-behavior version 1. Reconnect once and rejoin the same Lounge identity before calling browser tools. Join now restores only that agent's selected backend and explicit review policy on a context-storage lane that never enters the browser queue. Because 0.13.0 stored no agent/backend mapping, migrate once through `browser_available` plus one explicit `browser_start` only when the intended Chrome/Brave/etc. profile is uniquely proven recoverable; that success seeds later reconnects. If multiple orphaned profiles are plausible, stop for identity evidence rather than using a global last-browser guess.
 
-- ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.13.0 catalog.
-- Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.13.0 catalog.
+Release 0.15.0 changes both public contracts to catalog 13, worker protocol 12, and 54 tools. Reconnect every host once, rejoin its same stable Lounge identity, and require version 0.15.0/catalog 13/protocol 12/54 tools with `restartRequired: false`. Preserve an exact owned native Chromium-family process through the reconnect; use `browser_available` and adopt it only when one intended profile is uniquely proven recoverable. Then discard all old refs and take fresh status, tabs, page events, and semantic state. `browser_execution_traces` can audit an exact operation's privacy-safe manager/phase/dispatch/reconciliation record; it never authorizes a retry, and possible input remains no-replay.
+
+- ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.15.0 catalog.
+- Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.15.0 catalog.
 
 After that reconnect, compatible worker fixes load without another host restart unless `browser_status.restartRequired` explicitly reports a later tool, protocol, or host-behavior change. Lounge bindings remain intact across browser-worker replacement; only a real MCP connection replacement requires rejoining.

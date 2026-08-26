@@ -1,4 +1,4 @@
-import { type BrowserActionPolicyMode, type BrowserProduct, type ChildProcess, OperationRegistry, type RuntimeProcessInfo, SerialQueue, type Stage5BrowserConfig } from './dependencies.js';
+import { type BrowserActionPolicyMode, type BrowserProduct, type ChildProcess, ExecutionTelemetryJournal, OperationRegistry, type RuntimeProcessInfo, SerialQueue, type Stage5BrowserConfig, type WorkerCommandTelemetry } from './dependencies.js';
 import { type BrowserSupervisorOptions, type PendingRequest } from './model.js';
 import { executeOperations, type ExecuteOperations } from './execute.js';
 import { workerLifecycleOperations, type WorkerLifecycleOperations } from './worker-lifecycle.js';
@@ -6,15 +6,19 @@ import { transportOperations, type TransportOperations } from './transport.js';
 import { policyOperations, type PolicyOperations } from './policy.js';
 import { agentContextOperations, type AgentContextOperations } from './agent-context.js';
 import { BrowserAgentContextStore } from './agent-context-store.js';
+import { supervisorTelemetryOperations, type SupervisorTelemetryOperations } from './telemetry.js';
 export interface BrowserSupervisorContext extends
   ExecuteOperations,
   WorkerLifecycleOperations,
   TransportOperations,
   PolicyOperations,
-  AgentContextOperations {
+  AgentContextOperations,
+  SupervisorTelemetryOperations {
   config: Stage5BrowserConfig;
   queue: SerialQueue;
   operations: OperationRegistry;
+  telemetryJournal: ExecutionTelemetryJournal;
+  workerTelemetryByOperation: Map<string, WorkerCommandTelemetry>;
   workerUrl: URL;
   environment: NodeJS.ProcessEnv;
   expectedBuildFingerprint: string | null;
@@ -42,11 +46,14 @@ export interface BrowserSupervisor extends
   WorkerLifecycleOperations,
   TransportOperations,
   PolicyOperations,
-  AgentContextOperations {}
+  AgentContextOperations,
+  SupervisorTelemetryOperations {}
 
 export class BrowserSupervisor {
   private readonly queue = new SerialQueue();
   private readonly operations: OperationRegistry;
+  private readonly telemetryJournal: ExecutionTelemetryJournal;
+  private readonly workerTelemetryByOperation = new Map<string, WorkerCommandTelemetry>();
   private readonly workerUrl: URL;
   private readonly environment: NodeJS.ProcessEnv;
   private expectedBuildFingerprint: string | null;
@@ -77,6 +84,7 @@ export class BrowserSupervisor {
     this.expectedBuildFingerprint = options.expectedBuildFingerprint ?? null;
     this.runtimeInfoProvider = options.runtimeInfoProvider;
     this.operations = new OperationRegistry(config.artifactsDir);
+    this.telemetryJournal = new ExecutionTelemetryJournal(config.artifactsDir);
     this.selectedBrowser = config.browser;
     this.agentContextStore = new BrowserAgentContextStore(config.profilesDir);
   }
@@ -102,4 +110,5 @@ for (const operations of [
   transportOperations,
   policyOperations,
   agentContextOperations,
+  supervisorTelemetryOperations,
 ]) installOperations(BrowserSupervisor.prototype, operations);

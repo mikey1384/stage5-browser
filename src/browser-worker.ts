@@ -177,11 +177,14 @@ function isWorkerRequest(message: unknown): message is BrowserWorkerRequest {
 }
 
 async function handleRequest(request: BrowserWorkerRequest): Promise<void> {
+  controller?.drainActionPhaseTelemetry();
   try {
     const result = await dispatch(request);
-    send({ kind: 'response', id: request.id, ok: true, result });
+    const telemetry = controller?.drainActionPhaseTelemetry();
+    send({ kind: 'response', id: request.id, ok: true, result, ...(telemetry === undefined ? {} : { telemetry }) });
   } catch (error) {
-    send({ kind: 'response', id: request.id, ok: false, error: serializeUnknownError(error) });
+    const telemetry = controller?.drainActionPhaseTelemetry();
+    send({ kind: 'response', id: request.id, ok: false, error: serializeUnknownError(error), ...(telemetry === undefined ? {} : { telemetry }) });
   }
 }
 

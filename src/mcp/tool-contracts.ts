@@ -5,7 +5,7 @@ import {
 } from '../protocol.js';
 import { MCP_TOOL_NAMES as TOOL, type McpToolName } from './tool-names.js';
 
-export type PublicToolManager = BrowserActionManager | 'coordination_manager';
+export type PublicToolManager = BrowserActionManager | 'coordination_manager' | 'telemetry_manager';
 
 export interface PublicToolContract {
   manager: PublicToolManager;
@@ -37,6 +37,7 @@ export const MCP_TOOL_CONTRACTS = {
   [TOOL.loungePin]: lounge(),
   [TOOL.loungeHistory]: lounge(),
   [TOOL.browserOperationStatus]: recovery(),
+  [TOOL.browserExecutionTraces]: host('telemetry_manager', 'host_supervisor'),
   [TOOL.browserPageEvents]: worker('pageEvents'),
   [TOOL.browserStatus]: worker('status'),
   [TOOL.browserAvailable]: worker('availableBrowsers'),

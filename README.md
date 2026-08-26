@@ -66,6 +66,7 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `lounge_pin` | Manager-only compare-and-set update or clear of the durable pinned notice |
 | `lounge_history` | Manager-only audited paginated read of all room messages without claiming recipient delivery |
 | `browser_operation_status` | Recover a reserved or completed operation result without replaying its action, including terminal delivery timing |
+| `browser_execution_traces` | Query durable privacy-safe stable-agent, manager, phase, dispatch, reconciliation, and outcome evidence by operation ID |
 | `browser_page_events` | Read durable sanitized page/document replacement events and explicit unsaved-state risk |
 | `browser_status` | Report MCP/build freshness plus worker, browser, configured and actual runtime profile identity, tab, and active-page state |
 | `browser_available` | Report whether every backend is installed and actually startable, already owned, recoverable, busy in another Stage5 session, or externally owned—without launching or closing it |
@@ -148,13 +149,14 @@ observe → plan → preflight → prepare → dispatch once → reconcile → f
                          └── one recovery to preflight only after proven zero input
 ```
 
-The controller runtime is the single session-context owner. Live handles and refs remain document/action scoped and disposable; only privacy-minimized ownership, terminal outcomes, page-lifecycle risk, transfer/dialog manifests, and Lounge coordination cross an explicit durability boundary. The exhaustive manager and technique matrix lives in `src/protocol/capabilities.ts`, while `src/protocol/command-contracts.ts` assigns every worker command to one manager, phase system, dispatch class, and replay rule. `src/mcp/tool-names.ts` is the canonical 53-tool name catalog, and `src/mcp/tool-contracts.ts` assigns every public browser, host-recovery, and Lounge tool to exactly one manager.
+The controller runtime is the single session-context owner. Live handles and refs remain document/action scoped and disposable; only privacy-minimized ownership, terminal outcomes, execution traces, page-lifecycle risk, transfer/dialog manifests, and Lounge coordination cross an explicit durability boundary. The exhaustive manager and technique matrix lives in `src/protocol/capabilities.ts`, while `src/protocol/command-contracts.ts` assigns every worker command to one manager, phase system, dispatch class, and replay rule. `src/mcp/tool-names.ts` is the canonical 54-tool name catalog, and `src/mcp/tool-contracts.ts` assigns every public browser, host-recovery, telemetry, and Lounge tool to exactly one manager.
 
 Key implementation files:
 
 - `src/mcp/` and `src/mcp-server.ts` — canonical public tool names/owners, agent-facing schemas, registrations, annotations, and stable facade
 - `src/lounge/` and `src/lounge-service.ts` — identity, bounded wake waits, durable store operations, and stable facade
 - `src/operations/` — reservation, terminal outcomes, and durable delivery timing
+- `src/execution-telemetry.ts` — bounded `0600` privacy-safe operation trace journal and query model
 - `src/supervisor/` and `src/supervisor.ts` — serialization, deadlines, process-tree replacement, and stable facade
 - `src/browser-worker.ts` — IPC command dispatch
 - `src/controller/` and `src/browser-controller.ts` — manager-owned controller domains and stable public facade
@@ -167,6 +169,7 @@ Key implementation files:
 - `docs/browser-support.md` — support matrix and required agent selection workflow
 - `docs/agent-lounge.md` — cross-vendor join, wake, acknowledgement, and relay instructions
 - `docs/action-system-acceptance-2026-08-26.md` — privacy-safe 0.13 architecture, reported-defect, capability, and regression acceptance matrix
+- `docs/dogfooding-2026-08-26-observation-delivery-telemetry.md` — modal-root, bounded-result, custom-selection, and execution-trace findings plus the 0.15 remedy
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
 - `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, consumed-input, active-tab, selected-state, and dynamic-feed regressions plus the 0.5.0–0.5.1 remedies

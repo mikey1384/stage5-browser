@@ -4,6 +4,7 @@ import { LoungeService } from '../lounge-service.js';
 import { BrowserSupervisor, SupervisedOperationError } from '../supervisor.js';
 import { buildStampUrlFor, MCP_TOOL_COUNT, RuntimeArtifactMonitor, TOOL_CATALOG_VERSION } from '../runtime-info.js';
 import { createMcpSchemas, type McpSchemas } from './schemas.js';
+import { shapeMcpResult } from './result-shaping.js';
 
 export interface McpHostContext {
   config: Stage5BrowserConfig;
@@ -37,9 +38,9 @@ export function hostRuntimeInfo(context: McpHostContext) {
 }
 
 export function textResult(value: unknown) {
-  const structuredContent = value as Record<string, unknown>;
+  const { structuredContent, text } = shapeMcpResult(value);
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: 'text' as const, text }],
     structuredContent,
   };
 }
@@ -52,9 +53,10 @@ export function errorResult(error: unknown) {
       ? { operationId: error.operationId, recovery: error.recovery }
       : {}),
   };
+  const shaped = shapeMcpResult(structuredContent);
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
-    structuredContent,
+    content: [{ type: 'text' as const, text: shaped.text }],
+    structuredContent: shaped.structuredContent,
     isError: true as const,
   };
 }

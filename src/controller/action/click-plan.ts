@@ -1,4 +1,4 @@
-import type { ClickPostcondition, Frame, Locator, Page, SanitizedActionDiagnostic, SanitizedNativeWindowActivationEvidence } from '../dependencies.js';
+import type { ClickPostcondition, Frame, Locator, Page, PostconditionResult, SanitizedActionDiagnostic, SanitizedNativeWindowActivationEvidence } from '../dependencies.js';
 import type { PreparedObservedClickTarget } from '../model.js';
 
 export interface ClickActionPlan {
@@ -13,6 +13,7 @@ export interface ClickActionPlan {
     actionDeadlineAt: number,
   ): Promise<PreparedObservedClickTarget>;
   reconciliationLocator(prepared: PreparedObservedClickTarget): Locator;
+  reconcile?(prepared: PreparedObservedClickTarget, remainingTimeoutMs: number): Promise<PostconditionResult | null>;
   discardCapabilities(): void;
 }
 

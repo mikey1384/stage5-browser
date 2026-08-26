@@ -13,5 +13,6 @@ export * from './protocol/page-lifecycle.js';
 export * from './protocol/private-field.js';
 export * from './protocol/policy.js';
 export * from './protocol/scroll.js';
+export * from './protocol/telemetry.js';
 export * from './protocol/uploads.js';
 export * from './protocol/worker.js';

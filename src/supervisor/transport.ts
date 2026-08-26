@@ -7,6 +7,7 @@ export const transportOperations = {
     command: Name,
     payload: BrowserCommandInput<Name>,
     timeoutMs: number,
+    telemetryOperationId: string | null = null,
   ): Promise<BrowserCommandOutput<Name>> {
     const child = this.child;
     if (child === undefined || !child.connected || child.exitCode !== null) {
@@ -38,6 +39,7 @@ export const transportOperations = {
       this.pending.set(id, {
         child,
         timer,
+        telemetryOperationId,
         resolve: (value) => resolve(value as BrowserCommandOutput<Name>),
         reject,
       });
@@ -73,6 +75,9 @@ export const transportOperations = {
 
     this.pending.delete(message.id);
     clearTimeout(entry.timer);
+    if (entry.telemetryOperationId !== null && message.telemetry !== undefined) {
+      this.captureWorkerTelemetry(entry.telemetryOperationId, message.telemetry);
+    }
     if (message.ok) {
       entry.resolve(message.result);
       return;

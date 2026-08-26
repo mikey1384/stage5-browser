@@ -60,6 +60,7 @@ describe('MCP nested scrolling', () => {
         #feed { height: 160px; overflow-y: auto; }
         #spacer { height: 600px; }
       </style></head><body>
+        <button id="mode" aria-pressed="false" onclick="this.setAttribute('aria-pressed', 'true')">Enable mode</button>
         <section id="feed" role="feed" aria-label="Other posts">
           <article>Initial post</article><div id="spacer"></div>
         </section>
@@ -104,6 +105,16 @@ describe('MCP nested scrolling', () => {
       },
     });
     await client.connect(transport);
+    const joined = await client.callTool({
+      name: 'lounge_join',
+      arguments: {
+        agentId: 'mcp-scroll-test',
+        displayName: 'MCP Scroll Test',
+        provider: 'test',
+        room: 'stage5-lounge',
+      },
+    });
+    expect(joined.isError).not.toBe(true);
 
     const tools = await client.listTools();
     const scrollTool = tools.tools.find((tool) => tool.name === 'browser_scroll');
@@ -113,6 +124,8 @@ describe('MCP nested scrolling', () => {
         waitFor: expect.any(Object),
       },
     });
+    expect(tools.tools.find((tool) => tool.name === 'browser_execution_traces')?.inputSchema)
+      .toMatchObject({ properties: { operationId: expect.any(Object), limit: expect.any(Object) } });
     for (const name of ['browser_click_by_role', 'browser_click_ref']) {
       const clickTool = tools.tools.find((tool) => tool.name === name);
       expect(clickTool, `${name} should be exposed`).toBeDefined();
@@ -170,6 +183,63 @@ describe('MCP nested scrolling', () => {
           evidence: 'article_count_growth',
         },
       },
+    });
+    const operationId = (scrolled.structuredContent as { operationId?: unknown }).operationId;
+    expect(typeof operationId).toBe('string');
+    if (typeof operationId !== 'string') throw new Error('Scroll result did not expose its operationId.');
+    const telemetry = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: { operationId, limit: 10 },
+    });
+    expect(telemetry.isError).not.toBe(true);
+    expect(telemetry.structuredContent).toMatchObject({
+      operationId,
+      traces: [{
+        operationId,
+        agentId: 'mcp-scroll-test',
+        command: 'scroll',
+        manager: 'interaction_manager',
+        phaseSystem: 'bounded_reversible_loop',
+        dispatchBoundary: 'reversible_view_state',
+        privacy: { urls: 'omitted', selectors: 'omitted', names: 'omitted', values: 'omitted', pageContent: 'omitted' },
+      }],
+    });
+    expect(JSON.stringify(telemetry.structuredContent)).not.toContain(`127.0.0.1:${port}`);
+
+    const clicked = await client.callTool({
+      name: 'browser_click_by_role',
+      arguments: {
+        role: 'button', name: 'Enable mode', exact: true, frameId: null,
+        postcondition: {
+          expectedUrl: null, expectedNewPageUrl: null, expectedDownload: false,
+          expectedSelected: true, expectedVisible: null, expectedHidden: null,
+          satisfaction: 'all', timeoutMs: 2_000,
+        },
+        timeoutMs: 10_000,
+      },
+    });
+    expect(clicked.isError).not.toBe(true);
+    const clickOperationId = (clicked.structuredContent as { operationId?: unknown }).operationId;
+    if (typeof clickOperationId !== 'string') throw new Error('Click result did not expose its operationId.');
+    const clickTelemetry = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: { operationId: clickOperationId, limit: 10 },
+    });
+    expect(clickTelemetry.structuredContent).toMatchObject({
+      traces: [{
+        agentId: 'mcp-scroll-test',
+        command: 'clickByRole',
+        actions: [{
+          action: 'click_by_role',
+          dispatchState: 'dispatched',
+          phases: expect.arrayContaining([
+            expect.objectContaining({ phase: 'observe' }),
+            expect.objectContaining({ phase: 'dispatch' }),
+            expect.objectContaining({ phase: 'reconcile' }),
+          ]),
+        }],
+        conclusion: { actionDispatched: true, clickDispatched: true, postconditionPassed: true },
+      }],
     });
   });
 });

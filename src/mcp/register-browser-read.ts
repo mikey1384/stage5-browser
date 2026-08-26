@@ -36,6 +36,26 @@ export function registerBrowserReadTools(server: McpServer, context: McpHostCont
   );
 
   server.registerTool(
+    TOOL.browserExecutionTraces,
+    {
+      title: 'Inspect privacy-safe browser execution traces',
+      description:
+        'Read Stage5-owned durable evidence of which stable Lounge agent ID, manager, phase system, dispatch boundary, action phases, reconciliation categories, and terminal outcome actually ran. Filter by operationId or read a bounded recent list. Display names, providers, URLs, selectors, accessible names, form values, page content, credentials, and private data are omitted; string-valued postcondition observations are recorded only as redacted_string.',
+      inputSchema: z.object({
+        operationId: operationIdSchema.nullable().default(null),
+        limit: z.number().int().min(1).max(100).default(20),
+      }),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ operationId, limit }) => safely(() => supervisor.executionTraces(operationId, limit)),
+  );
+
+  server.registerTool(
     TOOL.browserPageEvents,
     {
       title: 'Inspect durable page lifecycle events',

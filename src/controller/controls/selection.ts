@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { type BrowserCommandInput, type BrowserCommandOutput, type ControlOptionObservation, type ControlSelectionEvidence, type Frame, type Page, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedControlInspection, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { observeControlSelectionRepresentation, reconcileCustomControlSelection } from './selection-evidence.js';
 
 interface NativeSelectEventRecord {
   inputEventObserved: boolean;
@@ -154,6 +155,7 @@ export const controlSelectionOperations = {
           inputEventObserved: false,
           changeEventObserved: false,
           selectionEffectObserved: true,
+          selectedRepresentationObserved: false,
           selectedState: true,
           popupClosed: null,
         };
@@ -222,6 +224,7 @@ export const controlSelectionOperations = {
         inputEventObserved: after.inputEventObserved,
         changeEventObserved: after.changeEventObserved,
         selectionEffectObserved: true,
+        selectedRepresentationObserved: false,
         selectedState: true,
         popupClosed: null,
       };
@@ -249,6 +252,7 @@ export const controlSelectionOperations = {
         inputEventObserved: false,
         changeEventObserved: false,
         selectionEffectObserved: true,
+        selectedRepresentationObserved: false,
         selectedState: true,
         popupClosed: null,
       };
@@ -260,11 +264,25 @@ export const controlSelectionOperations = {
       });
     }
     const popupHandle = inspection.popupHandle;
-    const hiddenExpectation = requireSelected ? null : {
-      role: option.observation.role,
-      name: option.observation.name,
-      exact: true,
-      frameId,
+    const beforeRepresentation = await observeControlSelectionRepresentation(
+      inspection.controlLocator,
+      option.observation.name,
+      deadlineAt,
+    );
+    if (beforeRepresentation?.controlRepresentsOption === true) {
+      return {
+        actionDispatched: false,
+        inputEventObserved: false,
+        changeEventObserved: false,
+        selectionEffectObserved: true,
+        selectedRepresentationObserved: true,
+        selectedState: option.observation.selected,
+        popupClosed: null,
+      };
+    }
+    const baselineRepresentation = beforeRepresentation ?? {
+      controlRepresentsOption: false,
+      localExactRepresentationCount: 0,
     };
     const result = await this.executeClickAction({
       action: 'select_option',
@@ -274,14 +292,7 @@ export const controlSelectionOperations = {
         action: 'select_option',
         page,
         frame,
-        postcondition: {
-          expectedUrl: null,
-          expectedSelected: true,
-          expectedVisible: null,
-          expectedHidden: hiddenExpectation,
-          satisfaction: 'any',
-          timeoutMs: Math.max(100, Math.min(3_000, remainingUntil(deadlineAt))),
-        },
+        postcondition: null,
         prepare: async (
           priorNativeActivation: SanitizedNativeWindowActivationEvidence | null,
           activationAttemptCount: number,
@@ -329,19 +340,26 @@ export const controlSelectionOperations = {
             locator,
             actionStartedAt,
             actionDeadlineAt,
-            {
-              expectedUrl: null,
-              expectedSelected: true,
-              expectedVisible: null,
-              expectedHidden: hiddenExpectation,
-              satisfaction: 'any',
-              timeoutMs: Math.max(100, Math.min(3_000, remainingUntil(deadlineAt))),
-            },
+            null,
             pageActivation,
             handle,
           );
         },
         reconciliationLocator: (prepared) => prepared.locator,
+        reconcile: async (prepared, remainingTimeoutMs) => {
+          const reconciliation = await reconcileCustomControlSelection({
+            before: baselineRepresentation,
+            control: inspection.controlLocator,
+            deadlineAt: Date.now() + Math.max(1, remainingTimeoutMs),
+            option: prepared.locator,
+            optionName: option.observation.name,
+            page,
+            popup: popupHandle,
+            requireSelected,
+            selectedState: (locator) => this.selectedState(locator),
+          });
+          return reconciliation.postcondition;
+        },
         discardCapabilities: () => undefined,
       }),
       preflight: async () => {
@@ -355,14 +373,18 @@ export const controlSelectionOperations = {
       },
     });
     const selectedCheck = result.postcondition?.checks.find((check) => check.kind === 'selected');
-    const hiddenCheck = result.postcondition?.checks.find((check) => check.kind === 'visible' && check.expected === false);
+    const representationCheck = result.postcondition?.checks.find((check) => check.kind === 'selection_representation');
+    const popupCheck = result.postcondition?.checks.find((check) => check.kind === 'popup_closed');
     return {
       actionDispatched: result.dispatch.actionDispatched,
       inputEventObserved: false,
       changeEventObserved: false,
       selectionEffectObserved: true,
+      selectedRepresentationObserved: representationCheck?.passed === true,
       selectedState: typeof selectedCheck?.observed === 'boolean' ? selectedCheck.observed : null,
-      popupClosed: hiddenCheck?.passed ?? null,
+      popupClosed: typeof popupCheck?.observed === 'boolean'
+        ? popupCheck.observed
+        : null,
     };
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;

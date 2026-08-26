@@ -17,6 +17,7 @@ Stage5 Browser MCP server
                   ├── serialized operation queue
                   ├── hard deadlines
                   ├── privacy-minimized journal
+                  ├── privacy-safe execution telemetry
                   └── worker lifecycle supervision
                               │ Node IPC
                               ▼
@@ -48,6 +49,7 @@ Every worker command has exactly one owner in `src/protocol/command-contracts.ts
 | private handoff | field-scoped private input and same-profile authentication handoff |
 | policy | optional deterministic action class plus agent-declared semantic intent |
 | recovery | reservations, terminal status, deadlines, worker handoff, proven-zero-input recovery |
+| telemetry | audited manager, phase, dispatch, reconciliation, timing, and terminal outcome evidence |
 | coordination | Lounge identity, delivery, acknowledgement, presence, notice, and audited history |
 
 The vocabulary is deliberately compositional. For example, an unfamiliar virtualized dropdown is not a new site adapter: perceive the exact control, inspect its options, prepare its owned popup and scroll surface, select one exact option, and reconcile selected/closed state. Agent discretion resolves what an option means within the user's authority; deterministic code resolves which node it is, whether it is actionable, whether input occurred, and what state resulted. No URL, label, selector, regex, or site name may stand in for business intent.
@@ -67,13 +69,19 @@ The controller runtime is the sole mutable session-context owner. Context narrow
 
 | Layer | Lifetime and examples |
 | --- | --- |
-| durable | agent-scoped selected backend and explicit review policy, ownership lease, terminal operation journal, Lounge state, sanitized download/dialog/page-lifecycle manifests |
+| durable | agent-scoped selected backend and explicit review policy, ownership lease, terminal operation journal and execution traces, Lounge state, sanitized download/dialog/page-lifecycle manifests |
 | session | controlled browser identity, selected page, stable tab IDs, handoff state |
 | document | frame/document versions and one-use snapshot, scroll, form, and option capabilities |
 | action | absolute deadline, phase transitions, exact prepared handles, dispatch and postcondition evidence |
 | private ephemeral | fill/prompt/private-field/authentication values consumed only at the dispatch or human boundary |
 
-Only privacy-minimized records cross the durable boundary. The stable Lounge identity keys a hashed per-agent context containing only a browser enum and optional `normal`/`review_only` policy; it never contains URLs, tabs, page content, form values, or browser handles. Browser objects, element handles, refs, rendered state, and dispatch probes are always re-observed at their owning scope. Private values never become shared context, journals, diagnostics, Lounge messages, or recovery material. This boundary makes persistence useful for continuity without turning stale state into a second source of truth.
+Only privacy-minimized records cross the durable boundary. The stable Lounge identity keys a hashed per-agent context containing only a browser enum and optional `normal`/`review_only` policy; it never contains URLs, tabs, page content, form values, or browser handles. Browser objects, element handles, refs, rendered state, and dispatch probes are always re-observed at their owning scope. Private values never become shared context, journals, diagnostics, telemetry, Lounge messages, or recovery material. This boundary makes persistence useful for continuity without turning stale state into a second source of truth.
+
+### Audit the hand without recording the task
+
+The supervisor writes a bounded `0600` JSONL execution trace after each terminal browser or recovery operation. The stable Lounge agent ID is included when that MCP connection has bound one, and the `operationId` joins the trace to the separately durable operation result. Display names and providers are not retained. The command contracts supply the responsible manager, phase system, dispatch class, and replay rule; the owning worker phase manager supplies transitions and dispatch attempts; sanitized canonical results supply only boolean or categorical reconciliation conclusions. This lets a developer prove which agent invoked which part of Stage5 and whether it observed, prepared, dispatched, reconciled, recovered, or failed without trusting an agent summary.
+
+Telemetry is an allowlist, not a redaction pass over arguments. It never copies command payloads, URLs, selectors, accessible names, values, page content, coordinates, headers, bodies, queries, fragments, credentials, or private handoff data. A string-valued postcondition observation is retained only as `redacted_string`. Rotation keeps the journal bounded, and telemetry I/O failure cannot replace the browser operation's canonical outcome. `browser_execution_traces` queries the newest bounded records globally or by exact operation ID.
 
 ## Boundary decisions
 

@@ -91,4 +91,21 @@ describe('ActionPhaseManager', () => {
     expect(manager.activeCount).toBe(0);
     expect(() => manager.finish(session)).toThrow(ActionPhaseInvariantError);
   });
+
+  it('drains completed phase evidence exactly once for command telemetry', () => {
+    const manager = new ActionPhaseManager();
+    const session = manager.begin('select_option', 1_000);
+    advanceToPreparation(session);
+    session.beginDispatch();
+    session.concludeDispatch({ actionDispatched: true });
+    session.enter('reconcile');
+    session.beginFinalization();
+    session.complete('succeeded');
+    manager.finish(session);
+
+    expect(manager.drainCompleted()).toEqual([
+      expect.objectContaining({ action: 'select_option', dispatchState: 'dispatched', terminalOutcome: 'succeeded' }),
+    ]);
+    expect(manager.drainCompleted()).toEqual([]);
+  });
 });

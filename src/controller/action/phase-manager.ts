@@ -2,6 +2,7 @@ import { ActionPhaseInvariantError, ActionPhaseSession } from './phase-session.j
 
 export class ActionPhaseManager {
   private readonly active = new Map<string, ActionPhaseSession>();
+  private readonly completed = new Array<ReturnType<ActionPhaseSession['snapshot']>>();
 
   begin(action: string, timeoutMs: number): ActionPhaseSession {
     const session = new ActionPhaseSession(action, timeoutMs);
@@ -13,6 +14,12 @@ export class ActionPhaseManager {
     if (!this.active.delete(session.actionId)) {
       throw new ActionPhaseInvariantError('The action phase session is not owned by this manager.');
     }
+    this.completed.push(session.snapshot());
+    if (this.completed.length > 100) this.completed.splice(0, this.completed.length - 100);
+  }
+
+  drainCompleted(): Array<ReturnType<ActionPhaseSession['snapshot']>> {
+    return this.completed.splice(0, this.completed.length);
   }
 
   snapshot(actionId: string) {

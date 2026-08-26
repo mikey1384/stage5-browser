@@ -75,7 +75,14 @@ export interface ClickPostcondition {
 }
 
 export interface PostconditionCheck {
-  kind: 'download' | 'new_page_url' | 'url' | 'selected' | 'visible';
+  kind:
+    | 'download'
+    | 'new_page_url'
+    | 'popup_closed'
+    | 'selected'
+    | 'selection_representation'
+    | 'url'
+    | 'visible';
   passed: boolean;
   expected: string | boolean;
   observed: string | boolean | null;
@@ -136,6 +143,7 @@ export interface ControlSelectionEvidence {
   inputEventObserved: boolean;
   changeEventObserved: boolean;
   selectionEffectObserved: boolean;
+  selectedRepresentationObserved: boolean;
   selectedState: boolean | null;
   popupClosed: boolean | null;
 }

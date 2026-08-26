@@ -98,13 +98,17 @@ export const inputPostconditionsOperations = {
     deadlineAt: number,
     pagesBeforeDispatch: ReadonlySet<Page>,
     downloadCursorBeforeDispatch: number,
+    observeEffect?: () => Promise<PostconditionResult | null>,
   ): Promise<{
     postcondition: PostconditionResult;
     dispatchEvidence: SanitizedClickDispatchEvidence | null;
     actionDispatched: boolean | 'unknown';
     clickDispatched: boolean | 'unknown';
   } | null> {
-    if (!(dispatchError instanceof Stage5BrowserError) || postcondition === null) return null;
+    if (
+      !(dispatchError instanceof Stage5BrowserError) ||
+      (postcondition === null && observeEffect === undefined)
+    ) return null;
     const actionDispatched = dispatchError.details?.actionDispatched;
     const clickDispatched = dispatchError.details?.clickDispatched;
     if (
@@ -116,15 +120,17 @@ export const inputPostconditionsOperations = {
     const dispatchEvidence = (dispatchError.details?.dispatchEvidence ?? null) as
       SanitizedClickDispatchEvidence | null;
     try {
-      const observed = await this.verifyClickPostcondition(
-        page,
-        clickedFrame,
-        clickedLocator,
-        postcondition,
-        remainingUntil(deadlineAt),
-        pagesBeforeDispatch,
-        downloadCursorBeforeDispatch,
-      );
+      const observed = observeEffect === undefined
+        ? await this.verifyClickPostcondition(
+          page,
+          clickedFrame,
+          clickedLocator,
+          postcondition,
+          remainingUntil(deadlineAt),
+          pagesBeforeDispatch,
+          downloadCursorBeforeDispatch,
+        )
+        : await observeEffect();
       if (observed === null) return null;
       return { postcondition: observed, dispatchEvidence, actionDispatched, clickDispatched };
     } catch (postconditionError) {

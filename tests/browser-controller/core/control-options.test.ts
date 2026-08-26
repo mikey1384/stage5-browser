@@ -282,6 +282,44 @@ describe('BrowserController generic control inspection and selection', () => {
     expect(await page.locator('#target-clicks').textContent()).toBe('1');
   });
 
+  it('reconciles a uniquely opened portal popup instead of requiring selected state on its opener', async () => {
+    await openFixture(`<!doctype html><html><body>
+      <button id="control" aria-haspopup="listbox">Intended use</button>
+      <div id="options" role="listbox" aria-label="Intended use choices" hidden>
+        <div id="choice" role="option" tabindex="-1">Proprietary investing</div>
+      </div>
+      <output id="opens">0</output>
+      <script>
+        const control = document.querySelector('#control');
+        const options = document.querySelector('#options');
+        const choice = document.querySelector('#choice');
+        const opens = document.querySelector('#opens');
+        control.addEventListener('click', () => {
+          opens.value = String(Number(opens.value) + 1);
+          options.hidden = false;
+          choice.focus();
+        });
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Intended use', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    expect(inspected?.inspection.reveal).toMatchObject({
+      openerActionDispatched: true,
+      popupOpened: true,
+    });
+    expect(inspected?.inspection.options.map(({ name }) => name)).toEqual([
+      'Proprietary investing',
+    ]);
+    const page = (controller as unknown as { activePage: { locator: (selector: string) => { textContent: () => Promise<string | null> } } }).activePage;
+    expect(await page.locator('#opens').textContent()).toBe('1');
+  });
+
   it('surfaces a document replacement instead of replaying or returning only the opener postcondition', async () => {
     let signInRequests = 0;
     server = createServer((request, response) => {
@@ -342,6 +380,36 @@ describe('BrowserController generic control inspection and selection', () => {
       timeoutMs: 5_000,
     });
     expect(fresh.snapshot).toContain('Replacement form');
+  });
+
+  it('proves custom multi-selection from a newly rendered control chip when ARIA selected state is absent', async () => {
+    await openFixture(`<!doctype html><html><body><div role="group" aria-label="Account use field">
+      <button id="control" aria-haspopup="listbox" aria-controls="options" aria-expanded="false">Choose Proprietary investing strategy</button>
+      <span id="chips"></span>
+      <div id="options" role="listbox" aria-multiselectable="true" hidden>
+        <div id="choice" role="option">Proprietary investing</div>
+      </div></div><output id="clicks">0</output><script>
+        control.addEventListener('click', () => { control.setAttribute('aria-expanded', 'true'); options.hidden = false; });
+        choice.addEventListener('click', () => { clicks.value = String(Number(clicks.value) + 1); chips.innerHTML = '<span>Proprietary investing</span>'; });
+      </script></body></html>`);
+
+    const selected = await controller?.selectOptions({
+      inspectionId: null,
+      optionIds: null,
+      control: { role: 'button', name: 'Choose Proprietary investing strategy', exact: true },
+      options: [{ name: 'Proprietary investing', exact: true }],
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(selected?.selections[0]?.evidence).toMatchObject({
+      actionDispatched: true,
+      selectionEffectObserved: true,
+      selectedRepresentationObserved: true,
+      selectedState: null,
+      popupClosed: false,
+    });
+    const page = (controller as unknown as { activePage: { locator: (selector: string) => { textContent: () => Promise<string | null> } } }).activePage;
+    expect(await page.locator('#clicks').textContent()).toBe('1');
   });
 
   it('composes idempotent native and custom multi-selection without toggling satisfied choices', async () => {

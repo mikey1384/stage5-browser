@@ -155,7 +155,7 @@ export interface BrowserCommandMap {
     output: {
       page: BrowserTabSummary;
       snapshot: string;
-      scope: 'document';
+      scope: 'document' | 'modal';
       refCount: 0;
       elementActionsAvailable: false;
       activationAttempted: boolean;
@@ -168,6 +168,7 @@ export interface BrowserCommandMap {
       controllerSelectionUnchanged: boolean;
       warnings: Array<{
         code:
+          | 'ambiguous_visible_modals'
           | 'visible_modal_in_document'
           | 'controller_selection_changed_externally'
           | 'loading_expectation_not_satisfied';

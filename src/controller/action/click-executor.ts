@@ -77,6 +77,9 @@ export const clickExecutorOperations = {
             deadlineAt,
             pagesBeforeDispatch,
             downloadCursorBeforeDispatch,
+            plan.reconcile === undefined || preparedTarget === null
+              ? undefined
+              : () => plan!.reconcile!(preparedTarget!, remainingUntil(deadlineAt)),
           );
           if (reconciled === null) throw error;
           dispatchEvidence = reconciled.dispatchEvidence;
@@ -107,15 +110,17 @@ export const clickExecutorOperations = {
         }
 
         phases.enter('reconcile');
-        const postcondition = await this.verifyClickPostcondition(
-          plan.page,
-          plan.frame,
-          plan.reconciliationLocator(preparedTarget),
-          plan.postcondition,
-          remainingUntil(actionDeadlineAt),
-          pagesBeforeDispatch,
-          downloadCursorBeforeDispatch,
-        );
+        const postcondition = plan.reconcile === undefined
+          ? await this.verifyClickPostcondition(
+            plan.page,
+            plan.frame,
+            plan.reconciliationLocator(preparedTarget),
+            plan.postcondition,
+            remainingUntil(actionDeadlineAt),
+            pagesBeforeDispatch,
+            downloadCursorBeforeDispatch,
+          )
+          : await plan.reconcile(preparedTarget, remainingUntil(actionDeadlineAt));
         phases.beginFinalization();
         this.pageDiagnostics.recordAction(
           plan.page,

@@ -180,7 +180,11 @@ export interface SnapshotRoot {
   locator: Locator;
   scope: 'document' | 'modal';
   visibleModalCount: number;
-  warnings: BrowserCommandOutput<'snapshot'>['warnings'];
+  warnings: Array<{
+    code: 'ambiguous_visible_modals';
+    message: string;
+    suggestedAction: string;
+  }>;
 }
 
 export interface SearchableTextLine {

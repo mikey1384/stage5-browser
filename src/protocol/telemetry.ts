@@ -1,0 +1,92 @@
+import type { BrowserCommandName } from './commands.js';
+import type { BrowserActionManager, BrowserCommandContract, BrowserPhaseSystem } from './command-contracts.js';
+import type { PostconditionCheck } from './controls.js';
+
+export interface WorkerActionPhaseTelemetry {
+  action: string;
+  startedAtMs: number;
+  deadlineAtMs: number;
+  transitions: Array<{
+    phase: 'observe' | 'plan' | 'preflight' | 'prepare' | 'dispatch' | 'reconcile' | 'finalize';
+    enteredAtMs: number;
+    attempt: number;
+  }>;
+  dispatchState: 'not_attempted' | 'not_dispatched' | 'possibly_dispatched' | 'dispatched';
+  dispatchAttempts: number;
+  recovery: {
+    reason: 'activation_lost_before_input' | 'target_changed_before_input' | 'transient_observation_miss';
+    authorizedAtMs: number;
+    completedDispatchAttempts: number;
+  } | null;
+  terminalOutcome: 'failed' | 'succeeded' | null;
+  completedAtMs: number | null;
+}
+
+export interface WorkerCommandTelemetry {
+  actionPhases: WorkerActionPhaseTelemetry[];
+}
+
+export interface ExecutionActionTrace {
+  action: string;
+  durationMs: number | null;
+  dispatchState: WorkerActionPhaseTelemetry['dispatchState'];
+  dispatchAttempts: number;
+  recoveryReason: NonNullable<WorkerActionPhaseTelemetry['recovery']>['reason'] | null;
+  terminalOutcome: WorkerActionPhaseTelemetry['terminalOutcome'];
+  phases: Array<{
+    phase: WorkerActionPhaseTelemetry['transitions'][number]['phase'];
+    attempt: number;
+    offsetMs: number;
+    durationMs: number | null;
+  }>;
+}
+
+export interface ExecutionTraceConclusion {
+  actionDispatched: boolean | 'unknown' | null;
+  clickDispatched: boolean | 'unknown' | null;
+  postconditionPassed: boolean | null;
+  checks: Array<{
+    kind: PostconditionCheck['kind'];
+    passed: boolean;
+    observed: boolean | null | 'redacted_string';
+  }>;
+  selectionEffectObserved: boolean | null;
+  selectedRepresentationObserved: boolean | null;
+  popupClosed: boolean | null;
+}
+
+export interface BrowserExecutionTrace {
+  schemaVersion: 1;
+  traceId: string;
+  recordedAtMs: number;
+  operationId: string;
+  agentId: string | null;
+  command: BrowserCommandName | 'recover';
+  manager: BrowserActionManager | 'recovery_manager';
+  phaseSystem: BrowserPhaseSystem;
+  dispatchBoundary: BrowserCommandContract['dispatch'];
+  replayPolicy: BrowserCommandContract['replay'];
+  worker: { version: string | null; protocolVersion: number | null };
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  outcome: 'succeeded' | 'failed' | 'timed_out';
+  errorCode: string | null;
+  reason: string | null;
+  actions: ExecutionActionTrace[];
+  conclusion: ExecutionTraceConclusion;
+  privacy: {
+    urls: 'omitted';
+    selectors: 'omitted';
+    names: 'omitted';
+    values: 'omitted';
+    pageContent: 'omitted';
+  };
+}
+
+export interface ExecutionTraceList {
+  traces: BrowserExecutionTrace[];
+  limit: number;
+  operationId: string | null;
+  privacy: BrowserExecutionTrace['privacy'];
+}

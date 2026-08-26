@@ -167,11 +167,11 @@ describe("BrowserController ref-free tab semantic detail", () => {
     );
 
     await feedPage.evaluate(() => {
-      const layers = Array.from(
-        { length: 10 },
-        (_, index) => `<div role="group" aria-label="Modal layer ${index + 1}">`,
+      const underlying = Array.from(
+        { length: 250 },
+        (_, index) => `<article><h2>Underlying Page item ${index + 1}</h2><p>Background feed content that must not consume the modal inspection budget.</p></article>`,
       ).join("");
-      document.body.innerHTML = `<div role="dialog" aria-modal="true"><h1>Preserved modal</h1></div><main>${layers}<blockquote><p>Underlying deep context</p></blockquote>${"</div>".repeat(10)}</main>`;
+      document.body.innerHTML = `<main>${underlying}</main><div role="dialog" aria-modal="true"><h1>Preserved composer</h1><textarea aria-label="Draft text">Unpublished fixture draft</textarea><button>Next</button></div>`;
     });
     const modalInspection = await controller.inspectTab({
       tabId: feedTab.tabId,
@@ -183,10 +183,17 @@ describe("BrowserController ref-free tab semantic detail", () => {
     expect(modalInspection).toMatchObject({
       activationAttempted: false,
       activationRestored: null,
+      scope: "modal",
       visibleModalCount: 1,
       refCount: 0,
       elementActionsAvailable: false,
+      warnings: [],
     });
+    expect(modalInspection.snapshot).toContain("Preserved composer");
+    expect(modalInspection.snapshot).toContain("Draft text");
+    expect(modalInspection.snapshot).toContain("Next");
+    expect(modalInspection.snapshot).not.toContain("Underlying Page item");
+    expect(modalInspection.snapshot.length).toBeLessThan(2_000);
     expect(modalInspection.snapshot).not.toContain(
       "# Visible semantic content detail",
     );

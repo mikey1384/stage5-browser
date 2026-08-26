@@ -339,6 +339,15 @@ describe('BrowserSupervisor', () => {
         persistedAtMs: expect.any(Number),
       },
     });
+    await expect(supervisor.executionTraces(caught.operationId, 1)).resolves.toMatchObject({
+      traces: [{
+        operationId: caught.operationId,
+        command: 'testHang',
+        manager: 'recovery_manager',
+        outcome: 'timed_out',
+        errorCode: 'OPERATION_TIMEOUT',
+      }],
+    });
 
     const after = await supervisor.execute('status', {});
     expect(after.result.workerPid).not.toBe(before.result.workerPid);
@@ -355,6 +364,15 @@ describe('BrowserSupervisor', () => {
       workerRecovered: true,
       browserRecovered: false,
       status: { state: 'stopped', browserConnected: false },
+    });
+    await expect(supervisor.executionTraces(recovered.operationId, 1)).resolves.toMatchObject({
+      traces: [{
+        operationId: recovered.operationId,
+        command: 'recover',
+        manager: 'recovery_manager',
+        phaseSystem: 'supervisor_recovery',
+        outcome: 'succeeded',
+      }],
     });
 
     const journal = await readFile(path.join(root, 'artifacts', 'operations.jsonl'), 'utf8');
