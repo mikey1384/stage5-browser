@@ -207,6 +207,7 @@ describe("BrowserController frame control, profile ownership, and reattachment",
           "Close only the dedicated Chromium application normally, then retry once.",
       },
       reconnectRecord: null,
+      handoffRecord: null,
     }));
     controller = new BrowserController(
       config,
@@ -288,6 +289,7 @@ describe("BrowserController frame control, profile ownership, and reattachment",
         suggestedAction: "Stage5 Browser can safely reattach automatically.",
       },
       reconnectRecord,
+      handoffRecord: null,
     }));
     controller = new BrowserController(
       config,

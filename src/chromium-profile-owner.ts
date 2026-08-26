@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises';
 
 import type { BrowserProduct } from './browser-provider.js';
 import { isStage5HandoffMarkerUrl } from './human-auth-bootstrap.js';
-import type { NativeControlRecord } from './native-control-channel.js';
+import { readNativeControlRecord, type NativeControlRecord } from './native-control-channel.js';
 import { chromiumProfileOwnerProcessId } from './native-window-activation.js';
 import type { BrowserLaunchIdentity } from './profile-binding.js';
 
@@ -64,6 +64,8 @@ export interface ChromiumProfileOwnerInspection {
   evidence: ProfileOwnerEvidence;
   /** Internal-only exact recovery capability. Never serialize this object to an agent. */
   reconnectRecord: NativeControlRecord | null;
+  /** Internal-only exact pending-handoff capability. Never attach without an explicit resume call. */
+  handoffRecord: NativeControlRecord | null;
 }
 
 export interface DevToolsEndpointInspection {
@@ -239,7 +241,7 @@ export function controlledProfileOwnerEvidence(
     authenticationHandoff: authenticationHandoff ? 'present' : 'absent',
     recovery: authenticationHandoff ? 'return_to_authentication_handoff' : 'none',
     suggestedAction: authenticationHandoff
-      ? 'Return to the agent that requested private login and call browser_resume_after_login after authentication. Do not start, recover, close, or modify the dedicated browser profile.'
+      ? 'Call browser_auth_status, then call browser_resume_after_login once after the private step. Do not start, relaunch, close, or modify the dedicated browser profile.'
       : null,
   };
 }
@@ -279,6 +281,7 @@ export async function inspectChromiumProfileOwner(
         suggestedAction: `Leave the dedicated ${identity.applicationName} profile locks untouched. If that exact Stage5 browser is visibly still exiting, wait for it to finish and call browser_start once; otherwise stop and ask the user to close only that dedicated application normally.`,
       },
       reconnectRecord: null,
+      handoffRecord: null,
     };
   }
 
@@ -299,6 +302,7 @@ export async function inspectChromiumProfileOwner(
         suggestedAction: `Do not retry, delete locks, or kill the lock owner because Stage5 cannot prove it is the dedicated ${identity.applicationName}. Ask the user to close only the visibly labeled Stage5 ${identity.applicationName} window normally; if no such window is visible, stop.`,
       },
       reconnectRecord: null,
+      handoffRecord: null,
     };
   }
 
@@ -317,6 +321,7 @@ export async function inspectChromiumProfileOwner(
         suggestedAction: normalQuitInstruction(identity.applicationName, dependencies.platform),
       },
       reconnectRecord: null,
+      handoffRecord: null,
     };
   }
 
@@ -339,6 +344,7 @@ export async function inspectChromiumProfileOwner(
         suggestedAction: normalQuitInstruction(identity.applicationName, dependencies.platform),
       },
       reconnectRecord: null,
+      handoffRecord: null,
     };
   }
 
@@ -348,6 +354,14 @@ export async function inspectChromiumProfileOwner(
   }
   if (endpoint.inspection.authenticationHandoff !== 'absent') {
     const handoffPresent = endpoint.inspection.authenticationHandoff === 'present';
+    const persistedRecord = handoffPresent
+      ? await readNativeControlRecord(profileRoot, identity.browser as BrowserProduct)
+      : null;
+    const handoffRecord = persistedRecord?.state === 'awaiting_user'
+      && persistedRecord.processId === processId
+      && persistedRecord.port === endpoint.port
+      ? persistedRecord
+      : null;
     return {
       evidence: {
         classification: handoffPresent
@@ -363,10 +377,11 @@ export async function inspectChromiumProfileOwner(
           ? 'return_to_authentication_handoff'
           : 'close_dedicated_browser_normally',
         suggestedAction: handoffPresent
-          ? 'Return to the agent that requested private login and call browser_resume_after_login after authentication. If that agent no longer exists, ask the user to close only this dedicated browser normally; do not attach, recover, or delete locks.'
+          ? 'Call browser_auth_status, then use browser_resume_after_login from the Stage5 session that recovers this exact durable handoff. Do not start, relaunch, close, or modify the dedicated browser profile.'
           : normalQuitInstruction(identity.applicationName, dependencies.platform),
       },
       reconnectRecord: null,
+      handoffRecord,
     };
   }
 
@@ -391,5 +406,6 @@ export async function inspectChromiumProfileOwner(
       port: endpoint.port,
       createdAt: dependencies.now().toISOString(),
     },
+    handoffRecord: null,
   };
 }

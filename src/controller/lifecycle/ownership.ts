@@ -48,7 +48,7 @@ export const lifecycleOwnershipOperations = {
       return `Another live Stage5 worker owns the dedicated ${applicationName} profile. Continue in that agent session or ask it to call browser_stop; do not retry, terminate the browser, or delete locks.`;
     }
     if (inspection.state === 'owned_orphaned' && inspection.lease?.controlMode === 'human_handoff') {
-      return `A private interaction handoff owns the dedicated ${applicationName}. Return to the requesting agent and resume it; if that session is unavailable, ask the user to close only that dedicated application normally. Do not attach, terminate, or delete locks.`;
+      return `A private interaction handoff owns the dedicated ${applicationName}. Call browser_auth_status so Stage5 can verify and recover the durable handoff, then call browser_resume_after_login once after the private step. Do not attach manually, terminate, or delete locks.`;
     }
     if (inspection.state === 'invalid') {
       return `Stage5 found an invalid ownership record for the dedicated ${applicationName} profile. Do not overwrite it, delete browser locks, or kill a process; stop and inspect the profile ownership record before retrying.`;
@@ -236,6 +236,22 @@ export const lifecycleOwnershipOperations = {
     if (leaseInspection.state !== 'none') {
       const controlMode = leaseInspection.lease?.controlMode ?? null;
       const humanHandoff = controlMode === 'human_handoff';
+      const durableHandoffRecovered = humanHandoff
+        && this.authenticationHandoff?.state === 'awaiting_user'
+        && this.authenticationHandoff.profileDir === profile.path;
+      if (durableHandoffRecovered) {
+        return {
+          ...controlledProfileOwnerEvidence(identity.applicationName, true),
+          lease: {
+            state: leaseInspection.state,
+            ownerWorkerRunning: leaseInspection.ownerWorkerRunning,
+            heartbeat: leaseInspection.heartbeat,
+            browserProcess: leaseInspection.browserProcess,
+            controlMode,
+            phase: leaseInspection.lease?.phase ?? null,
+          },
+        };
+      }
       const exitedPlaywrightSingleton = await proveExitedPlaywrightSingleton(
         profile.path,
         identity,

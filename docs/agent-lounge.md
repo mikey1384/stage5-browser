@@ -66,6 +66,8 @@ Release 0.14.0 retains catalog 12 and 53 tools, changes worker protocol to 11, a
 
 Release 0.15.0 changes both public contracts to catalog 13, worker protocol 12, and 54 tools. Reconnect every host once, rejoin its same stable Lounge identity, and require version 0.15.0/catalog 13/protocol 12/54 tools with `restartRequired: false`. Preserve an exact owned native Chromium-family process through the reconnect; use `browser_available` and adopt it only when one intended profile is uniquely proven recoverable. Then discard all old refs and take fresh status, tabs, page events, and semantic state. `browser_execution_traces` can audit an exact operation's privacy-safe manager/phase/dispatch/reconciliation record; it never authorizes a retry, and possible input remains no-replay.
 
+Release 0.15.1 is a compatible worker update for durable private-handoff recovery. If a host or worker restarted while a Chromium-family handoff was `awaiting_user`, keep that exact dedicated browser open and call `browser_auth_status` once. Stage5 restores the handoff only when the v1 control record and either the durable ownership lease or the crash-window owner proof bind the exact executable, profile, process-start identity, unique loopback endpoint, and marker. Do not request another handoff, start/switch a browser, inspect the private page, or replay the action. After the user completes the private step, call `browser_resume_after_login` once and require version 0.15.1 with `restartRequired: false`.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.15.0 catalog.
 - Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.15.0 catalog.
 

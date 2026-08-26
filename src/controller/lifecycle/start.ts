@@ -68,7 +68,7 @@ export const lifecycleStartOperations = {
                   recoverable: true,
                   details: {
                     reason: 'native_handoff_awaiting_user',
-                    suggestedAction: 'Return to the agent that requested the handoff and call browser_resume_after_login after private login. If that agent session is unavailable, close the dedicated browser normally, then start a new handoff.',
+                    suggestedAction: 'Call browser_auth_status so Stage5 can recover this exact durable handoff, then call browser_resume_after_login once after the private step. Do not close, relaunch, or replace the dedicated browser.',
                   },
                 },
               );

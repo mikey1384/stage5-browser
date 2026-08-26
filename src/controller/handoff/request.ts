@@ -4,6 +4,7 @@ import type { BrowserControllerContext } from '../runtime.js';
 
 export const handoffRequestOperations = {
   async authStatus(): Promise<BrowserCommandOutput<'authStatus'>> {
+    await this.restoreDurableAuthenticationHandoff();
     const context = this.usableContext();
     if (context !== undefined) {
       await this.reconcileVisiblePage(context);
@@ -19,19 +20,7 @@ export const handoffRequestOperations = {
     if (this.pendingHandoffRelease !== null) {
       return this.continuePendingHandoffRelease(deadlineAt);
     }
-    if (this.config.headless) {
-      throw new Stage5BrowserError(
-        'AUTH_HANDOFF_UNAVAILABLE',
-        'Login handoff requires a visible Stage5 Browser window.',
-        {
-          recoverable: true,
-          details: {
-            reason: 'headless_profile',
-            suggestedAction: 'Run the persistent Stage5 Browser profile in headed mode, then request the handoff again.',
-          },
-        },
-      );
-    }
+    await this.restoreDurableAuthenticationHandoff();
 
     if (this.authenticationHandoff !== null) {
       throw new Stage5BrowserError(
@@ -46,6 +35,19 @@ export const handoffRequestOperations = {
                 ? 'Finish authentication, leave the dedicated browser open, then call browser_resume_after_login so Stage5 attaches to that same process.'
                 : 'Finish authentication and quit the dedicated browser normally so its process exits, then call browser_resume_after_login.'
               : 'Take the required fresh semantic snapshot before requesting another handoff.',
+          },
+        },
+      );
+    }
+    if (this.config.headless) {
+      throw new Stage5BrowserError(
+        'AUTH_HANDOFF_UNAVAILABLE',
+        'Login handoff requires a visible Stage5 Browser window.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'headless_profile',
+            suggestedAction: 'Run the persistent Stage5 Browser profile in headed mode, then request the handoff again.',
           },
         },
       );

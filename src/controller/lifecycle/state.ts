@@ -35,6 +35,7 @@ export const lifecycleStateOperations = {
     const context = this.context;
     const nativeBrowser = this.nativeAttachedBrowser;
     const nativeRecord = this.nativeControlRecord;
+    const ownedBrowserProcess = this.controlledBrowserProcess;
     const profileRoot = profileDirForBrowser(this.config, this.selectedBrowser);
     const browserWasOwned = nativeBrowser !== undefined || context !== undefined;
     if (browserWasOwned) {
@@ -69,7 +70,27 @@ export const lifecycleStateOperations = {
     }
 
     if (browserWasOwned) {
-      await this.ownershipLease.updatePhase('process_exited');
+      const exactProcessExited = ownedBrowserProcess !== null
+        && await this.waitForExactOwnedProcessExit(
+          ownedBrowserProcess,
+          Math.min(this.config.operationTimeoutMs, 10_000),
+        );
+      if (exactProcessExited) {
+        await this.ownershipLease.updatePhase('process_exited');
+      }
+      if (ownedBrowserProcess !== null && !exactProcessExited) {
+        throw new Stage5BrowserError(
+          'BROWSER_NOT_READY',
+          'The owned browser context closed, but the exact browser process is still exiting.',
+          {
+            recoverable: true,
+            details: {
+              reason: 'owned_process_exit_pending',
+              suggestedAction: 'Wait for the exact dedicated Stage5 browser to finish exiting, then call browser_status once. Do not relaunch it, kill it, or delete profile locks.',
+            },
+          },
+        );
+      }
       let unlocked = await waitForProfileUnlock(
         profileRoot,
         Math.min(this.config.operationTimeoutMs, 10_000),
@@ -183,6 +204,7 @@ export const lifecycleStateOperations = {
   },
 
   async status(): Promise<BrowserStatus> {
+    await this.restoreDurableAuthenticationHandoff();
     const context = this.usableContext();
     const profilePath = profileDirForBrowser(this.config, this.selectedBrowser);
     if (context === undefined) {

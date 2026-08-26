@@ -19,7 +19,9 @@ export const lifecycleContextOperations = {
 
     context.on('close', () => {
       if (this.context === context) {
-        void this.ownershipLease.updatePhase('process_exited');
+        // A Playwright context disconnect is not proof that the exact browser
+        // process exited. Handoff and stop managers advance the lease only
+        // after checking the retained PID plus process-start identity.
         this.context = undefined;
         this.activePage = undefined;
         this.framesById.clear();

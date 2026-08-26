@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { BrowserLaunchIdentity } from '../profile-binding.js';
-import { DEFAULT_DEPENDENCIES, executableFingerprint } from './process.js';
+import { DEFAULT_DEPENDENCIES, executableFingerprint, trustedExecutableMatches } from './process.js';
 import { claimProfileOwnershipLease, profilePathFingerprint, readProfileOwnershipLease, removeProfileOwnershipLease, writeProfileOwnershipLease } from './store.js';
 import type { OwnedProcessObservation, ProfileOwnershipControlMode, ProfileOwnershipDependencies, ProfileOwnershipLease, ProfileOwnershipLeaseInspection, ProfileOwnershipPhase } from './types.js';
 
@@ -65,6 +65,53 @@ export class ProfileOwnershipLeaseController {
         identity: input.identity,
         controlMode: input.controlMode,
       });
+    });
+  }
+
+  async adoptVerifiedHumanHandoff(input: {
+    profileRoot: string;
+    identity: BrowserLaunchIdentity;
+    browserProcess: OwnedProcessObservation;
+    inspection: ProfileOwnershipLeaseInspection;
+  }): Promise<boolean> {
+    return this.enqueueMutation(async () => {
+      const prior = input.inspection;
+      if (
+        (prior.state !== 'abandoned' && prior.state !== 'owned_orphaned')
+        || prior.ownerWorkerRunning !== false
+        || prior.lease?.controlMode !== 'human_handoff'
+      ) {
+        throw new Error('Refusing to adopt a human handoff that is not owned by an exited Stage5 worker.');
+      }
+      const [startedAt, executable] = await Promise.all([
+        this.dependencies.processStartedAt(input.browserProcess.processId),
+        this.dependencies.processExecutable(input.browserProcess.processId),
+      ]);
+      if (
+        !this.dependencies.processRunning(input.browserProcess.processId)
+        || startedAt !== input.browserProcess.startedAt
+        || executable === null
+        || !(await trustedExecutableMatches(executable, input.identity))
+      ) {
+        throw new Error('Refusing to adopt a human handoff without an exact live browser-process identity.');
+      }
+
+      const lease = await this.createLease({
+        profileRoot: input.profileRoot,
+        identity: input.identity,
+        browserProcess: input.browserProcess,
+        controlMode: 'human_handoff',
+        phase: 'human_input',
+      });
+      if (!(await removeProfileOwnershipLease(input.profileRoot, prior.lease.leaseId))) {
+        return false;
+      }
+      if (!(await claimProfileOwnershipLease(input.profileRoot, lease))) {
+        return false;
+      }
+      this.active = { profileRoot: input.profileRoot, lease };
+      this.startHeartbeat();
+      return true;
     });
   }
 

@@ -121,4 +121,30 @@ describe('native browser control record', () => {
     }));
     await expect(readNativeControlRecord(root, 'brave')).resolves.toEqual(expectedControlBinding);
   });
+
+  it('rejects unknown or malformed top-level capability metadata', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-native-record-invalid-capability-'));
+    temporaryRoots.push(root);
+    const record = {
+      version: 1,
+      kind: 'chromium_cdp',
+      browser: 'brave',
+      state: 'awaiting_user',
+      processId: process.pid,
+      port: 29_123,
+      createdAt: '2026-08-24T12:00:00.000Z',
+    } as const;
+
+    await writeFile(nativeControlRecordPath(root), JSON.stringify({
+      ...record,
+      pageUrl: 'https://example.com/private',
+    }));
+    await expect(readNativeControlRecord(root, 'brave')).resolves.toBeNull();
+
+    await writeFile(nativeControlRecordPath(root), JSON.stringify({
+      ...record,
+      createdAt: 'not-a-timestamp',
+    }));
+    await expect(readNativeControlRecord(root, 'brave')).resolves.toBeNull();
+  });
 });

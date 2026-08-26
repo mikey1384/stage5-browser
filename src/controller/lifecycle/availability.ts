@@ -21,6 +21,7 @@ import type { BrowserControllerContext } from '../runtime.js';
 
 export const lifecycleAvailabilityOperations = {
   async availableBrowsers(): Promise<AvailableBrowsers> {
+    await this.restoreDurableAuthenticationHandoff();
     const browsers = await Promise.all(
       SUPPORTED_BROWSER_PRODUCTS.map(async (browser) =>
         this.operationalBrowserAvailability(browser)),
@@ -98,6 +99,9 @@ export const lifecycleAvailabilityOperations = {
     }
     if (lease.state === 'owned_orphaned') {
       const privateHandoff = lease.lease?.controlMode === 'human_handoff';
+      const durableHandoffRecovered = privateHandoff
+        && browser === this.selectedBrowser
+        && this.authenticationHandoff?.state === 'awaiting_user';
       return {
         ...executableAvailability,
         installed: true,
@@ -106,7 +110,9 @@ export const lifecycleAvailabilityOperations = {
         startable: !privateHandoff,
         recoverable: true,
         suggestedAction: privateHandoff
-          ? `The private handoff outlived its worker. Ask the user to close only the dedicated ${identity.applicationName} normally; do not attach, terminate, or delete locks.`
+          ? durableHandoffRecovered
+            ? 'The exact private handoff was recovered from durable ownership evidence. Complete the private step, leave the dedicated Chromium-family browser open, then call browser_resume_after_login once.'
+            : `The private handoff outlived its worker but could not yet be rebound safely. Leave the dedicated ${identity.applicationName} open, call browser_auth_status once, and do not attach, terminate, or delete locks.`
           : 'Call browser_start once. Stage5 will reattach or restart only after re-proving the exact orphaned ownership lease.',
       };
     }
@@ -119,6 +125,22 @@ export const lifecycleAvailabilityOperations = {
         startable: false,
         recoverable: false,
         suggestedAction: `The profile has an invalid or mismatched Stage5 ownership record. Do not overwrite it, kill a process, or delete locks; inspect ${identity.applicationName} ownership first.`,
+      };
+    }
+    if (
+      lease.state === 'abandoned'
+      && lease.lease?.controlMode === 'human_handoff'
+      && browser === this.selectedBrowser
+      && this.authenticationHandoff?.state === 'awaiting_user'
+    ) {
+      return {
+        ...executableAvailability,
+        installed: true,
+        available: false,
+        profileState: 'owned_orphaned',
+        startable: false,
+        recoverable: true,
+        suggestedAction: 'The exact private handoff was recovered across the worker crash window. Complete the private step, leave the dedicated Chromium-family browser open, then call browser_resume_after_login once.',
       };
     }
     if (

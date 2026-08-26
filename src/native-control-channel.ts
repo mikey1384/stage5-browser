@@ -291,7 +291,18 @@ function retainedAction(value: unknown): NativeControlRecord['retainedAction'] |
 }
 
 function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
-  if (typeof value !== 'object' || value === null) {
+  if (!isRecordWithOnlyKeys(value, [
+    'version',
+    'kind',
+    'browser',
+    'state',
+    'processId',
+    'port',
+    'createdAt',
+    'selectedTargetId',
+    'selectedDocumentId',
+    'retainedAction',
+  ])) {
     return null;
   }
   const candidate = value as Partial<NativeControlRecord>;
@@ -305,7 +316,7 @@ function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
     && Number.isSafeInteger(candidate.port)
     && (candidate.port ?? 0) >= 1_024
     && (candidate.port ?? 0) <= 65_535
-    && typeof candidate.createdAt === 'string'
+    && isSafeTimestamp(candidate.createdAt)
     && (
       candidate.selectedTargetId === undefined ||
       candidate.selectedTargetId === null ||

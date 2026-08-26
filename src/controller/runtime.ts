@@ -17,6 +17,7 @@ import { navigationWaitOperations, type NavigationWaitOperations } from './navig
 import { handoffRequestOperations, type HandoffRequestOperations } from './handoff/request.js';
 import { handoffReleaseOperations, type HandoffReleaseOperations } from './handoff/release.js';
 import { handoffResumeOperations, type HandoffResumeOperations } from './handoff/resume.js';
+import { handoffDurableOperations, type HandoffDurableOperations } from './handoff/durable.js';
 import { lifecycleOwnershipOperations, type LifecycleOwnershipOperations } from './lifecycle/ownership.js';
 import { lifecycleNativeAttachOperations, type LifecycleNativeAttachOperations } from './lifecycle/native-attach.js';
 import { lifecycleContextOperations, type LifecycleContextOperations } from './lifecycle/context.js';
@@ -80,6 +81,7 @@ export interface BrowserControllerContext extends
   HandoffRequestOperations,
   HandoffReleaseOperations,
   HandoffResumeOperations,
+  HandoffDurableOperations,
   LifecycleOwnershipOperations,
   LifecycleNativeAttachOperations,
   LifecycleContextOperations,
@@ -212,6 +214,7 @@ export interface BrowserController extends
   HandoffRequestOperations,
   HandoffReleaseOperations,
   HandoffResumeOperations,
+  HandoffDurableOperations,
   LifecycleOwnershipOperations,
   LifecycleNativeAttachOperations,
   LifecycleContextOperations,
@@ -359,6 +362,7 @@ for (const operations of [
   handoffRequestOperations,
   handoffReleaseOperations,
   handoffResumeOperations,
+  handoffDurableOperations,
   lifecycleOwnershipOperations,
   lifecycleNativeAttachOperations,
   lifecycleContextOperations,

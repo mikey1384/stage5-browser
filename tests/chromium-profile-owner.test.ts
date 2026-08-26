@@ -8,6 +8,7 @@ import {
   inspectChromiumProfileOwner,
   type ChromiumProfileOwnerInspectionDependencies,
 } from '../src/chromium-profile-owner.js';
+import { writeNativeControlRecord } from '../src/native-control-channel.js';
 import type { BrowserLaunchIdentity } from '../src/profile-binding.js';
 
 const temporaryRoots: string[] = [];
@@ -94,6 +95,15 @@ describe('Chromium dedicated-profile ownership recovery', () => {
 
   it('does not attach while the private authentication marker remains', async () => {
     const { root, executable, identity } = await fixture();
+    await writeNativeControlRecord(root, {
+      version: 1,
+      kind: 'chromium_cdp',
+      browser: 'chrome',
+      state: 'awaiting_user',
+      processId: 42_424,
+      port: 29_123,
+      createdAt: '2026-08-25T04:00:00.000Z',
+    });
     const inspection = await inspectChromiumProfileOwner(
       root,
       identity,
@@ -104,6 +114,11 @@ describe('Chromium dedicated-profile ownership recovery', () => {
     );
 
     expect(inspection.reconnectRecord).toBeNull();
+    expect(inspection.handoffRecord).toMatchObject({
+      state: 'awaiting_user',
+      processId: 42_424,
+      port: 29_123,
+    });
     expect(inspection.evidence).toMatchObject({
       classification: 'authentication_handoff_pending',
       ownership: 'proven',

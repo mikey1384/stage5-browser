@@ -10,6 +10,8 @@ import {
 } from './profile-binding.js';
 import {
   nativeControlEndpoint,
+  processIsRunning,
+  type NativeControlRecord,
   writeNativeControlRecord,
 } from './native-control-channel.js';
 
@@ -218,6 +220,52 @@ class SpawnedHumanBrowserSession implements HumanBrowserSession {
       }
     });
   }
+}
+
+class RestoredNativeHumanBrowserSession implements HumanBrowserSession {
+  constructor(
+    private readonly record: NativeControlRecord,
+    private readonly launchIdentity: BrowserLaunchIdentity,
+  ) {}
+
+  state(): HumanBrowserProcessState {
+    return {
+      running: processIsRunning(this.record.processId),
+      processId: this.record.processId,
+      exitCode: null,
+      exitSignal: null,
+      launchedAt: this.record.createdAt,
+    };
+  }
+
+  identity(): BrowserLaunchIdentity {
+    return this.launchIdentity;
+  }
+
+  controlChannel(): HumanBrowserControlChannel {
+    return {
+      kind: 'chromium_cdp',
+      endpointUrl: nativeControlEndpoint(this.record),
+    };
+  }
+
+  async waitForExit(timeoutMs: number): Promise<boolean> {
+    const deadlineAt = Date.now() + Math.max(1, timeoutMs);
+    while (processIsRunning(this.record.processId) && Date.now() < deadlineAt) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadlineAt - Date.now())));
+    }
+    return !processIsRunning(this.record.processId);
+  }
+}
+
+export function restoreNativeHumanBrowserSession(
+  record: NativeControlRecord,
+  identity: BrowserLaunchIdentity,
+): HumanBrowserSession {
+  if (record.state !== 'awaiting_user' || record.browser !== identity.browser) {
+    throw new Error('Refusing to restore a native human session from a mismatched control record.');
+  }
+  return new RestoredNativeHumanBrowserSession(record, identity);
 }
 
 async function reserveLoopbackPort(): Promise<number> {

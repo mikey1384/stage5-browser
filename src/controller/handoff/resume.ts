@@ -7,6 +7,7 @@ export const handoffResumeOperations = {
     input: BrowserCommandInput<'resumeAfterLogin'>,
   ): Promise<BrowserCommandOutput<'resumeAfterLogin'>> {
     const deadlineAt = Date.now() + input.timeoutMs;
+    await this.restoreDurableAuthenticationHandoff();
     if (this.authenticationHandoff?.state !== 'awaiting_user') {
       throw new Stage5BrowserError('AUTH_HANDOFF_REQUIRED', 'No login handoff is currently awaiting the user.', {
         recoverable: true,
@@ -223,6 +224,7 @@ export const handoffResumeOperations = {
           },
         );
       }
+      await this.ensureDurableAuthenticationHandoffOwnership(handoff, continuousRecord);
       continuousRecord = { ...continuousRecord, state: 'controlled' };
       await writeNativeControlRecord(handoff.profileDir, continuousRecord);
     }
