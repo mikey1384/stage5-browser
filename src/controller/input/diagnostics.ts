@@ -12,6 +12,7 @@ export const inputDiagnosticsOperations = {
     suggestedAction: string,
     code: 'AMBIGUOUS_TARGET' | 'OPERATION_FAILED' | 'TARGET_NOT_FOUND' = 'OPERATION_FAILED',
     action: SanitizedActionDiagnostic['action'] = 'click_by_ref',
+    extraDetails: Readonly<Record<string, unknown>> | null = null,
   ): never {
     const diagnostic: SanitizedActionDiagnostic = {
       action,
@@ -28,6 +29,7 @@ export const inputDiagnosticsOperations = {
     throw new Stage5BrowserError(code, message, {
       recoverable: true,
       details: {
+        ...(extraDetails ?? {}),
         reason,
         actionOutcome: 'blocked',
         actionDispatched: false,

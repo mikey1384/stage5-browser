@@ -1,4 +1,5 @@
 import { type BrowserCommandOutput, type BrowserLaunchIdentity, type BrowserLaunchTarget, type ControlKind, type ControlOptionObservation, type ElementHandle, type FileInputObservation, type FormFieldObservation, type FormFieldState, type Frame, type HumanBrowserSession, type JSHandle, type Locator, type ObservedScrollContainer, type OwnedProcessObservation, type Page, type PrivateFieldValueType, type ProfileShutdownDecision, type ProfileShutdownInspection, type ProfileStorageInspection, type SafeTargetState, type SanitizedClickDispatchEvidence, type SanitizedNativeWindowActivationEvidence, type SanitizedPageActivationEvidence, type ScrollContentObservation } from './dependencies.js';
+import type { ViewportPreparationTelemetry } from '../protocol/telemetry.js';
 
 export async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -217,6 +218,15 @@ export interface PreparedObservedClickTarget {
   targetState: SafeTargetState;
   activation: 'keyboard_enter' | 'keyboard_space' | 'pointer';
   pageActivation: SanitizedPageActivationEvidence | null;
+  viewportPreparation: ViewportPreparationTelemetry | null;
+}
+
+export interface ClickViewportMovement {
+  moved: boolean;
+  horizontalMovement: boolean;
+  verticalMovement: boolean;
+  surface: 'document' | 'nested' | null;
+  composedBoundaryTraversed: boolean;
 }
 
 export interface FillTargetDescriptor {

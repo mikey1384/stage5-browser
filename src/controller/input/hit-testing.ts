@@ -33,7 +33,19 @@ export const inputHitTestingOperations = {
         let right = Math.min(window.innerWidth, rect.right);
         let top = Math.max(0, rect.top);
         let bottom = Math.min(window.innerHeight, rect.bottom);
-        for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+        const composedParent = (candidate: Element): HTMLElement | null => {
+          if (candidate.assignedSlot !== null) return candidate.assignedSlot;
+          if (candidate.parentElement !== null) return candidate.parentElement;
+          const root = candidate.getRootNode();
+          return root instanceof ShadowRoot ? root.host as HTMLElement : null;
+        };
+        const visited = new Set<Element>();
+        for (
+          let ancestor = composedParent(element);
+          ancestor !== null && !visited.has(ancestor);
+          ancestor = composedParent(ancestor)
+        ) {
+          visited.add(ancestor);
           const ancestorStyle = getComputedStyle(ancestor);
           const ancestorRect = ancestor.getBoundingClientRect();
           if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowX)) {
@@ -153,8 +165,35 @@ export const inputHitTestingOperations = {
             && style.visibility !== 'hidden' && style.opacity !== '0';
           const enabled = !('disabled' in element && Boolean((element as HTMLButtonElement).disabled))
             && element.getAttribute('aria-disabled') !== 'true';
-          return visible && enabled && rect.bottom > 0 && rect.right > 0
-            && rect.top < window.innerHeight && rect.left < window.innerWidth;
+          let left = Math.max(0, rect.left);
+          let right = Math.min(window.innerWidth, rect.right);
+          let top = Math.max(0, rect.top);
+          let bottom = Math.min(window.innerHeight, rect.bottom);
+          const composedParent = (candidate: Element): HTMLElement | null => {
+            if (candidate.assignedSlot !== null) return candidate.assignedSlot;
+            if (candidate.parentElement !== null) return candidate.parentElement;
+            const root = candidate.getRootNode();
+            return root instanceof ShadowRoot ? root.host as HTMLElement : null;
+          };
+          const visited = new Set<Element>();
+          for (
+            let ancestor = composedParent(element);
+            ancestor !== null && !visited.has(ancestor);
+            ancestor = composedParent(ancestor)
+          ) {
+            visited.add(ancestor);
+            const ancestorStyle = getComputedStyle(ancestor);
+            const ancestorRect = ancestor.getBoundingClientRect();
+            if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowX)) {
+              left = Math.max(left, ancestorRect.left);
+              right = Math.min(right, ancestorRect.right);
+            }
+            if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowY)) {
+              top = Math.max(top, ancestorRect.top);
+              bottom = Math.min(bottom, ancestorRect.bottom);
+            }
+          }
+          return visible && enabled && right > left && bottom > top;
         };
         const block = (event: Event): void => {
           event.preventDefault();

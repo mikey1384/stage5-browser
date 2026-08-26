@@ -2,6 +2,17 @@ import type { BrowserCommandName } from './commands.js';
 import type { BrowserActionManager, BrowserCommandContract, BrowserPhaseSystem } from './command-contracts.js';
 import type { PostconditionCheck } from './controls.js';
 
+export interface ViewportPreparationTelemetry {
+  attempts: number;
+  movements: number;
+  horizontalMovement: boolean;
+  verticalMovement: boolean;
+  nestedSurfaceMovement: boolean;
+  documentMovement: boolean;
+  composedBoundaryTraversed: boolean;
+  completedInViewport: boolean;
+}
+
 export interface WorkerActionPhaseTelemetry {
   action: string;
   startedAtMs: number;
@@ -18,6 +29,7 @@ export interface WorkerActionPhaseTelemetry {
     authorizedAtMs: number;
     completedDispatchAttempts: number;
   } | null;
+  viewportPreparation?: ViewportPreparationTelemetry | null;
   terminalOutcome: 'failed' | 'succeeded' | null;
   completedAtMs: number | null;
 }
@@ -32,6 +44,7 @@ export interface ExecutionActionTrace {
   dispatchState: WorkerActionPhaseTelemetry['dispatchState'];
   dispatchAttempts: number;
   recoveryReason: NonNullable<WorkerActionPhaseTelemetry['recovery']>['reason'] | null;
+  viewportPreparation: ViewportPreparationTelemetry | null;
   terminalOutcome: WorkerActionPhaseTelemetry['terminalOutcome'];
   phases: Array<{
     phase: WorkerActionPhaseTelemetry['transitions'][number]['phase'];

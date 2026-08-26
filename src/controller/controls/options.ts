@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { type ElementHandle, type Frame, type Locator } from '../dependencies.js';
 import { boundedValue, CONTROL_INSPECTION_SCROLL_SETTLE_MS, CONTROL_OPTION_SELECTOR, CONTROL_POPUP_SELECTOR, MAX_CONTROL_INSPECTION_SCROLL_STEPS, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { resolveControlPopupOwner } from './popup-ownership.js';
 
 const OPTION_ROLES = new Set([
   'menuitem',
@@ -58,18 +59,12 @@ export const controlOptionOperations = {
     deadlineAt: number,
     allowUniqueRenderedAfterDispatch = false,
   ): Promise<{ locator: Locator; handle: ElementHandle<HTMLElement> } | null | 'ambiguous'> {
-    const relation = await boundedValue(
-      controlHandle.evaluate((control) => ({
-        ids: [...(control.getAttribute('aria-controls') ?? '').split(/\s+/),
-          ...(control.getAttribute('aria-owns') ?? '').split(/\s+/)].filter(Boolean),
-        controlId: control.id,
-        expanded: control.getAttribute('aria-expanded') === 'true',
-        focused: control.ownerDocument.activeElement === control || control.contains(control.ownerDocument.activeElement),
-      })),
+    const connected = await boundedValue(
+      controlHandle.evaluate((control) => control.isConnected),
       Math.max(1, remainingUntil(deadlineAt)),
-      null,
+      false,
     );
-    if (relation === null) return null;
+    if (!connected) return null;
 
     const surfaces = frame.locator(CONTROL_POPUP_SELECTOR);
     const count = await boundedValue(
@@ -121,17 +116,37 @@ export const controlOptionOperations = {
       const explicit = candidates.filter((candidate) => candidate.explicit);
       const structural = candidates.filter((candidate) => candidate.structurallyRelated && candidate.rendered);
       const rendered = candidates.filter((candidate) => candidate.rendered);
-      const selected = explicit.length === 1
+      let selected = explicit.length === 1
         ? explicit[0]
         : structural.length === 1
           ? structural[0]
-          : (relation.expanded || relation.focused) && rendered.length === 1
+          : null;
+      let ownershipAmbiguous = false;
+      if (selected === null) {
+        const ownerMatched: PopupCandidate[] = [];
+        for (const candidate of rendered) {
+          const ownership = await resolveControlPopupOwner(
+            frame,
+            candidate.handle,
+            controlHandle,
+            deadlineAt,
+          );
+          if (ownership.kind === 'resolved') {
+            if (ownership.targetMatch) ownerMatched.push(candidate);
+            await ownership.owner.dispose().catch(() => undefined);
+          } else if (ownership.kind === 'ambiguous' || ownership.kind === 'unbounded') {
+            ownershipAmbiguous = true;
+          }
+        }
+        selected = ownerMatched.length === 1
+          ? ownerMatched[0]
+          : ownerMatched.length === 0 && !ownershipAmbiguous &&
+              allowUniqueRenderedAfterDispatch && rendered.length === 1
             ? rendered[0]
-            : allowUniqueRenderedAfterDispatch && rendered.length === 1
-              ? rendered[0]
             : null;
-      const ambiguous = explicit.length > 1 || structural.length > 1 ||
-        ((relation.expanded || relation.focused) && rendered.length > 1);
+        ownershipAmbiguous ||= ownerMatched.length > 1;
+      }
+      const ambiguous = explicit.length > 1 || structural.length > 1 || ownershipAmbiguous;
       for (const candidate of candidates) {
         if (candidate !== selected) await candidate.handle.dispose().catch(() => undefined);
       }

@@ -1,6 +1,7 @@
 import { type Browser, type BrowserCommandOutput, type Page, type SanitizedClickDispatchEvidence, type SanitizedPageActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { clickFinalizationReserve, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import type { ViewportPreparationTelemetry } from '../../protocol/telemetry.js';
 import type { ClickActionDefinition, ClickActionPlan } from './click-plan.js';
 
 function dispatchConclusion(error: unknown): boolean | 'unknown' {
@@ -9,6 +10,25 @@ function dispatchConclusion(error: unknown): boolean | 'unknown' {
   return dispatched === true || dispatched === false || dispatched === 'unknown'
     ? dispatched
     : 'unknown';
+}
+
+function viewportPreparationFromError(error: unknown): ViewportPreparationTelemetry | null {
+  if (!(error instanceof Stage5BrowserError)) return null;
+  const value = error.details?.viewportPreparation;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const evidence = value as Partial<ViewportPreparationTelemetry>;
+  if (
+    !Number.isInteger(evidence.attempts) || (evidence.attempts ?? -1) < 0 || (evidence.attempts ?? 33) > 32 ||
+    !Number.isInteger(evidence.movements) || (evidence.movements ?? -1) < 0 ||
+    (evidence.movements ?? 33) > (evidence.attempts ?? -1) ||
+    typeof evidence.horizontalMovement !== 'boolean' ||
+    typeof evidence.verticalMovement !== 'boolean' ||
+    typeof evidence.nestedSurfaceMovement !== 'boolean' ||
+    typeof evidence.documentMovement !== 'boolean' ||
+    typeof evidence.composedBoundaryTraversed !== 'boolean' ||
+    typeof evidence.completedInViewport !== 'boolean'
+  ) return null;
+  return evidence as ViewportPreparationTelemetry;
 }
 
 export const clickExecutorOperations = {
@@ -42,6 +62,9 @@ export const clickExecutorOperations = {
           actionStartedAt,
           actionDeadlineAt,
         );
+        if (preparedTarget.viewportPreparation !== null) {
+          phases.recordViewportPreparation(preparedTarget.viewportPreparation);
+        }
         pagesBeforeDispatch = new Set(plan.page.context().pages().filter((candidate) => !candidate.isClosed()));
         downloadCursorBeforeDispatch = await this.downloadManager.cursor();
         phases.beginDispatch();
@@ -99,6 +122,7 @@ export const clickExecutorOperations = {
             page: await this.pageSummary(plan.page, undefined, remainingUntil(deadlineAt)),
             frame: this.frameSummary(plan.frame, plan.page),
             postcondition: reconciled.postcondition,
+            viewportPreparation: preparedTarget?.viewportPreparation ?? null,
             dispatch: {
               actionDispatched: reconciled.actionDispatched === false ? 'unknown' as const : reconciled.actionDispatched,
               clickDispatched: reconciled.clickDispatched === false ? 'unknown' as const : reconciled.clickDispatched,
@@ -137,6 +161,7 @@ export const clickExecutorOperations = {
           page: await this.pageSummary(plan.page, undefined, remainingUntil(deadlineAt)),
           frame: this.frameSummary(plan.frame, plan.page),
           postcondition,
+          viewportPreparation: preparedTarget.viewportPreparation,
           dispatch: { actionDispatched: true as const, clickDispatched: true as const },
           ...await this.newPageDispatchResult(plan.page, pagesBeforeDispatch, downloadCursorBeforeDispatch),
         };
@@ -144,6 +169,8 @@ export const clickExecutorOperations = {
         return result;
       }
     } catch (error) {
+      const viewportPreparation = viewportPreparationFromError(error);
+      if (viewportPreparation !== null) phases.recordViewportPreparation(viewportPreparation);
       if (
         plan !== null &&
         error instanceof Stage5BrowserError &&

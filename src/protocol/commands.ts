@@ -16,6 +16,7 @@ import type { DownloadListOutput, DownloadObservation, WaitForDownloadInput, Wai
 import type { BrowserDialogActionResult, BrowserDialogExpectation, BrowserDialogStatus } from './dialogs.js';
 import type { PageLifecycleStatus } from './page-lifecycle.js';
 import type { SetInputFilesInput, SetInputFilesOutput } from './uploads.js';
+import type { ViewportPreparationTelemetry } from './telemetry.js';
 
 export interface BrowserCommandMap {
   initialize: {
@@ -196,6 +197,7 @@ export interface BrowserCommandMap {
       page: PageSummary;
       frame: FrameSummary;
       postcondition: PostconditionResult | null;
+      viewportPreparation: ViewportPreparationTelemetry | null;
       dispatch: { actionDispatched: true | 'unknown'; clickDispatched: true | 'unknown' };
       newPage: BrowserTabSummary | null;
       newPageCount: number;
@@ -218,6 +220,7 @@ export interface BrowserCommandMap {
       page: PageSummary;
       frame: FrameSummary;
       postcondition: PostconditionResult | null;
+      viewportPreparation: ViewportPreparationTelemetry | null;
       dispatch: { actionDispatched: true | 'unknown'; clickDispatched: true | 'unknown' };
       newPage: BrowserTabSummary | null;
       newPageCount: number;

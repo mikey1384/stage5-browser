@@ -1,6 +1,7 @@
 import { type Browser, type ClickPostcondition, type ElementHandle, type Frame, inspectTargetState, type Locator, type Page, type SanitizedPageActivationEvidence } from '../dependencies.js';
 import { boundedValue, CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_INCREMENTAL_SCROLL_STEPS, CLICK_REF_INCREMENTAL_SETTLE_MS, CLICK_REF_REBIND_SETTLE_MS, CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS, type ClickTargetSemanticIdentity, type ObservedReferenceCapability, type ObservedReferenceResolution, type ObservedReferenceSemantic, type ObservedSnapshot, POPUP_OPTION_ROLES, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import type { ViewportPreparationTelemetry } from '../../protocol/telemetry.js';
 
 export const inputClickReferenceOperations = {
   async retainObservedReferenceCapability(
@@ -335,6 +336,17 @@ export const inputClickReferenceOperations = {
       );
     }
 
+    const viewportPreparation: ViewportPreparationTelemetry = {
+      attempts: 0,
+      movements: 0,
+      horizontalMovement: false,
+      verticalMovement: false,
+      nestedSurfaceMovement: false,
+      documentMovement: false,
+      composedBoundaryTraversed: false,
+      completedInViewport: targetState.inViewport,
+    };
+
     const identity = targetState.inViewport
       ? null
       : await boundedValue(
@@ -354,6 +366,7 @@ export const inputClickReferenceOperations = {
         Date.now() < preparationDeadline;
       step += 1
     ) {
+      viewportPreparation.attempts += 1;
       const movement = await boundedValue(
         this.incrementalScrollTowardClickTarget(handle),
         Math.max(1, remainingUntil(preparationDeadline)),
@@ -373,8 +386,13 @@ export const inputClickReferenceOperations = {
         await handle.dispose().catch(() => undefined);
         handle = rebound.handle;
         preparedLocator = rebound.locator;
-      } else if (!movement.moved && !movement.targetInViewport) {
-        break;
+      } else {
+        if (movement.moved) viewportPreparation.movements += 1;
+        viewportPreparation.horizontalMovement ||= movement.horizontalMovement;
+        viewportPreparation.verticalMovement ||= movement.verticalMovement;
+        viewportPreparation.nestedSurfaceMovement ||= movement.surface === 'nested';
+        viewportPreparation.documentMovement ||= movement.surface === 'document';
+        viewportPreparation.composedBoundaryTraversed ||= movement.composedBoundaryTraversed;
       }
 
       const remaining = preparationDeadline - Date.now();
@@ -420,6 +438,9 @@ export const inputClickReferenceOperations = {
           );
         }
       }
+      if (movement !== null && !movement.moved && !targetState.inViewport) {
+        break;
+      }
     }
 
     targetState = await boundedValue(
@@ -440,6 +461,7 @@ export const inputClickReferenceOperations = {
         'TARGET_NOT_FOUND',
       );
     }
+    viewportPreparation.completedInViewport = targetState.inViewport;
     const activation = await this.preferredObservedClickActivation(
       handle,
       actionDeadlineAt,
@@ -463,6 +485,9 @@ export const inputClickReferenceOperations = {
         failure.reason,
         'The observed element was not safely actionable after viewport preparation.',
         'Take a fresh snapshot and resolve the reported visibility, enabled-state, or covering element before another click.',
+        'OPERATION_FAILED',
+        'click_by_ref',
+        { viewportPreparation },
       );
     }
     return {
@@ -471,6 +496,7 @@ export const inputClickReferenceOperations = {
       targetState,
       activation,
       pageActivation,
+      viewportPreparation,
     };
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;

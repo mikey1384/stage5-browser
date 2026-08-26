@@ -222,6 +222,7 @@ export const inputClickTargetOperations = {
         targetState,
         activation,
         pageActivation,
+        viewportPreparation: null,
       };
     }
 

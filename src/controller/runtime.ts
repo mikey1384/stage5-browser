@@ -62,6 +62,7 @@ import { downloadOperations, type DownloadOperations } from './transfers/downloa
 import { BrowserDialogManager } from './dialogs/manager.js';
 import { dialogOperations, type DialogOperations } from './dialogs/actions.js';
 import { popupPreparationOperations, type PopupPreparationOperations } from './controls/popup-preparation.js';
+import { controlRevealOperations, type ControlRevealOperations } from './controls/reveal.js';
 import { controlMultiSelectionOperations, type ControlMultiSelectionOperations } from './controls/multi-selection.js';
 import { BrowserPageLifecycleManager, pageLifecycleOperations, type PageLifecycleOperations } from './lifecycle/page-events.js';
 export interface BrowserControllerContext extends
@@ -123,6 +124,7 @@ export interface BrowserControllerContext extends
   DownloadOperations,
   DialogOperations,
   PopupPreparationOperations,
+  ControlRevealOperations,
   PageLifecycleOperations {
   context: BrowserContext | undefined;
   activePage: Page | undefined;
@@ -179,6 +181,7 @@ export interface BrowserControllerContext extends
     suggestedAction: string,
     code?: 'AMBIGUOUS_TARGET' | 'OPERATION_FAILED' | 'TARGET_NOT_FOUND',
     action?: SanitizedActionDiagnostic['action'],
+    extraDetails?: Readonly<Record<string, unknown>> | null,
   ): never;
   failVirtualizedClickRebind(
     page: Page,
@@ -256,6 +259,7 @@ export interface BrowserController extends
   DownloadOperations,
   DialogOperations,
   PopupPreparationOperations,
+  ControlRevealOperations,
   PageLifecycleOperations {}
 
 export class BrowserController {
@@ -324,6 +328,7 @@ export class BrowserController {
         dispatchState: snapshot.dispatchState,
         dispatchAttempts: snapshot.dispatchAttempts,
         recovery: snapshot.recovery === null ? null : { ...snapshot.recovery },
+        viewportPreparation: snapshot.viewportPreparation === null ? null : { ...snapshot.viewportPreparation },
         terminalOutcome: snapshot.terminalOutcome,
         completedAtMs: snapshot.completedAtMs,
       })),
@@ -404,6 +409,7 @@ for (const operations of [
   downloadOperations,
   dialogOperations,
   popupPreparationOperations,
+  controlRevealOperations,
   pageLifecycleOperations,
 ]) {
   installOperations(BrowserController.prototype, operations);

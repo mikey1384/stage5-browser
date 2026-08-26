@@ -50,19 +50,6 @@ export const controlInspectionOperations = {
         optionsComplete = native.complete;
         boundaryReached = native.complete;
       } else {
-        const preparation = await this.dismissCompetingControlPopup(
-          page,
-          frame,
-          controlHandle,
-          deadlineAt,
-        );
-        competingPopupDismissed = preparation.competingPopupDismissed;
-        preparationActionDispatched = preparation.preparationActionDispatched;
-        if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
-          throwControlDocumentChanged(
-            combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
-          );
-        }
         let associated = await this.associatedControlPopup(frame, controlHandle, deadlineAt);
         if (associated === 'ambiguous') {
           throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'Multiple popup surfaces could belong to the exact control.', {
@@ -81,20 +68,41 @@ export const controlInspectionOperations = {
         }
         let rendered = await popupRendered(popupHandle, deadlineAt);
         if (!rendered && input.revealOptions) {
+          const preparation = await this.dismissCompetingControlPopup(
+            page,
+            frame,
+            controlHandle,
+            deadlineAt,
+          );
+          competingPopupDismissed = preparation.competingPopupDismissed;
+          preparationActionDispatched = preparation.preparationActionDispatched;
+          if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
+            throwControlDocumentChanged(
+              combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
+            );
+          }
+
           await popupHandle?.dispose().catch(() => undefined);
           popupHandle = null;
           popupLocator = null;
+          await controlHandle.dispose().catch(() => undefined);
+          ({ locator: controlLocator, handle: controlHandle } = await resolveUniqueControl(
+            input.control,
+            frame,
+            deadlineAt,
+          ));
+          descriptor = await this.inspectControlDescriptor(controlHandle, deadlineAt);
           let revealError: unknown = null;
           try {
-            await this.clickByRole({
-              role: input.control.role,
-              name: input.control.name,
-              exact: input.control.exact,
-              frameId: input.frameId,
-              postcondition: null,
-              timeoutMs: Math.max(1_000, remainingUntil(deadlineAt)),
-            });
-            openerActionDispatched = true;
+            const reveal = await this.revealControlPopup(
+              page,
+              frame,
+              controlLocator,
+              controlHandle,
+              documentVersion,
+              deadlineAt,
+            );
+            openerActionDispatched = reveal.dispatch.actionDispatched;
           } catch (error) {
             revealError = error;
             if (error instanceof Stage5BrowserError) {

@@ -53,7 +53,19 @@ export async function inspectTargetState(
     let visibleRight = Math.min(window.innerWidth, rect.right);
     let visibleTop = Math.max(0, rect.top);
     let visibleBottom = Math.min(window.innerHeight, rect.bottom);
-    for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+    const composedParent = (candidate: Element): HTMLElement | null => {
+      if (candidate.assignedSlot !== null) return candidate.assignedSlot;
+      if (candidate.parentElement !== null) return candidate.parentElement;
+      const root = candidate.getRootNode();
+      return root instanceof ShadowRoot ? root.host as HTMLElement : null;
+    };
+    const visited = new Set<Element>();
+    for (
+      let ancestor = composedParent(element);
+      ancestor !== null && !visited.has(ancestor);
+      ancestor = composedParent(ancestor)
+    ) {
+      visited.add(ancestor);
       const ancestorStyle = getComputedStyle(ancestor);
       const ancestorRect = ancestor.getBoundingClientRect();
       if (/(auto|clip|hidden|scroll)/u.test(ancestorStyle.overflowX)) {

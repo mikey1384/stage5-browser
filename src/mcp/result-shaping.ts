@@ -47,6 +47,7 @@ const PRIORITY_KEYS = [
   'actionOutcome',
   'dispatch',
   'postcondition',
+  'viewportPreparation',
   'evidence',
   'input',
   'checks',

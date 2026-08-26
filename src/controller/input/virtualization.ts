@@ -1,81 +1,151 @@
 import { type Browser, type ElementHandle, type Frame, type Locator, type Page, privacyFingerprint, type SafeTargetState } from '../dependencies.js';
-import { CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_OWNER_CANDIDATES, CLICK_REF_OWNER_SELECTOR, CLICK_REF_OWNER_TEXT_CHARACTERS, CLICK_REF_REBIND_SETTLE_MS, type ClickTargetSemanticIdentity, type VirtualizedClickResolution } from '../model.js';
+import { CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_OWNER_CANDIDATES, CLICK_REF_OWNER_SELECTOR, CLICK_REF_OWNER_TEXT_CHARACTERS, CLICK_REF_REBIND_SETTLE_MS, type ClickTargetSemanticIdentity, type ClickViewportMovement, type VirtualizedClickResolution } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
 export const inputVirtualizationOperations = {
   async incrementalScrollTowardClickTarget(
     handle: ElementHandle<HTMLElement | SVGElement>,
-  ): Promise<{ moved: boolean; targetInViewport: boolean } | null> {
+  ): Promise<ClickViewportMovement | null> {
     try {
       return await handle.evaluate((element) => {
-        const viewportIntersects = (rect: DOMRect): boolean =>
-          rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+        let composedBoundaryTraversed = false;
+        const composedParent = (candidate: Element): HTMLElement | null => {
+          if (candidate.assignedSlot !== null) {
+            composedBoundaryTraversed = true;
+            return candidate.assignedSlot;
+          }
+          if (candidate.parentElement !== null) return candidate.parentElement;
+          const root = candidate.getRootNode();
+          if (root instanceof ShadowRoot) {
+            composedBoundaryTraversed = true;
+            return root.host as HTMLElement;
+          }
+          return null;
+        };
+        const clips = (overflow: string): boolean => /^(auto|clip|hidden|overlay|scroll)$/u.test(overflow);
+        const scrolls = (overflow: string): boolean => /^(auto|hidden|overlay|scroll)$/u.test(overflow);
+        const visibleSurfaceRect = (surface: HTMLElement): {
+          left: number;
+          right: number;
+          top: number;
+          bottom: number;
+        } => {
+          const rect = surface.getBoundingClientRect();
+          let left = Math.max(0, rect.left);
+          let right = Math.min(window.innerWidth, rect.right);
+          let top = Math.max(0, rect.top);
+          let bottom = Math.min(window.innerHeight, rect.bottom);
+          const visited = new Set<Element>([surface]);
+          for (
+            let ancestor = composedParent(surface);
+            ancestor !== null && !visited.has(ancestor);
+            ancestor = composedParent(ancestor)
+          ) {
+            visited.add(ancestor);
+            const style = getComputedStyle(ancestor);
+            const ancestorRect = ancestor.getBoundingClientRect();
+            if (clips(style.overflowX)) {
+              left = Math.max(left, ancestorRect.left);
+              right = Math.min(right, ancestorRect.right);
+            }
+            if (clips(style.overflowY)) {
+              top = Math.max(top, ancestorRect.top);
+              bottom = Math.min(bottom, ancestorRect.bottom);
+            }
+          }
+          return { left, right, top, bottom };
+        };
         const targetRect = element.getBoundingClientRect();
-        const targetDirection = targetRect.bottom <= 0 ? -1 : targetRect.top >= window.innerHeight ? 1 : 0;
+        const direction = (start: number, end: number, clipStart: number, clipEnd: number): -1 | 0 | 1 =>
+          end <= clipStart ? -1 : start >= clipEnd ? 1 : 0;
+        const boundedStep = (distance: number, visibleSpan: number): number =>
+          Math.max(64, Math.min(distance, Math.max(64, Math.floor(visibleSpan * 0.72))));
+        const noMovement = (): ClickViewportMovement => ({
+          moved: false,
+          horizontalMovement: false,
+          verticalMovement: false,
+          surface: null,
+          composedBoundaryTraversed,
+        });
         const moveSurface = (
           surface: HTMLElement,
-          direction: number,
-          distance: number,
-          visibleHeight: number,
-        ): boolean => {
-          const before = surface.scrollTop;
-          const maximum = Math.max(0, surface.scrollHeight - surface.clientHeight);
-          const available = direction > 0 ? maximum - before : before;
-          if (available <= 1) return false;
-          const step = Math.min(
-            available,
-            Math.max(64, Math.min(distance, Math.max(64, Math.floor(visibleHeight * 0.72)))),
+          surfaceKind: 'document' | 'nested',
+        ): ClickViewportMovement => {
+          const style = getComputedStyle(surface);
+          const visibleRect = visibleSurfaceRect(surface);
+          if (visibleRect.right <= visibleRect.left || visibleRect.bottom <= visibleRect.top) return noMovement();
+          const horizontalDirection = direction(
+            targetRect.left,
+            targetRect.right,
+            visibleRect.left,
+            visibleRect.right,
           );
+          const verticalDirection = direction(
+            targetRect.top,
+            targetRect.bottom,
+            visibleRect.top,
+            visibleRect.bottom,
+          );
+          const canMoveHorizontally = horizontalDirection !== 0 &&
+            (surfaceKind === 'document' || scrolls(style.overflowX)) &&
+            surface.scrollWidth > surface.clientWidth + 1;
+          const canMoveVertically = verticalDirection !== 0 &&
+            (surfaceKind === 'document' || scrolls(style.overflowY)) &&
+            surface.scrollHeight > surface.clientHeight + 1;
+          if (!canMoveHorizontally && !canMoveVertically) return noMovement();
+
+          const beforeLeft = surface.scrollLeft;
+          const beforeTop = surface.scrollTop;
+          const horizontalDistance = horizontalDirection > 0
+            ? Math.max(64, targetRect.left - visibleRect.right)
+            : Math.max(64, visibleRect.left - targetRect.right);
+          const verticalDistance = verticalDirection > 0
+            ? Math.max(64, targetRect.top - visibleRect.bottom)
+            : Math.max(64, visibleRect.top - targetRect.bottom);
           const priorBehavior = surface.style.scrollBehavior;
           surface.style.scrollBehavior = 'auto';
-          surface.scrollTop = before + direction * step;
+          if (canMoveHorizontally) {
+            surface.scrollLeft = beforeLeft + horizontalDirection * boundedStep(
+              horizontalDistance,
+              visibleRect.right - visibleRect.left,
+            );
+          }
+          if (canMoveVertically) {
+            surface.scrollTop = beforeTop + verticalDirection * boundedStep(
+              verticalDistance,
+              visibleRect.bottom - visibleRect.top,
+            );
+          }
           surface.style.scrollBehavior = priorBehavior;
-          return Math.abs(surface.scrollTop - before) > 1;
+          const horizontalMovement = Math.abs(surface.scrollLeft - beforeLeft) > 1;
+          const verticalMovement = Math.abs(surface.scrollTop - beforeTop) > 1;
+          const moved = horizontalMovement || verticalMovement;
+          return {
+            moved,
+            horizontalMovement,
+            verticalMovement,
+            surface: moved ? surfaceKind : null,
+            composedBoundaryTraversed,
+          };
         };
 
-        for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+        const visited = new Set<Element>();
+        for (
+          let ancestor = composedParent(element);
+          ancestor !== null && !visited.has(ancestor);
+          ancestor = composedParent(ancestor)
+        ) {
+          visited.add(ancestor);
           if (ancestor === document.body || ancestor === document.documentElement) continue;
-          const style = getComputedStyle(ancestor);
-          if (!/(auto|hidden|scroll|overlay)/u.test(style.overflowY)) continue;
-          if (ancestor.scrollHeight <= ancestor.clientHeight + 1) continue;
-          const surfaceRect = ancestor.getBoundingClientRect();
-          if (!viewportIntersects(surfaceRect)) continue;
-          const clipTop = Math.max(0, surfaceRect.top);
-          const clipBottom = Math.min(window.innerHeight, surfaceRect.bottom);
-          const direction = targetRect.bottom <= clipTop ? -1 : targetRect.top >= clipBottom ? 1 : 0;
-          if (direction === 0) continue;
-          const distance = direction > 0
-            ? Math.max(64, targetRect.top - clipBottom)
-            : Math.max(64, clipTop - targetRect.bottom);
-          if (moveSurface(ancestor, direction, distance, Math.max(1, clipBottom - clipTop))) {
-            const after = element.getBoundingClientRect();
-            return { moved: true, targetInViewport: viewportIntersects(after) };
-          }
-        }
-
-        // A descendant can geometrically intersect the browser window while
-        // remaining fully clipped by a modal or nested scroll viewport. Only
-        // fall back to document scrolling after every clipping ancestor has
-        // had one bounded opportunity to reveal the exact target.
-        if (targetDirection === 0) {
-          return { moved: false, targetInViewport: false };
+          const movement = moveSurface(ancestor, 'nested');
+          if (movement.moved) return movement;
         }
 
         const scrollingElement = document.scrollingElement;
         if (!(scrollingElement instanceof HTMLElement)) {
-          return { moved: false, targetInViewport: false };
+          return noMovement();
         }
-        const distance = targetDirection > 0
-          ? Math.max(64, targetRect.top - window.innerHeight)
-          : Math.max(64, -targetRect.bottom);
-        const moved = moveSurface(
-          scrollingElement,
-          targetDirection,
-          distance,
-          Math.max(1, window.innerHeight),
-        );
-        const after = element.getBoundingClientRect();
-        return { moved, targetInViewport: viewportIntersects(after) };
+        return moveSurface(scrollingElement, 'document');
       });
     } catch {
       return null;

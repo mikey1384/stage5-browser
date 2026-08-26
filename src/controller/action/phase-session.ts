@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import type { ViewportPreparationTelemetry } from '../../protocol/telemetry.js';
 import { ACTION_PHASES, type ActionDispatchState, type ActionPhase, type ActionPhaseSnapshot, type ActionPhaseTransition, type ActionTerminalOutcome, type DispatchConclusion, type NoDispatchRecovery, type NoDispatchRecoveryReason } from './types.js';
 
 const phaseIndex = (phase: ActionPhase): number => ACTION_PHASES.indexOf(phase);
@@ -20,6 +21,7 @@ export class ActionPhaseSession {
   private dispatchState: ActionDispatchState = 'not_attempted';
   private dispatchAttempts = 0;
   private recovery: NoDispatchRecovery | null = null;
+  private viewportPreparation: ViewportPreparationTelemetry | null = null;
   private terminalOutcome: ActionTerminalOutcome | null = null;
   private completedAtMs: number | null = null;
 
@@ -97,6 +99,24 @@ export class ActionPhaseSession {
     this.recordTransition('finalize');
   }
 
+  recordViewportPreparation(evidence: ViewportPreparationTelemetry): void {
+    this.assertActive();
+    if (this.currentPhase !== 'prepare') {
+      throw new ActionPhaseInvariantError('Viewport preparation evidence belongs to the prepare phase.');
+    }
+    const prior = this.viewportPreparation;
+    this.viewportPreparation = prior === null ? { ...evidence } : {
+      attempts: prior.attempts + evidence.attempts,
+      movements: prior.movements + evidence.movements,
+      horizontalMovement: prior.horizontalMovement || evidence.horizontalMovement,
+      verticalMovement: prior.verticalMovement || evidence.verticalMovement,
+      nestedSurfaceMovement: prior.nestedSurfaceMovement || evidence.nestedSurfaceMovement,
+      documentMovement: prior.documentMovement || evidence.documentMovement,
+      composedBoundaryTraversed: prior.composedBoundaryTraversed || evidence.composedBoundaryTraversed,
+      completedInViewport: evidence.completedInViewport,
+    };
+  }
+
   complete(outcome: ActionTerminalOutcome): void {
     this.assertActive();
     if (this.currentPhase !== 'finalize') {
@@ -127,6 +147,7 @@ export class ActionPhaseSession {
       dispatchState: this.dispatchState,
       dispatchAttempts: this.dispatchAttempts,
       recovery: this.recovery === null ? null : { ...this.recovery },
+      viewportPreparation: this.viewportPreparation === null ? null : { ...this.viewportPreparation },
       terminalOutcome: this.terminalOutcome,
       completedAtMs: this.completedAtMs,
     };

@@ -128,6 +128,7 @@ export function buildExecutionTrace(input: BuildExecutionTraceInput): BrowserExe
       dispatchState: action.dispatchState,
       dispatchAttempts: action.dispatchAttempts,
       recoveryReason: action.recovery?.reason ?? null,
+      viewportPreparation: action.viewportPreparation ?? null,
       terminalOutcome: action.terminalOutcome,
       phases: action.transitions.map((transition, index, transitions) => ({
         phase: transition.phase,

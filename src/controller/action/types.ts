@@ -1,3 +1,5 @@
+import type { ViewportPreparationTelemetry } from '../../protocol/telemetry.js';
+
 export const ACTION_PHASES = [
   'observe',
   'plan',
@@ -45,6 +47,7 @@ export interface ActionPhaseSnapshot {
   dispatchState: ActionDispatchState;
   dispatchAttempts: number;
   recovery: NoDispatchRecovery | null;
+  viewportPreparation: ViewportPreparationTelemetry | null;
   terminalOutcome: ActionTerminalOutcome | null;
   completedAtMs: number | null;
 }

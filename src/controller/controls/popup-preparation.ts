@@ -9,6 +9,7 @@ import {
 } from '../dependencies.js';
 import { boundedValue, CONTROL_POPUP_SELECTOR, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { resolveControlPopupOwner } from './popup-ownership.js';
 import { popupRendered } from './rendering.js';
 
 interface PopupPreparationResult {
@@ -59,75 +60,35 @@ export const popupPreparationOperations = {
 
     const popup = renderedPopups[0]!;
     let source: ElementHandle<HTMLElement> | null = null;
-    const ownerHandles: ElementHandle<HTMLElement>[] = [];
     try {
-      const targetOwnsPopup = await targetControl.evaluate((control, surface) => {
-        const ids = [
-          ...(control.getAttribute('aria-controls') ?? '').split(/\s+/),
-          ...(control.getAttribute('aria-owns') ?? '').split(/\s+/),
-        ].filter(Boolean);
-        const labelledBy = (surface.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean);
-        return (surface.id.length > 0 && ids.includes(surface.id))
-          || control.contains(surface)
-          || (control.id.length > 0 && labelledBy.includes(control.id))
-          || control.getAttribute('aria-expanded') === 'true'
-          || control.ownerDocument.activeElement === control
-          || control.contains(control.ownerDocument.activeElement);
-      }, popup).catch(() => false);
-      if (targetOwnsPopup) {
+      const ownership = await resolveControlPopupOwner(
+        frame,
+        popup,
+        targetControl,
+        deadlineAt,
+      );
+      if (ownership.kind === 'resolved' && ownership.targetMatch) {
+        source = ownership.owner;
         return { competingPopupDismissed: false, preparationActionDispatched: false };
       }
-
-      const owners = frame.locator('[aria-controls], [aria-owns], [aria-haspopup]');
-      const ownerCount = await boundedValue(owners.count(), Math.max(1, remainingUntil(deadlineAt)), -1);
-      if (ownerCount < 0 || ownerCount > 100) {
+      if (ownership.kind !== 'resolved') {
         throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'The popup owner set could not be bounded.', {
           recoverable: true,
-          details: { reason: 'popup_owner_set_unbounded', actionDispatched: false },
+          details: {
+            reason: ownership.kind === 'unbounded'
+              ? 'popup_owner_set_unbounded'
+              : ownership.kind === 'ambiguous'
+                ? 'ambiguous_competing_popup_owner'
+                : 'competing_popup_owner_missing',
+            actionDispatched: false,
+          },
         });
       }
-      for (let index = 0; index < ownerCount; index += 1) {
-        const owner = await boundedValue(
-          owners.nth(index).elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
-          Math.max(1, remainingUntil(deadlineAt)),
-          null,
-        );
-        if (owner === null) continue;
-        const related = await owner.evaluate((control, surface) => {
-          const ids = [
-            ...(control.getAttribute('aria-controls') ?? '').split(/\s+/),
-            ...(control.getAttribute('aria-owns') ?? '').split(/\s+/),
-          ].filter(Boolean);
-          const labelledBy = (surface.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean);
-          return (surface.id.length > 0 && ids.includes(surface.id))
-            || control.contains(surface)
-            || (control.id.length > 0 && labelledBy.includes(control.id))
-            || control.getAttribute('aria-expanded') === 'true'
-            || control.ownerDocument.activeElement === control
-            || control.contains(control.ownerDocument.activeElement);
-        }, popup).catch(() => false);
-        if (related) ownerHandles.push(owner);
-        else await owner.dispose().catch(() => undefined);
-      }
-      if (ownerHandles.length !== 1) {
-        throw new Stage5BrowserError(
-          ownerHandles.length > 1 ? 'AMBIGUOUS_TARGET' : 'TARGET_NOT_FOUND',
-          'The rendered competing popup did not have one exact structural owner.',
-          {
-            recoverable: true,
-            details: {
-              reason: ownerHandles.length > 1 ? 'ambiguous_competing_popup_owner' : 'competing_popup_owner_missing',
-              actionDispatched: false,
-            },
-          },
-        );
-      }
-      source = ownerHandles[0]!;
+      source = ownership.owner;
       return await this.dispatchPopupEscape(page, popup, source, deadlineAt);
     } finally {
       await popup.dispose().catch(() => undefined);
-      await Promise.allSettled(ownerHandles.map((handle) => handle.dispose()));
-      if (source !== null && !ownerHandles.includes(source)) await source.dispose().catch(() => undefined);
+      await source?.dispose().catch(() => undefined);
     }
   },
 
