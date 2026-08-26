@@ -148,6 +148,7 @@ import {
   type ObservedScrollContainer,
   withScrollContainerSemanticDetails,
 } from './scroll-container-snapshot.js';
+import { withReadOnlySemanticContentDetails } from './read-only-semantic-detail.js';
 
 async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -224,6 +225,8 @@ interface ScrollContentObservationSurface {
 
 interface ScrollContentSample extends ScrollContentObservation {
   semanticLoadingIndicatorCount: number;
+  genericTextLoadingIndicatorCount: number;
+  genericTextLoadingObservationComplete: boolean;
   animationLoadingIndicatorCount: number;
   animationObservationComplete: boolean;
 }
@@ -448,6 +451,7 @@ function observeScrollContentForRoot(rootElement: HTMLElement | null): ScrollCon
   const MAX_LOADERS = 1_000;
   const MAX_STATUSES = 1_000;
   const MAX_ANIMATION_CANDIDATES = 5_000;
+  const MAX_GENERIC_LOADING_TEXT_NODES = 5_000;
   const MAX_TEXT_NODES_PER_ARTICLE = 2_000;
   const MAX_SEMANTIC_ELEMENTS_PER_ARTICLE = 500;
   let semanticObservationIncomplete = false;
@@ -499,7 +503,19 @@ function observeScrollContentForRoot(rootElement: HTMLElement | null): ScrollCon
     }
     return matches;
   };
-  const articleCandidates = withRootMatch('article, [role="article"]', MAX_ARTICLES);
+  const rawArticleCandidates = withRootMatch(
+    'article, [role="article"], blockquote',
+    MAX_ARTICLES,
+  );
+  const rawArticleSet = new Set(rawArticleCandidates);
+  const articleCandidates = rawArticleCandidates.filter((candidate) => {
+    let ancestor = candidate.parentElement;
+    while (ancestor !== null) {
+      if (rawArticleSet.has(ancestor)) return false;
+      ancestor = ancestor.parentElement;
+    }
+    return true;
+  });
   const articleSet = new Set(articleCandidates);
   const loaderCandidates = new Set<Element>(withRootMatch(
     '[aria-busy="true"], [role="progressbar"], progress, [class*="skeleton" i], [class*="placeholder" i], [class*="shimmer" i], [class*="loading" i]',
@@ -592,10 +608,12 @@ function observeScrollContentForRoot(rootElement: HTMLElement | null): ScrollCon
   };
 
   const closestObservedArticle = (candidate: Element): Element | null => {
-    const article = candidate.matches('article, [role="article"]')
-      ? candidate
-      : candidate.closest('article, [role="article"]');
-    return article !== null && articleSet.has(article) ? article : null;
+    let current: Element | null = candidate;
+    while (current !== null) {
+      if (articleSet.has(current)) return current;
+      current = current.parentElement;
+    }
+    return null;
   };
   const baseLoadersByArticle = new Map<Element, Set<Element>>();
   for (const loader of loaderCandidates) {
@@ -642,8 +660,52 @@ function observeScrollContentForRoot(rootElement: HTMLElement | null): ScrollCon
   }
 
   const semanticLoadingIndicatorCount = [...loaderCandidates].filter(visible).length;
-  const animationLoaderCandidates = new Set<Element>();
+  const genericTextLoaderCandidates = new Set<Element>();
+  const genericTextContainer = rootElement ?? document.documentElement;
+  let genericTextLoadingObservationComplete = true;
   if (semanticLoadingIndicatorCount === 0) {
+    const genericTextWalker = document.createTreeWalker(
+      genericTextContainer,
+      NodeFilter.SHOW_TEXT,
+    );
+    let genericTextNode = genericTextWalker.nextNode();
+    let genericTextNodesObserved = 0;
+    while (
+      genericTextNode !== null &&
+      genericTextNodesObserved < MAX_GENERIC_LOADING_TEXT_NODES
+    ) {
+      genericTextNodesObserved += 1;
+      const parent = genericTextNode.parentElement;
+      const text = (genericTextNode.textContent ?? '')
+        .replaceAll(/\s+/gu, ' ')
+        .trim()
+        .toLocaleLowerCase();
+      const parentText = (parent?.textContent ?? '')
+        .replaceAll(/\s+/gu, ' ')
+        .trim()
+        .toLocaleLowerCase();
+      if (
+        parent !== null &&
+        parentText === text &&
+        /^(?:loading|fetching|please\s+wait|waiting)(?:[.!…]+)?$/u.test(text) &&
+        renderedWithin(parent, genericTextContainer)
+      ) {
+        genericTextLoaderCandidates.add(parent);
+      }
+      genericTextNode = genericTextWalker.nextNode();
+    }
+    genericTextLoadingObservationComplete = genericTextNode === null;
+  }
+  const genericTextLoaders = [...genericTextLoaderCandidates]
+    .filter((loader) => !loaderCandidates.has(loader));
+  for (const loader of genericTextLoaders) {
+    loaderCandidates.add(loader);
+  }
+  const genericTextLoadingIndicatorCount = genericTextLoaders
+    .filter((candidate) => visible(candidate))
+    .length;
+  const animationLoaderCandidates = new Set<Element>();
+  if (semanticLoadingIndicatorCount === 0 && genericTextLoadingIndicatorCount === 0) {
     for (const candidate of withRootMatch('*', MAX_ANIMATION_CANDIDATES, 'animation')) {
       if (!visible(candidate) || (candidate.textContent ?? '').trim().length > 0) {
         continue;
@@ -662,7 +724,9 @@ function observeScrollContentForRoot(rootElement: HTMLElement | null): ScrollCon
     }
   }
   const animationLoadingIndicatorCount = [...animationLoaderCandidates].filter(visible).length;
-  const loadingIndicatorCount = semanticLoadingIndicatorCount + animationLoadingIndicatorCount;
+  const loadingIndicatorCount = semanticLoadingIndicatorCount +
+    genericTextLoadingIndicatorCount +
+    animationLoadingIndicatorCount;
 
   const loadersByArticle = new Map<Element, Set<Element>>();
   for (const loader of loaderCandidates) {
@@ -685,6 +749,8 @@ function observeScrollContentForRoot(rootElement: HTMLElement | null): ScrollCon
     articleCount,
     loadingIndicatorCount,
     semanticLoadingIndicatorCount,
+    genericTextLoadingIndicatorCount,
+    genericTextLoadingObservationComplete,
     animationLoadingIndicatorCount,
     animationObservationComplete,
   };
@@ -2224,19 +2290,26 @@ export class BrowserController {
         rawSnapshot,
         workDeadlineAt,
       );
-      snapshot = filteredSnapshot.replaceAll(/\s*\[ref=[^\]]+\]/gu, '');
-      const [observedVisibility, observedModalCount] = await Promise.all([
-        boundedValue(
-          page.evaluate(() => document.visibilityState),
-          Math.max(1, remainingUntil(workDeadlineAt)),
-          'unknown' as const,
-        ),
-        boundedValue(
-          frame.locator('[role="dialog"]:visible, dialog[open]:visible, [aria-modal="true"]:visible').count(),
-          Math.max(1, remainingUntil(workDeadlineAt)),
-          0,
-        ),
-      ]);
+      const observedModalCount = await boundedValue(
+        frame.locator('[role="dialog"]:visible, dialog[open]:visible, [aria-modal="true"]:visible').count(),
+        Math.max(1, remainingUntil(workDeadlineAt)),
+        -1,
+      );
+      const detailedSnapshot = observedModalCount === 0
+        ? await withReadOnlySemanticContentDetails({
+          root: page.locator('body'),
+          snapshot: filteredSnapshot,
+          deadlineAt: workDeadlineAt,
+          filterInactivePopupSnapshot: (detail) =>
+            this.filterInactivePopupSnapshot(frame, detail, workDeadlineAt),
+        })
+        : filteredSnapshot;
+      snapshot = detailedSnapshot.replaceAll(/\s*\[ref=[^\]]+\]/gu, '');
+      const observedVisibility = await boundedValue(
+        page.evaluate(() => document.visibilityState),
+        Math.max(1, remainingUntil(workDeadlineAt)),
+        'unknown' as const,
+      );
       rendererVisibility = observedVisibility === 'visible' || observedVisibility === 'hidden'
         ? observedVisibility
         : 'unknown';
@@ -2256,7 +2329,7 @@ export class BrowserController {
           },
         );
       }
-      visibleModalCount = observedModalCount;
+      visibleModalCount = Math.max(0, observedModalCount);
     } catch (error) {
       inspectionError = error;
     } finally {
@@ -6824,6 +6897,10 @@ export class BrowserController {
     let loadingObserved = before.loadingIndicatorCount > 0 || after.loadingIndicatorCount > 0;
     let semanticLoadingObserved = before.semanticLoadingIndicatorCount > 0 ||
       after.semanticLoadingIndicatorCount > 0;
+    let genericTextLoadingObserved = before.genericTextLoadingIndicatorCount > 0 ||
+      after.genericTextLoadingIndicatorCount > 0;
+    let genericTextLoadingObservationComplete = before.genericTextLoadingObservationComplete &&
+      after.genericTextLoadingObservationComplete;
     let animationObservationComplete = before.animationObservationComplete &&
       after.animationObservationComplete;
     while (true) {
@@ -6831,7 +6908,12 @@ export class BrowserController {
       const articleGrew = after.articleCount > before.articleCount;
       const loadingDisappeared = loadingObserved &&
         after.loadingIndicatorCount === 0 &&
-        (semanticLoadingObserved || animationObservationComplete);
+        (
+          semanticLoadingObserved ||
+          (genericTextLoadingObserved
+            ? genericTextLoadingObservationComplete
+            : animationObservationComplete)
+        );
       const satisfied = expectation.condition === 'article_count_growth'
         ? articleGrew
         : expectation.condition === 'loading_indicators_disappear'
@@ -6862,16 +6944,18 @@ export class BrowserController {
           !semanticLoadingObserved &&
           loadingObserved &&
           after.loadingIndicatorCount === 0 &&
-          !animationObservationComplete
+          !(genericTextLoadingObserved
+            ? genericTextLoadingObservationComplete
+            : animationObservationComplete)
         ) {
           throw new Stage5BrowserError(
             'OPERATION_FAILED',
-            'The selected scroll surface exceeded the bounded animated-loader observation limit.',
+            'The selected scroll surface exceeded a bounded heuristic loading-observation limit.',
             {
               recoverable: true,
               details: {
                 reason: 'scroll_observation_incomplete',
-                suggestedAction: 'Use one fresh snapshot to target a smaller observed scroll container; Stage5 Browser will not infer disappearance from a truncated animated-loader sample.',
+                suggestedAction: 'Use one fresh snapshot to target a smaller observed scroll container; Stage5 Browser will not infer disappearance from a truncated generic-text or animation sample.',
               },
             },
           );
@@ -6895,6 +6979,9 @@ export class BrowserController {
       after = observed;
       loadingObserved ||= after.loadingIndicatorCount > 0;
       semanticLoadingObserved ||= after.semanticLoadingIndicatorCount > 0;
+      genericTextLoadingObserved ||= after.genericTextLoadingIndicatorCount > 0;
+      genericTextLoadingObservationComplete &&=
+        after.genericTextLoadingObservationComplete;
       animationObservationComplete &&= after.animationObservationComplete;
     }
   }

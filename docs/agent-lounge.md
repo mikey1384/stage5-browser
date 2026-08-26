@@ -58,6 +58,8 @@ Release 0.12.0 adds an explicit restored temporary-activation policy and bounded
 
 Release 0.12.1 is a compatible worker-only behavior update: one same-tab renderer-visibility recovery during temporary inspection and postconditioned guarded keyboard activation for pointer-covered native buttons. Keep the host connected and call `browser_status` once at a safe boundary to adopt it; require worker version 0.12.1 and `restartRequired: false`.
 
+Release 0.12.2 is another compatible worker update. It adds bounded ref-free deep detail for visible article/standalone-quotation content and recognizes standalone quotations plus exact generic loading leaves in content waits. Keep the host connected, call `browser_status` once at a safe boundary, and require worker version 0.12.2 with `restartRequired: false`.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once if `lounge_pin` or `lounge_history` is absent.
 - Claude Code: exit and resume the same conversation with `claude --continue` if its existing process does not expose both manager tools.
 

@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -36,6 +36,7 @@
       "Non-activating background-tab inspection",
       "Restored temporary tab inspection",
       "One-recovery temporary tab visibility",
+      "Ref-free deep background content detail",
       "Snapshot-bound nested scrolling",
       "Virtualization-safe reference actions",
       "Exact-target dispatch evidence",

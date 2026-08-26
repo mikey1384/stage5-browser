@@ -17,6 +17,10 @@ The installed Safari application is not the same runtime as Playwright WebKit. S
 
 For any workflow that depends on a particular browser or authenticated profile:
 
+With no visible modal, `browser_inspect_tab` may append up to three bounded, novel, visible, outermost article/standalone-quotation detail sections at depth 20. The added detail is capped at 30,000 total characters, strips every ref, retains no handles, and never becomes an action surface.
+
+Temporary inspection and scrolling use generic loader/content evidence. The legacy `article_count_growth` evidence name includes growth of outermost standalone quotation units, without double-counting quotations nested inside articles or other quotations. Explicit semantic loaders take precedence over exact generic loading-text leaves and animation heuristics. A capped generic-text or animation scan cannot prove loader disappearance.
+
 1. Call `browser_available`.
 2. Read `profileState`, `startable`, and `recoverable`; `installed: true` alone is insufficient. `owned_active` means this session already controls the backend, `busy_other_stage5_session` means another live Stage5 owner must finish or stop it, `owned_orphaned` is recoverable only through the exact recorded lease, and `external_owner` must not be retried, killed, or lock-deleted. Do not guess or silently fall back.
 3. Call `browser_status`. Read controller state, lock state, and `profileOwner.lease` together. Every launch records a private atomic lease with exact worker/browser start identities, executable fingerprint, control mode, phase, and heartbeat. `state: "stopped"` therefore does not imply a free profile. If no owner exists and the backend is startable, call `browser_start`; if the lease proves a non-private Stage5 orphan, one `browser_start` will safely reattach or terminate/relaunch only that exact owner. If a different backend is already controlled, call the explicitly destructive `browser_switch`, which preflights before closing current tabs. Never delete browser lock files or signal an unverified process.
