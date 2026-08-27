@@ -1,6 +1,7 @@
 import { type Frame, Stage5BrowserError } from '../dependencies.js';
 import type { ObservedControlInspection } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { disposePopupSurfaces } from './popup-set.js';
 
 export const controlCapabilityOperations = {
   retainControlInspection(inspection: ObservedControlInspection): void {
@@ -56,7 +57,7 @@ export const controlCapabilityOperations = {
     await Promise.allSettled([
       inspection.controlHandle.dispose(),
       inspection.representationScopeHandle?.dispose() ?? Promise.resolve(),
-      inspection.popupHandle?.dispose() ?? Promise.resolve(),
+      disposePopupSurfaces(inspection.popupSurfaces),
       ...[...inspection.options.values()].map(({ handle }) => handle.dispose()),
     ]);
   },

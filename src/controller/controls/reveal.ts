@@ -1,7 +1,8 @@
 import { type BrowserCommandOutput, type ElementHandle, type Frame, type Locator, type Page, type PostconditionResult, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
-import { boundedValue, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
+import { boundedValue, type ObservedControlPopupSurface, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
-import { popupRendered } from './rendering.js';
+import type { ControlPopupAssociation } from './options.js';
+import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
 
 export const controlRevealOperations = {
   async revealControlPopup(
@@ -75,7 +76,7 @@ export const controlRevealOperations = {
     deadlineAt: number,
   ): Promise<PostconditionResult> {
     let controlHandle: ElementHandle<HTMLElement> | null = null;
-    let popupHandle: ElementHandle<HTMLElement> | null = null;
+    let popupSurfaces: ObservedControlPopupSurface[] = [];
     try {
       const count = await boundedValue(
         controlLocator.count(),
@@ -95,11 +96,11 @@ export const controlRevealOperations = {
         deadlineAt,
         { allowUniqueRenderedAfterDispatch: true, requireRendered: true },
       );
-      if (associated.kind === 'ambiguous') return failPopupReveal('ambiguous_control_popup_after_reveal', null);
-      if (associated.kind === 'missing') return failPopupReveal('control_popup_not_observed', false);
-      popupHandle = associated.handle;
-      const rendered = await popupRendered(popupHandle, deadlineAt);
-      if (!rendered) return failPopupReveal('control_popup_not_observed', false);
+      if (associated.kind === 'ambiguous') return failPopupReveal('ambiguous_control_popup_after_reveal', null, associated);
+      if (associated.kind === 'missing') return failPopupReveal('control_popup_not_observed', false, associated);
+      popupSurfaces = associated.surfaces;
+      const rendered = (await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.allRendered === true;
+      if (!rendered) return failPopupReveal('control_popup_not_observed', false, associated);
       return {
         passed: true,
         checks: [{ kind: 'visible', passed: true, expected: true, observed: true }],
@@ -107,13 +108,17 @@ export const controlRevealOperations = {
     } finally {
       await Promise.allSettled([
         controlHandle?.dispose() ?? Promise.resolve(),
-        popupHandle?.dispose() ?? Promise.resolve(),
+        disposePopupSurfaces(popupSurfaces),
       ]);
     }
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
 
-function failPopupReveal(reason: string, observed: boolean | null): never {
+function failPopupReveal(
+  reason: string,
+  observed: boolean | null,
+  association: ControlPopupAssociation | null = null,
+): never {
   throw new Stage5BrowserError('POSTCONDITION_FAILED', 'The opener may have received input, but one associated popup was not proven visible.', {
     recoverable: true,
     details: {
@@ -121,6 +126,8 @@ function failPopupReveal(reason: string, observed: boolean | null): never {
       actionDispatched: true,
       clickDispatched: 'unknown',
       checks: [{ kind: 'visible', passed: false, expected: true, observed }],
+      renderedPopupCount: association?.renderedSurfaceCount ?? null,
+      popupOwnership: association?.popupOwnership ?? null,
       suggestedAction: 'Inspect authoritative control state. Possible opener input occurred; do not replay it.',
     },
   });

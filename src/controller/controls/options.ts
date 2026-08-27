@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { type ControlPopupAssociationProof, type ControlPopupOwnershipEvidence, type ControlPopupSurfaceProof, type ElementHandle, type Frame, type Locator } from '../dependencies.js';
-import { boundedValue, CONTROL_INSPECTION_SCROLL_SETTLE_MS, CONTROL_OPTION_SELECTOR, CONTROL_POPUP_OPTION_SELECTOR, MAX_CONTROL_INSPECTION_SCROLL_STEPS, MAX_CONTROL_POPUP_OPTION_CANDIDATES, type ObservedControlOption, remainingUntil } from '../model.js';
+import { boundedValue, CONTROL_INSPECTION_SCROLL_SETTLE_MS, CONTROL_OPTION_SELECTOR, MAX_CONTROL_INSPECTION_SCROLL_STEPS, MAX_CONTROL_POPUP_OPTION_CANDIDATES, type ObservedControlOption, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import { inspectControlOptionElement } from './option-state.js';
 import { resolveControlPopupOwner } from './popup-ownership.js';
@@ -33,8 +33,7 @@ export interface ControlPopupAssociationPolicy {
 export type ControlPopupAssociation =
   | {
       kind: 'resolved';
-      locator: Locator | null;
-      handle: ElementHandle<HTMLElement>;
+      surfaces: ObservedControlPopupSurface[];
       proof: ControlPopupAssociationProof;
       surfaceProof: ControlPopupSurfaceProof;
       renderedSurfaceCount: number;
@@ -42,6 +41,38 @@ export type ControlPopupAssociation =
     }
   | { kind: 'ambiguous'; renderedSurfaceCount: number | null; popupOwnership: ControlPopupOwnershipEvidence | null }
   | { kind: 'missing'; renderedSurfaceCount: number | null; popupOwnership: ControlPopupOwnershipEvidence | null };
+
+function weakestAssociationProof(
+  proofs: Array<'structural' | 'focused' | 'expanded' | 'spatial'>,
+): ControlPopupAssociationProof {
+  if (proofs.includes('spatial')) return 'spatial';
+  if (proofs.includes('expanded')) return 'expanded';
+  if (proofs.includes('focused')) return 'focused';
+  return 'structural';
+}
+
+async function outermostPopupCandidates(
+  candidates: PopupCandidate[],
+  deadlineAt: number,
+): Promise<PopupCandidate[]> {
+  const nested = new Set<PopupCandidate>();
+  for (const candidate of candidates) {
+    for (const possibleAncestor of candidates) {
+      if (candidate === possibleAncestor) continue;
+      const contained = await boundedValue(
+        possibleAncestor.handle.evaluate((ancestor, descendant) =>
+          ancestor.isConnected && descendant.isConnected && ancestor.contains(descendant), candidate.handle),
+        Math.max(1, remainingUntil(deadlineAt)),
+        null,
+      );
+      if (contained === true) {
+        nested.add(candidate);
+        break;
+      }
+    }
+  }
+  return candidates.filter((candidate) => !nested.has(candidate));
+}
 
 export const controlOptionOperations = {
   async inspectControlDescriptor(
@@ -127,72 +158,81 @@ export const controlOptionOperations = {
 
       const explicit = candidates.filter((candidate) =>
         candidate.explicit && (!policy.requireRendered || candidate.rendered));
+      const activeExplicit = explicit.some(({ rendered }) => rendered)
+        ? explicit.filter(({ rendered }) => rendered)
+        : explicit;
       const structural = candidates.filter((candidate) => candidate.structurallyRelated && candidate.rendered);
       const rendered = candidates.filter((candidate) => candidate.rendered);
-      let selected = explicit.length === 1
-        ? explicit[0]
-        : structural.length === 1
-          ? structural[0]
-          : null;
-      let selectedProof: ControlPopupAssociationProof | null = explicit.length === 1
+      const selected = new Set<PopupCandidate>();
+      let selectedProof: ControlPopupAssociationProof | null = activeExplicit.length > 0
         ? 'explicit'
-        : structural.length === 1
+        : structural.length > 0
           ? 'structural'
           : null;
+      for (const candidate of activeExplicit.length > 0 ? activeExplicit : structural) selected.add(candidate);
       let ownershipAmbiguous = false;
       const ownershipDiagnostics: ControlPopupOwnershipEvidence[] = [];
-      if (selected === null) {
-        const ownerMatched: Array<{
-          candidate: PopupCandidate;
-          proof: 'structural' | 'focused' | 'expanded' | 'spatial';
-        }> = [];
-        for (const candidate of rendered) {
-          const ownership = await resolveControlPopupOwner(
-            frame,
-            candidate.handle,
-            controlHandle,
-            deadlineAt,
-          );
-          ownershipDiagnostics.push(ownership.diagnostics);
-          if (ownership.kind === 'resolved') {
-            if (ownership.targetMatch) ownerMatched.push({ candidate, proof: ownership.proof });
-            await ownership.owner.dispose().catch(() => undefined);
-          } else if (ownership.kind === 'ambiguous' || ownership.kind === 'unbounded') {
-            ownershipAmbiguous = true;
-          }
+      const ownerMatched: Array<{
+        candidate: PopupCandidate;
+        proof: 'structural' | 'focused' | 'expanded' | 'spatial';
+      }> = [];
+      for (const candidate of rendered) {
+        const ownership = await resolveControlPopupOwner(
+          frame,
+          candidate.handle,
+          controlHandle,
+          deadlineAt,
+        );
+        ownershipDiagnostics.push(ownership.diagnostics);
+        if (ownership.kind === 'resolved') {
+          if (ownership.targetMatch) ownerMatched.push({ candidate, proof: ownership.proof });
+          await ownership.owner.dispose().catch(() => undefined);
+        } else if (ownership.kind === 'ambiguous' || ownership.kind === 'unbounded') {
+          ownershipAmbiguous = true;
         }
-        selected = ownerMatched.length === 1
-          ? ownerMatched[0]!.candidate
-          : ownerMatched.length === 0 && !ownershipAmbiguous &&
-              policy.allowUniqueRenderedAfterDispatch === true && rendered.length === 1
-            ? rendered[0]
-            : null;
-        selectedProof = ownerMatched.length === 1
-          ? ownerMatched[0]!.proof
-          : selected !== null && policy.allowUniqueRenderedAfterDispatch === true && rendered.length === 1
-            ? 'post_dispatch_unique'
-            : null;
-        ownershipAmbiguous ||= ownerMatched.length > 1;
       }
-      const ambiguous = explicit.length > 1 || structural.length > 1 || ownershipAmbiguous;
+      if (selected.size === 0) {
+        for (const { candidate } of ownerMatched) selected.add(candidate);
+      }
+      if (selectedProof === null && selected.size > 0 && ownerMatched.length > 0) {
+        selectedProof = weakestAssociationProof(ownerMatched.map(({ proof }) => proof));
+      }
+      if (
+        selected.size === 0 &&
+        !ownershipAmbiguous &&
+        policy.allowUniqueRenderedAfterDispatch === true &&
+        rendered.length === 1
+      ) {
+        selected.add(rendered[0]!);
+        selectedProof = 'post_dispatch_unique';
+      }
+      const selectedSurfaces = await outermostPopupCandidates([...selected], deadlineAt);
+      const retained = new Set(selectedSurfaces);
       for (const candidate of candidates) {
-        if (candidate !== selected) await candidate.handle.dispose().catch(() => undefined);
+        if (!retained.has(candidate)) await candidate.handle.dispose().catch(() => undefined);
       }
       const renderedSurfaceCount = rendered.length;
       const popupOwnership = rendered.length === 1 && ownershipDiagnostics.length === 1
         ? ownershipDiagnostics[0]!
         : null;
-      return selected !== null && selected !== undefined && selectedProof !== null
+      return selectedSurfaces.length > 0 && selectedProof !== null
         ? {
             kind: 'resolved',
-            locator: selected.locator,
-            handle: selected.handle,
+            surfaces: selectedSurfaces.map(({ locator, handle, surfaceProof }) => ({
+              locator,
+              handle,
+              surfaceProof,
+            })),
             proof: selectedProof,
-            surfaceProof: selected.surfaceProof,
+            surfaceProof: selectedSurfaces[0]!.surfaceProof,
             renderedSurfaceCount,
             popupOwnership,
           }
-        : { kind: ambiguous ? 'ambiguous' : 'missing', renderedSurfaceCount, popupOwnership };
+        : {
+            kind: ownershipAmbiguous ? 'ambiguous' : 'missing',
+            renderedSurfaceCount,
+            popupOwnership,
+          };
     } catch (error) {
       await Promise.allSettled(candidates.map(({ handle }) => handle.dispose()));
       throw error;
@@ -254,8 +294,7 @@ export const controlOptionOperations = {
 
   async collectPopupControlOptions(
     frame: Frame,
-    popupLocator: Locator | null,
-    popupHandle: ElementHandle<HTMLElement>,
+    popupSurfaces: ObservedControlPopupSurface[],
     maxOptions: number,
     deadlineAt: number,
   ): Promise<{
@@ -273,70 +312,87 @@ export const controlOptionOperations = {
     let multipleSignal = false;
 
     const capture = async (): Promise<boolean> => {
-      const locator = popupLocator === null
-        ? frame.locator(CONTROL_POPUP_OPTION_SELECTOR)
-        : popupLocator.locator(CONTROL_OPTION_SELECTOR);
-      const count = await boundedValue(locator.count(), Math.max(1, remainingUntil(deadlineAt)), -1);
-      if (count < 0 || count > MAX_CONTROL_POPUP_OPTION_CANDIDATES) {
-        candidateScanBounded = false;
-        return false;
-      }
       const occurrences = new Map<string, number>();
-      for (let index = 0; index < count && options.size < maxOptions; index += 1) {
-        const candidate = locator.nth(index);
-        const handle = await boundedValue(
-          candidate.elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
-          Math.max(1, remainingUntil(deadlineAt)),
-          null,
-        );
-        if (handle === null) continue;
-        const insidePopup = await boundedValue(
-          popupHandle.evaluate((popup, option) =>
-            popup.isConnected && option.isConnected && (popup === option || popup.contains(option)), handle),
-          Math.max(1, remainingUntil(deadlineAt)),
-          false,
-        );
-        if (!insidePopup) {
-          await handle.dispose().catch(() => undefined);
-          continue;
+      let scanned = 0;
+      const inferredSurfaces = popupSurfaces.filter(({ locator }) => locator === null);
+      const groups = [
+        ...popupSurfaces
+          .filter((surface) => surface.locator !== null)
+          .map((surface) => ({
+            locator: surface.locator!.locator(CONTROL_OPTION_SELECTOR),
+            surfaces: [surface],
+          })),
+        ...(inferredSurfaces.length === 0 ? [] : [{
+          locator: frame.locator(CONTROL_OPTION_SELECTOR),
+          surfaces: inferredSurfaces,
+        }]),
+      ];
+      for (const group of groups) {
+        const { locator } = group;
+        const count = await boundedValue(locator.count(), Math.max(1, remainingUntil(deadlineAt)), -1);
+        if (count < 0 || scanned + count > MAX_CONTROL_POPUP_OPTION_CANDIDATES) {
+          candidateScanBounded = false;
+          return false;
         }
-        const semantic = await this.controlOptionSemantic(handle, deadlineAt);
-        if (semantic === null) {
-          await handle.dispose().catch(() => undefined);
-          continue;
-        }
-        const { multipleSignal: optionMultipleSignal, ...observation } = semantic;
-        multipleSignal ||= optionMultipleSignal;
-        const key = `${observation.role}\u0000${observation.name}`;
-        const occurrence = occurrences.get(key) ?? 0;
-        occurrences.set(key, occurrence + 1);
-        const known = optionsBySemantic.get(key) ?? [];
-        const existing = known[occurrence];
-        if (existing !== undefined) {
-          const connected = await boundedValue(
-            existing.handle.evaluate((element) => element.isConnected),
+        scanned += count;
+        for (let index = 0; index < count && options.size < maxOptions; index += 1) {
+          const candidate = locator.nth(index);
+          const handle = await boundedValue(
+            candidate.elementHandle() as Promise<ElementHandle<HTMLElement> | null>,
+            Math.max(1, remainingUntil(deadlineAt)),
+            null,
+          );
+          if (handle === null) continue;
+          const insidePopup = await boundedValue(
+            handle.evaluate((option, popups) =>
+              option.isConnected && popups.some((popup) =>
+                popup.isConnected && (popup === option || popup.contains(option))),
+            group.surfaces.map(({ handle: popup }) => popup)),
             Math.max(1, remainingUntil(deadlineAt)),
             false,
           );
-          if (connected) {
+          if (!insidePopup) {
             await handle.dispose().catch(() => undefined);
             continue;
           }
-          await existing.handle.dispose().catch(() => undefined);
-          existing.handle = handle;
-          existing.locator = candidate;
-          existing.observation = { ...existing.observation, ...observation };
-          continue;
+          const semantic = await this.controlOptionSemantic(handle, deadlineAt);
+          if (semantic === null) {
+            await handle.dispose().catch(() => undefined);
+            continue;
+          }
+          const { multipleSignal: optionMultipleSignal, ...observation } = semantic;
+          multipleSignal ||= optionMultipleSignal;
+          const key = `${observation.role}\u0000${observation.name}`;
+          const occurrence = occurrences.get(key) ?? 0;
+          occurrences.set(key, occurrence + 1);
+          const known = optionsBySemantic.get(key) ?? [];
+          const existing = known[occurrence];
+          if (existing !== undefined) {
+            const connected = await boundedValue(
+              existing.handle.evaluate((element) => element.isConnected),
+              Math.max(1, remainingUntil(deadlineAt)),
+              false,
+            );
+            if (connected) {
+              await handle.dispose().catch(() => undefined);
+              continue;
+            }
+            await existing.handle.dispose().catch(() => undefined);
+            existing.handle = handle;
+            existing.locator = candidate;
+            existing.observation = { ...existing.observation, ...observation };
+            continue;
+          }
+          const optionId = `option-${randomUUID()}`;
+          const observed: ObservedControlOption = {
+            locator: candidate,
+            handle,
+            observation: { optionId, ...observation },
+          };
+          options.set(optionId, observed);
+          known.push(observed);
+          optionsBySemantic.set(key, known);
         }
-        const optionId = `option-${randomUUID()}`;
-        const observed: ObservedControlOption = {
-          locator: candidate,
-          handle,
-          observation: { optionId, ...observation },
-        };
-        options.set(optionId, observed);
-        known.push(observed);
-        optionsBySemantic.set(key, known);
       }
       return true;
     };
@@ -344,24 +400,49 @@ export const controlOptionOperations = {
     for (;;) {
       if (!await capture()) break;
       if (options.size >= maxOptions || scrollSteps >= MAX_CONTROL_INSPECTION_SCROLL_STEPS) break;
-      const movement = await boundedValue(
-        popupHandle.evaluate((surface) => {
-          if (!surface.isConnected) return null;
-          const before = surface.scrollTop;
-          const maximum = Math.max(0, surface.scrollHeight - surface.clientHeight);
-          if (before >= maximum - 1) return { moved: false, boundary: true };
-          surface.scrollTop = Math.min(maximum, before + Math.max(1, surface.clientHeight * 0.75));
-          return { moved: Math.abs(surface.scrollTop - before) > 0.5, boundary: surface.scrollTop >= maximum - 1 };
-        }),
-        Math.max(1, remainingUntil(deadlineAt)),
-        null,
-      );
-      if (movement === null || !movement.moved) {
-        boundaryReached = movement?.boundary === true;
+      let moved = false;
+      let allAtBoundary = true;
+      for (const { handle } of popupSurfaces) {
+        const movement = await boundedValue(
+          handle.evaluate((surface, optionSelector) => {
+            if (!surface.isConnected) return null;
+            const candidates = [surface, ...Array.from(surface.querySelectorAll<HTMLElement>('*'))]
+              .filter((candidate) => {
+                const style = getComputedStyle(candidate);
+                const scrollable = /^(auto|hidden|overlay|scroll)$/u.test(style.overflowY) &&
+                  candidate.scrollHeight > candidate.clientHeight + 1;
+                return scrollable && candidate.querySelector(optionSelector) !== null;
+              });
+            for (const candidate of candidates) {
+              const before = candidate.scrollTop;
+              const maximum = Math.max(0, candidate.scrollHeight - candidate.clientHeight);
+              if (before >= maximum - 1) continue;
+              candidate.scrollTop = Math.min(maximum, before + Math.max(1, candidate.clientHeight * 0.75));
+              if (Math.abs(candidate.scrollTop - before) > 0.5) {
+                return { moved: true, boundary: candidate.scrollTop >= maximum - 1 };
+              }
+            }
+            return { moved: false, boundary: true };
+          }, CONTROL_OPTION_SELECTOR),
+          Math.max(1, remainingUntil(deadlineAt)),
+          null,
+        );
+        if (movement === null) {
+          allAtBoundary = false;
+          continue;
+        }
+        allAtBoundary &&= movement.boundary;
+        if (movement.moved) {
+          moved = true;
+          boundaryReached = movement.boundary && popupSurfaces.length === 1;
+          break;
+        }
+      }
+      if (!moved) {
+        boundaryReached = allAtBoundary;
         break;
       }
       scrollSteps += 1;
-      boundaryReached = movement.boundary;
       const settle = Math.min(CONTROL_INSPECTION_SCROLL_SETTLE_MS, remainingUntil(deadlineAt));
       if (settle > 0) await new Promise((resolve) => setTimeout(resolve, settle));
       if (boundaryReached) {

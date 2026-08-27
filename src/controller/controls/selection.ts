@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { type BrowserCommandInput, type BrowserCommandOutput, type ControlOptionObservation, type ControlSelectionEvidence, type Frame, type Page, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedControlInspection, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { elementWithinPopupSurfaces, inspectPopupSurfaceSetRendering, resolveUniqueSemanticReferenceInPopupSurfaces } from './popup-set.js';
 import { observeCustomControlSelectionBaseline, type CustomControlSelectionBaseline } from './selection-baseline.js';
 import { reconcileCustomControlSelection } from './selection-evidence.js';
 
@@ -304,7 +305,7 @@ export const controlSelectionOperations = {
         },
       });
     }
-    if (inspection.popupHandle === null) {
+    if (inspection.popupSurfaces.length === 0) {
       throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The inspected popup capability is no longer available.', {
         recoverable: true,
         details: { reason: 'control_popup_capability_missing', actionDispatched: false },
@@ -380,12 +381,15 @@ export const controlSelectionOperations = {
             );
             let locator = option.locator;
             let handle = option.handle;
-            const inside = await handle.evaluate((target, root) =>
-              target.isConnected && root.isConnected && root.contains(target), baseline.popupHandle).catch(() => false);
+            const inside = await elementWithinPopupSurfaces(
+              handle,
+              baseline.popupSurfaces,
+              actionDeadlineAt,
+            );
             if (!inside) {
-              const resolved = await this.resolveUniqueSemanticReferenceInScope(
+              const resolved = await resolveUniqueSemanticReferenceInPopupSurfaces(
                 frame,
-                baseline.popupHandle,
+                baseline.popupSurfaces,
                 { role: option.observation.role, name: option.observation.name, url: null },
                 actionDeadlineAt,
               );
@@ -426,7 +430,7 @@ export const controlSelectionOperations = {
               optionName: option.observation.name,
               owner: baseline.representationScope,
               page,
-              popup: baseline.popupHandle,
+              popupSurfaces: baseline.popupSurfaces,
               desiredSelected,
               requireSelected: requireSelected || inspection.multiple,
               selectedState: (locator) => this.controlOptionSelectedState(locator),
@@ -438,10 +442,13 @@ export const controlSelectionOperations = {
       },
       preflight: async () => {
         const baseline = observedBaseline;
-        const connected = baseline === null
+        const rendering = baseline === null
+          ? null
+          : await inspectPopupSurfaceSetRendering(baseline.popupSurfaces, deadlineAt);
+        const controlConnected = baseline === null
           ? false
-          : await baseline.popupHandle.evaluate((popup, control) =>
-              popup.isConnected && control.isConnected, baseline.controlHandle).catch(() => false);
+          : await baseline.controlHandle.evaluate((control) => control.isConnected).catch(() => false);
+        const connected = rendering?.allRendered === true && controlConnected;
         if (!connected || inspection.documentVersion !== this.documentVersion(frame)) {
           throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The inspected popup document changed before selection.', {
             recoverable: true,

@@ -103,6 +103,8 @@ Release 0.16.0 changes the public option schema, worker protocol, and durable ho
 
 Release 0.16.1 is a compatible worker correction with the same host behavior 5, protocol 13, catalog 14, and 54 tools. When nested scrolling first makes an exact retained target geometrically visible but a sibling covers every candidate point, reversible preparation now moves that same target toward the nearest scroll surface interior and repeats exact hit testing. It remains bounded, records categorical `pointerContactRecovery`, and still stops with zero input if exact contact cannot be proven. An adopted 0.16.0 host does not reconnect: require worker/current 0.16.1 and `restartRequired:false`, then discard the failed option capability. This release grants no retry or account authority.
 
+Release 0.16.2 is a compatible worker correction with the same host behavior 5, protocol 13, catalog 14, and 54 tools. Popup ownership is now semantic rather than DOM-count based: nested surfaces owned by one exact control collapse to one outer root, and disjoint same-owner panels form one bounded composite capability whose options can be inspected and selected across the set. Different owners remain zero-input ambiguity. Existing rendered-count and owner-category telemetry survives a failed post-opener association. Require worker/current 0.16.2 with `restartRequired:false`, discard the failed inspection capability, and resume only through a newly authorized passive observation; never replay an opener with possible input.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.16.0 catalog/protocol/host contract.
 - Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.16.0 catalog/protocol/host contract.
 

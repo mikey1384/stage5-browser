@@ -16,6 +16,7 @@ import { popupRendered } from './rendering.js';
 interface PopupPreparationResult {
   competingPopupDismissed: boolean;
   preparationActionDispatched: boolean | 'unknown';
+  targetPopupAlreadyOpen: boolean;
 }
 
 export const popupPreparationOperations = {
@@ -38,58 +39,77 @@ export const popupPreparationOperations = {
       else await handle.dispose().catch(() => undefined);
     }
     if (renderedPopups.length === 0) {
-      return { competingPopupDismissed: false, preparationActionDispatched: false };
-    }
-    if (renderedPopups.length > 1) {
-      await Promise.allSettled(renderedPopups.map((handle) => handle.dispose()));
-      throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'Multiple rendered popup surfaces were open before control inspection.', {
-        recoverable: true,
-        details: {
-          reason: 'multiple_competing_popups',
-          actionDispatched: false,
-          suggestedAction: 'Inspect the current modal or page and choose one exact popup owner before dispatch.',
-        },
-      });
+      return {
+        competingPopupDismissed: false,
+        preparationActionDispatched: false,
+        targetPopupAlreadyOpen: false,
+      };
     }
 
-    const popup = renderedPopups[0]!;
-    let source: ElementHandle<HTMLElement> | null = null;
+    const owners: ElementHandle<HTMLElement>[] = [];
     try {
-      const ownership = await resolveControlPopupOwner(
-        frame,
-        popup,
-        targetControl,
-        deadlineAt,
-      );
-      if (ownership.kind === 'resolved' && ownership.targetMatch) {
-        source = ownership.owner;
-        return { competingPopupDismissed: false, preparationActionDispatched: false };
+      for (const popup of renderedPopups) {
+        const ownership = await resolveControlPopupOwner(
+          frame,
+          popup,
+          targetControl,
+          deadlineAt,
+        );
+        if (ownership.kind !== 'resolved') {
+          throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'The popup owner set could not be bounded.', {
+            recoverable: true,
+            details: {
+              reason: ownership.kind === 'unbounded'
+                ? 'popup_owner_set_unbounded'
+                : ownership.kind === 'ambiguous'
+                  ? 'ambiguous_competing_popup_owner'
+                  : 'competing_popup_owner_missing',
+              actionDispatched: false,
+              renderedPopupCount: renderedPopups.length,
+              popupOwnership: ownership.diagnostics,
+            },
+          });
+        }
+        owners.push(ownership.owner);
+        if (ownership.targetMatch) {
+          return {
+            competingPopupDismissed: false,
+            preparationActionDispatched: false,
+            targetPopupAlreadyOpen: true,
+          };
+        }
       }
-      if (ownership.kind !== 'resolved') {
-        throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'The popup owner set could not be bounded.', {
-          recoverable: true,
-          details: {
-            reason: ownership.kind === 'unbounded'
-              ? 'popup_owner_set_unbounded'
-              : ownership.kind === 'ambiguous'
-                ? 'ambiguous_competing_popup_owner'
-                : 'competing_popup_owner_missing',
-            actionDispatched: false,
-            popupOwnership: ownership.diagnostics,
-          },
-        });
+      const source = owners[0]!;
+      for (const owner of owners.slice(1)) {
+        const sameOwner = await boundedValue(
+          source.evaluate((first, candidate) => first.isConnected && first === candidate, owner),
+          Math.max(1, remainingUntil(deadlineAt)),
+          null,
+        );
+        if (sameOwner !== true) {
+          throw new Stage5BrowserError('AMBIGUOUS_TARGET', 'Several open popup surfaces did not share one exact competing owner.', {
+            recoverable: true,
+            details: {
+              reason: 'multiple_competing_popup_owners',
+              actionDispatched: false,
+              renderedPopupCount: renderedPopups.length,
+              suggestedAction: 'Inspect the current modal or page before choosing a new action.',
+            },
+          });
+        }
       }
-      source = ownership.owner;
-      return await this.dispatchPopupEscape(page, popup, source, deadlineAt);
+      return await this.dispatchPopupEscape(page, renderedPopups, source, deadlineAt);
     } finally {
-      await popup.dispose().catch(() => undefined);
-      await source?.dispose().catch(() => undefined);
+      await Promise.allSettled([
+        ...renderedPopups.map((popup) => popup.dispose()),
+        ...owners.map((owner) => owner.dispose()),
+      ]);
     }
   },
 
   async dispatchPopupEscape(
     page: Page,
-    popup: ElementHandle<HTMLElement>,
+    popups: ElementHandle<HTMLElement>[],
     source: ElementHandle<HTMLElement>,
     deadlineAt: number,
   ): Promise<PopupPreparationResult> {
@@ -99,7 +119,7 @@ export const popupPreparationOperations = {
     let dispatch: BrowserMotionDispatchEvidence['actionDispatched'] = false;
     try {
       phases.enter('observe');
-      const before = await popupRendered(popup, deadlineAt);
+      const before = await anyPopupRendered(popups, deadlineAt);
       phases.enter('plan');
       if (!before) {
         phases.enter('preflight');
@@ -109,7 +129,11 @@ export const popupPreparationOperations = {
         phases.enter('reconcile');
         phases.beginFinalization();
         phases.complete('succeeded');
-        return { competingPopupDismissed: false, preparationActionDispatched: false };
+        return {
+          competingPopupDismissed: false,
+          preparationActionDispatched: false,
+          targetPopupAlreadyOpen: false,
+        };
       }
       phases.enter('preflight');
       await this.primeSelectedPageForTargetPreparation(page, deadlineAt, startedAt, 'dismiss_popup');
@@ -144,11 +168,11 @@ export const popupPreparationOperations = {
       phases.concludeDispatch({ actionDispatched: dispatch });
       phases.enter('reconcile');
       const observationDeadline = Math.min(deadlineAt, Date.now() + 1_000);
-      while (await popupRendered(popup, observationDeadline)) {
+      while (await anyPopupRendered(popups, observationDeadline)) {
         if (remainingUntil(observationDeadline) <= 0) break;
         await page.waitForTimeout(Math.min(50, remainingUntil(observationDeadline)));
       }
-      if (await popupRendered(popup, deadlineAt)) {
+      if (await anyPopupRendered(popups, deadlineAt)) {
         throw new Stage5BrowserError('POSTCONDITION_FAILED', 'Escape input did not close the exact competing popup.', {
           recoverable: true,
           details: {
@@ -174,7 +198,11 @@ export const popupPreparationOperations = {
         occurredAt: new Date().toISOString(),
       });
       phases.complete('succeeded');
-      return { competingPopupDismissed: true, preparationActionDispatched: dispatch };
+      return {
+        competingPopupDismissed: true,
+        preparationActionDispatched: dispatch,
+        targetPopupAlreadyOpen: false,
+      };
     } finally {
       await probe?.dispose().catch(() => undefined);
       phases.ensureFailed();
@@ -182,5 +210,15 @@ export const popupPreparationOperations = {
     }
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
+
+async function anyPopupRendered(
+  popups: ElementHandle<HTMLElement>[],
+  deadlineAt: number,
+): Promise<boolean> {
+  for (const popup of popups) {
+    if (await popupRendered(popup, deadlineAt)) return true;
+  }
+  return false;
+}
 
 export type PopupPreparationOperations = typeof popupPreparationOperations;

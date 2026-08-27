@@ -1,6 +1,6 @@
 import { type ElementHandle, type Locator, type Page, type PostconditionResult, Stage5BrowserError } from '../dependencies.js';
-import { boundedValue, remainingUntil } from '../model.js';
-import { popupRenderedState } from './rendering.js';
+import { boundedValue, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
+import { inspectPopupSurfaceSetRendering } from './popup-set.js';
 
 export interface ControlSelectionRepresentation {
   controlRepresentsOption: boolean;
@@ -23,11 +23,11 @@ interface ControlRepresentationEvaluator {
   evaluate<Result>(
     pageFunction: (
       control: HTMLElement,
-      input: { owner: HTMLElement; popup: HTMLElement | null; requestedNames: string[] },
+      input: { owner: HTMLElement; popups: HTMLElement[]; requestedNames: string[] },
     ) => Result,
     input: {
       owner: ElementHandle<HTMLElement>;
-      popup: ElementHandle<HTMLElement> | null;
+      popups: ElementHandle<HTMLElement>[];
       requestedNames: string[];
     },
   ): Promise<Result>;
@@ -35,7 +35,7 @@ interface ControlRepresentationEvaluator {
 
 export async function resolveControlSelectionRepresentationScope(
   control: ElementHandle<HTMLElement>,
-  popup: ElementHandle<HTMLElement> | null,
+  popupSurfaces: readonly ObservedControlPopupSurface[],
   deadlineAt: number,
   includeSameNamedCompositeFields = false,
 ): Promise<ElementHandle<HTMLElement> | null> {
@@ -56,7 +56,7 @@ export async function resolveControlSelectionRepresentationScope(
       '[aria-haspopup]',
     ].join(',');
     const popupContains = (candidate: Element): boolean =>
-      input.popup !== null && (candidate === input.popup || input.popup.contains(candidate));
+      input.popups.some((popup) => candidate === popup || popup.contains(candidate));
     const semanticName = (candidate: Element): string => {
       const labelledBy = (candidate.getAttribute('aria-labelledby') ?? '')
         .split(/\s+/)
@@ -98,7 +98,10 @@ export async function resolveControlSelectionRepresentationScope(
       candidate = candidate.parentElement;
     }
     return owner;
-  }, { popup, includeSameNamedCompositeFields }).then((handle) =>
+  }, {
+    popups: popupSurfaces.map(({ handle }) => handle),
+    includeSameNamedCompositeFields,
+  }).then((handle) =>
     handle.asElement() as ElementHandle<HTMLElement> | null);
   const scope = await boundedValue(
     pendingScope,
@@ -114,14 +117,14 @@ export async function resolveControlSelectionRepresentationScope(
 export async function observeControlSelectionRepresentation(
   control: ElementHandle<HTMLElement>,
   owner: ElementHandle<HTMLElement>,
-  popup: ElementHandle<HTMLElement> | null,
+  popupSurfaces: readonly ObservedControlPopupSurface[],
   optionName: string,
   deadlineAt: number,
 ): Promise<ControlSelectionRepresentation | null> {
   const representations = await observeControlSelectionRepresentations(
     control,
     owner,
-    popup,
+    popupSurfaces,
     [optionName],
     deadlineAt,
   );
@@ -130,7 +133,7 @@ export async function observeControlSelectionRepresentation(
 
 export async function observeControlSelectionRepresentationsInAdaptiveScope(
   control: ElementHandle<HTMLElement>,
-  popup: ElementHandle<HTMLElement> | null,
+  popupSurfaces: readonly ObservedControlPopupSurface[],
   optionNames: string[],
   deadlineAt: number,
   initialScope?: ElementHandle<HTMLElement>,
@@ -138,14 +141,14 @@ export async function observeControlSelectionRepresentationsInAdaptiveScope(
   const ownsInitialScope = initialScope === undefined;
   const scope = initialScope ?? await resolveControlSelectionRepresentationScope(
     control,
-    popup,
+    popupSurfaces,
     deadlineAt,
   );
   if (scope === null) return null;
   const representations = await observeControlSelectionRepresentations(
     control,
     scope,
-    popup,
+    popupSurfaces,
     optionNames,
     deadlineAt,
   );
@@ -159,7 +162,7 @@ export async function observeControlSelectionRepresentationsInAdaptiveScope(
 
   const expandedScope = await resolveControlSelectionRepresentationScope(
     control,
-    popup,
+    popupSurfaces,
     deadlineAt,
     true,
   );
@@ -167,7 +170,7 @@ export async function observeControlSelectionRepresentationsInAdaptiveScope(
   const expandedRepresentations = await observeControlSelectionRepresentations(
     control,
     expandedScope,
-    popup,
+    popupSurfaces,
     optionNames,
     deadlineAt,
   );
@@ -185,7 +188,7 @@ export async function observeControlSelectionRepresentationsInAdaptiveScope(
 export async function observeControlSelectionRepresentations(
   control: ElementHandle<HTMLElement>,
   owner: ElementHandle<HTMLElement>,
-  popup: ElementHandle<HTMLElement> | null,
+  popupSurfaces: readonly ObservedControlPopupSurface[],
   optionNames: string[],
   deadlineAt: number,
 ): Promise<Map<string, ControlSelectionRepresentation> | null> {
@@ -195,7 +198,7 @@ export async function observeControlSelectionRepresentations(
     evaluator.evaluate((element, input) => {
       const normalize = (value: string | null | undefined): string =>
         (value ?? '').replaceAll(/\s+/gu, ' ').trim().toLocaleLowerCase();
-      const { owner: scope, popup: popupElement, requestedNames } = input;
+      const { owner: scope, popups: popupElements, requestedNames } = input;
       if (!scope.isConnected || !element.isConnected || (scope !== element && !scope.contains(element))) return null;
       const requests = requestedNames.map((original) => ({ original, normalized: normalize(original) }));
       const frequencies = new Map<string, number>();
@@ -221,7 +224,7 @@ export async function observeControlSelectionRepresentations(
           style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
       };
       const outsidePopup = (candidate: Element): boolean =>
-        (popupElement === null || (candidate !== popupElement && !popupElement.contains(candidate))) &&
+        popupElements.every((popup) => candidate !== popup && !popup.contains(candidate)) &&
         candidate.closest('[role="listbox"], [role="menu"], [role="tree"]') === null;
       const matchingRequest = (candidateName: string): string | null => {
         if (candidateName.length === 0) return null;
@@ -276,7 +279,11 @@ export async function observeControlSelectionRepresentations(
         original,
         representations.get(normalized)!,
       ] as const);
-    }, { owner, popup, requestedNames: optionNames }),
+    }, {
+      owner,
+      popups: popupSurfaces.map(({ handle }) => handle),
+      requestedNames: optionNames,
+    }),
     Math.max(1, remainingUntil(deadlineAt)),
     null,
   );
@@ -291,7 +298,7 @@ export async function reconcileCustomControlSelection(input: {
   optionName: string;
   owner: ElementHandle<HTMLElement>;
   page: Page;
-  popup: ElementHandle<HTMLElement>;
+  popupSurfaces: readonly ObservedControlPopupSurface[];
   desiredSelected: boolean;
   requireSelected: boolean;
   selectedState: (locator: Locator) => Promise<boolean | null>;
@@ -306,11 +313,12 @@ export async function reconcileCustomControlSelection(input: {
       Math.max(1, remainingUntil(input.deadlineAt)),
       null,
     );
-    if (await popupRenderedState(input.popup, input.deadlineAt) === false) popupClosed = true;
+    const rendering = await inspectPopupSurfaceSetRendering(input.popupSurfaces, input.deadlineAt);
+    if (rendering !== null && !rendering.anyRendered) popupClosed = true;
     const represented = await observeControlSelectionRepresentation(
       input.control,
       input.owner,
-      input.popup,
+      input.popupSurfaces,
       input.optionName,
       input.deadlineAt,
     );

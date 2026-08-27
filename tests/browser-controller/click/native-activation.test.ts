@@ -572,7 +572,6 @@ describe("BrowserController owned native activation and terminal blocking", () =
         dispatchEvidence: {
           strategy: "guarded_exact_handle",
           forcedFallbackUsed: false,
-          targetConnectedBefore: true,
           targetConnectedAfter: false,
           trustedEventObserved: false,
           clickOnTarget: false,

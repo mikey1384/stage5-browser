@@ -1,4 +1,4 @@
-import { type BrowserCommandOutput, type BrowserLaunchIdentity, type BrowserLaunchTarget, type ControlKind, type ControlOptionObservation, type ElementHandle, type FileInputObservation, type FormFieldObservation, type FormFieldState, type Frame, type HumanBrowserSession, type JSHandle, type Locator, type ObservedScrollContainer, type OwnedProcessObservation, type Page, type PrivateFieldValueType, type ProfileShutdownDecision, type ProfileShutdownInspection, type ProfileStorageInspection, type SafeTargetState, type SanitizedClickDispatchEvidence, type SanitizedNativeWindowActivationEvidence, type SanitizedPageActivationEvidence, type ScrollContentObservation } from './dependencies.js';
+import { type BrowserCommandOutput, type BrowserLaunchIdentity, type BrowserLaunchTarget, type ControlKind, type ControlOptionObservation, type ControlPopupSurfaceProof, type ElementHandle, type FileInputObservation, type FormFieldObservation, type FormFieldState, type Frame, type HumanBrowserSession, type JSHandle, type Locator, type ObservedScrollContainer, type OwnedProcessObservation, type Page, type PrivateFieldValueType, type ProfileShutdownDecision, type ProfileShutdownInspection, type ProfileStorageInspection, type SafeTargetState, type SanitizedClickDispatchEvidence, type SanitizedNativeWindowActivationEvidence, type SanitizedPageActivationEvidence, type ScrollContentObservation } from './dependencies.js';
 import type { ViewportPreparationTelemetry } from '../protocol/telemetry.js';
 
 export async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
@@ -60,6 +60,12 @@ export interface ObservedControlOption {
   selectionStateConflict?: boolean;
 }
 
+export interface ObservedControlPopupSurface {
+  locator: Locator | null;
+  handle: ElementHandle<HTMLElement>;
+  surfaceProof: ControlPopupSurfaceProof;
+}
+
 export interface ObservedControlInspection {
   id: string;
   frame: Frame;
@@ -71,8 +77,7 @@ export interface ObservedControlInspection {
   controlLocator: Locator;
   controlHandle: ElementHandle<HTMLElement>;
   representationScopeHandle?: ElementHandle<HTMLElement>;
-  popupLocator: Locator | null;
-  popupHandle: ElementHandle<HTMLElement> | null;
+  popupSurfaces: ObservedControlPopupSurface[];
   multiple: boolean;
   optionsComplete: boolean;
   options: Map<string, ObservedControlOption>;

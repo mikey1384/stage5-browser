@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
-import { type BrowserCommandInput, type BrowserCommandOutput, type ElementHandle, type Frame, type Locator, Stage5BrowserError } from '../dependencies.js';
-import { boundedValue, type ObservedControlInspection, remainingUntil } from '../model.js';
+import { type BrowserCommandInput, type BrowserCommandOutput, type ElementHandle, type Frame, Stage5BrowserError } from '../dependencies.js';
+import { type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
-import { popupRendered } from './rendering.js';
+import type { ControlPopupAssociation } from './options.js';
+import { disposePopupSurfaces, inspectPopupSurfaceSetRendering, popupSurfaceSetMultiple } from './popup-set.js';
 import { resolveUniqueControl } from './resolution.js';
 import { type ControlSelectionRepresentation, observeControlSelectionRepresentationsInAdaptiveScope } from './selection-evidence.js';
 
@@ -20,8 +21,7 @@ export const controlInspectionOperations = {
       frame,
       deadlineAt,
     );
-    let popupLocator: Locator | null = null;
-    let popupHandle: ElementHandle<HTMLElement> | null = null;
+    let popupSurfaces: ObservedControlPopupSurface[] = [];
     let representationScopeHandle: ElementHandle<HTMLElement> | null = null;
     let popupAssociationProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['associationProof'] = null;
     let popupSurfaceProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['surfaceProof'] = null;
@@ -74,12 +74,11 @@ export const controlInspectionOperations = {
           });
         }
         if (associated.kind === 'resolved') {
-          popupLocator = associated.locator;
-          popupHandle = associated.handle;
+          popupSurfaces = associated.surfaces;
           popupAssociationProof = associated.proof;
           popupSurfaceProof = associated.surfaceProof;
         }
-        let rendered = await popupRendered(popupHandle, deadlineAt);
+        let rendered = (await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.anyRendered === true;
         if (!rendered && input.revealOptions) {
           const preparation = await this.dismissCompetingControlPopup(
             page,
@@ -95,9 +94,8 @@ export const controlInspectionOperations = {
             );
           }
 
-          await popupHandle?.dispose().catch(() => undefined);
-          popupHandle = null;
-          popupLocator = null;
+          await disposePopupSurfaces(popupSurfaces);
+          popupSurfaces = [];
           await controlHandle.dispose().catch(() => undefined);
           ({ locator: controlLocator, handle: controlHandle } = await resolveUniqueControl(
             input.control,
@@ -105,93 +103,121 @@ export const controlInspectionOperations = {
             deadlineAt,
           ));
           descriptor = await this.inspectControlDescriptor(controlHandle, deadlineAt);
-          let revealError: unknown = null;
-          try {
-            const reveal = await this.revealControlPopup(
-              page,
+          if (preparation.targetPopupAlreadyOpen) {
+            associated = await this.associatedControlPopup(
               frame,
-              controlLocator,
               controlHandle,
-              documentVersion,
               deadlineAt,
+              { requireRendered: true },
             );
-            openerActionDispatched = reveal.dispatch.actionDispatched;
-          } catch (error) {
-            revealError = error;
-            if (error instanceof Stage5BrowserError) {
-              openerActionDispatched = dispatchEvidenceFromError(error);
-            } else {
-              openerActionDispatched = 'unknown';
+            renderedPopupCount = associated.renderedSurfaceCount;
+            popupOwnership = associated.popupOwnership;
+            if (associated.kind !== 'resolved') {
+              throw new Stage5BrowserError(
+                associated.kind === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'POSTCONDITION_FAILED',
+                'The already-open target popup could not be retained as one exact owned surface set.',
+                {
+                  recoverable: true,
+                  details: {
+                    reason: associated.kind === 'ambiguous'
+                      ? 'ambiguous_control_popup'
+                      : 'control_popup_not_observed',
+                    actionDispatched: false,
+                    renderedPopupCount,
+                    popupOwnership,
+                  },
+                },
+              );
             }
-          }
-
-          if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
-            throwControlDocumentChanged(
-              combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
-            );
-          }
-
-          await controlHandle.dispose().catch(() => undefined);
-          ({ locator: controlLocator, handle: controlHandle } = await resolveUniqueControl(
-            input.control,
-            frame,
-            deadlineAt,
-          ));
-          descriptor = await this.inspectControlDescriptor(controlHandle, deadlineAt);
-          associated = await this.associatedControlPopup(
-            frame,
-            controlHandle,
-            deadlineAt,
-            {
-              allowUniqueRenderedAfterDispatch: openerActionDispatched !== false,
-              requireRendered: true,
-            },
-          );
-          renderedPopupCount = associated.renderedSurfaceCount;
-          popupOwnership = associated.popupOwnership;
-          if (associated.kind === 'resolved') {
-            popupLocator = associated.locator;
-            popupHandle = associated.handle;
+            popupSurfaces = associated.surfaces;
             popupAssociationProof = associated.proof;
             popupSurfaceProof = associated.surfaceProof;
-          }
-          rendered = await popupRendered(popupHandle, deadlineAt);
-          popupOpened = rendered;
-          if (!rendered && revealError !== null) throw revealError;
-          if (!rendered || associated.kind !== 'resolved') {
-            throw new Stage5BrowserError(
-              associated.kind === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'POSTCONDITION_FAILED',
-              associated.kind === 'ambiguous'
-                ? 'The control input exposed multiple possible popup surfaces.'
-                : 'The control input did not expose one associated popup surface.',
+            rendered = (await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.anyRendered === true;
+            popupOpened = rendered;
+          } else {
+            let revealError: unknown = null;
+            try {
+              const reveal = await this.revealControlPopup(
+                page,
+                frame,
+                controlLocator,
+                controlHandle,
+                documentVersion,
+                deadlineAt,
+              );
+              openerActionDispatched = reveal.dispatch.actionDispatched;
+            } catch (error) {
+              revealError = error;
+              if (error instanceof Stage5BrowserError) {
+                openerActionDispatched = dispatchEvidenceFromError(error);
+              } else {
+                openerActionDispatched = 'unknown';
+              }
+            }
+
+            if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
+              throwControlDocumentChanged(
+                combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
+              );
+            }
+
+            await controlHandle.dispose().catch(() => undefined);
+            ({ locator: controlLocator, handle: controlHandle } = await resolveUniqueControl(
+              input.control,
+              frame,
+              deadlineAt,
+            ));
+            descriptor = await this.inspectControlDescriptor(controlHandle, deadlineAt);
+            associated = await this.associatedControlPopup(
+              frame,
+              controlHandle,
+              deadlineAt,
               {
-                recoverable: true,
-                details: {
-                  reason: associated.kind === 'ambiguous' ? 'ambiguous_control_popup_after_reveal' : 'control_popup_not_observed',
-                  actionDispatched: openerActionDispatched,
-                  renderedPopupCount,
-                  popupOwnership: associated.popupOwnership,
-                  suggestedAction: 'Inspect authoritative page state. The opener may have received input; do not replay it automatically.',
-                },
+                allowUniqueRenderedAfterDispatch: openerActionDispatched !== false,
+                requireRendered: true,
               },
             );
+            renderedPopupCount = associated.renderedSurfaceCount;
+            popupOwnership = associated.popupOwnership;
+            if (associated.kind === 'resolved') {
+              popupSurfaces = associated.surfaces;
+              popupAssociationProof = associated.proof;
+              popupSurfaceProof = associated.surfaceProof;
+            }
+            rendered = (await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.anyRendered === true;
+            popupOpened = rendered;
+            if (associated.kind === 'ambiguous') {
+              throw popupAssociationFailure(associated, openerActionDispatched);
+            }
+            if (!rendered && revealError !== null) throw revealError;
+            if (!rendered || associated.kind !== 'resolved') {
+              throw new Stage5BrowserError(
+                'POSTCONDITION_FAILED',
+                'The control input did not expose an associated rendered popup surface set.',
+                {
+                  recoverable: true,
+                  details: {
+                    reason: 'control_popup_not_observed',
+                    actionDispatched: openerActionDispatched,
+                    renderedPopupCount,
+                    popupOwnership: associated.popupOwnership,
+                    suggestedAction: 'Inspect authoritative page state. The opener may have received input; do not replay it automatically.',
+                  },
+                },
+              );
+            }
           }
         } else {
           popupOpened = rendered;
         }
 
-        if (popupHandle === null || !await popupRendered(popupHandle, deadlineAt)) {
+        if (!(await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.anyRendered) {
           options = new Map();
         } else {
-          const popupMultiple = await boundedValue(
-            popupHandle.evaluate((popup) => popup.getAttribute('aria-multiselectable') === 'true'),
-            Math.max(1, remainingUntil(deadlineAt)),
-            false,
-          );
+          const popupMultiple = await popupSurfaceSetMultiple(popupSurfaces, deadlineAt);
           const custom = await this.collectPopupControlOptions(
             frame,
-            popupLocator,
-            popupHandle,
+            popupSurfaces,
             input.maxOptions,
             deadlineAt,
           );
@@ -204,7 +230,7 @@ export const controlInspectionOperations = {
             let representations: Map<string, ControlSelectionRepresentation> | null = null;
             const representationObservation = await observeControlSelectionRepresentationsInAdaptiveScope(
               controlHandle,
-              popupHandle,
+              popupSurfaces,
               optionNames,
               deadlineAt,
             );
@@ -246,8 +272,7 @@ export const controlInspectionOperations = {
         controlExact: input.control.exact,
         controlLocator,
         controlHandle,
-        popupLocator,
-        popupHandle,
+        popupSurfaces,
         ...(representationScopeHandle === null ? {} : { representationScopeHandle }),
         multiple: descriptor.multiple,
         optionsComplete,
@@ -300,7 +325,7 @@ export const controlInspectionOperations = {
         await Promise.allSettled([
           controlHandle.dispose(),
           representationScopeHandle?.dispose() ?? Promise.resolve(),
-          popupHandle?.dispose() ?? Promise.resolve(),
+          disposePopupSurfaces(popupSurfaces),
           ...[...(options?.values() ?? [])].map(({ handle }) => handle.dispose()),
         ]);
       }
@@ -345,6 +370,26 @@ function throwControlDocumentChanged(
 }
 
 export type ControlInspectionOperations = typeof controlInspectionOperations;
+
+function popupAssociationFailure(
+  association: Extract<ControlPopupAssociation, { kind: 'ambiguous' }>,
+  actionDispatched: boolean | 'unknown',
+): Stage5BrowserError {
+  return new Stage5BrowserError(
+    'AMBIGUOUS_TARGET',
+    'The control input exposed multiple popup surface sets without one exact owner.',
+    {
+      recoverable: true,
+      details: {
+        reason: 'ambiguous_control_popup_after_reveal',
+        actionDispatched,
+        renderedPopupCount: association.renderedSurfaceCount,
+        popupOwnership: association.popupOwnership,
+        suggestedAction: 'Inspect authoritative control state. The opener may have received input; do not replay it automatically.',
+      },
+    },
+  );
+}
 
 function representedOptionCount(
   options: ObservedControlInspection['options'],

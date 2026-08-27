@@ -129,6 +129,7 @@ export async function resolveControlPopupOwner(
       const relation = await boundedValue(
         handle.evaluate((control, surface) => {
           if (!control.isConnected || !surface.isConnected) return null;
+          if (control === surface || surface.contains(control)) return null;
           const ids = [
             ...(control.getAttribute('aria-controls') ?? '').split(/\s+/),
             ...(control.getAttribute('aria-owns') ?? '').split(/\s+/),

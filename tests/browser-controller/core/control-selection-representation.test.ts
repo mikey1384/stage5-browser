@@ -343,7 +343,8 @@ describe('BrowserController custom selection representation', () => {
       optionName: 'Proprietary funds',
       owner: control,
       page,
-      popup,
+      popupSurfaces: [{ locator: null, handle: popup, surfaceProof: 'semantic_role' }],
+      desiredSelected: true,
       requireSelected: false,
       selectedState: async () => null,
     })).rejects.toMatchObject({
