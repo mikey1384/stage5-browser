@@ -100,6 +100,7 @@ export type ControlPopupAssociationProof =
   | 'focused'
   | 'expanded'
   | 'spatial'
+  | 'agent_declared'
   | 'post_dispatch_unique';
 export type ControlPopupSurfaceProof = 'semantic_role' | 'positioned_option_group';
 export interface ControlPopupOwnershipEvidence {
@@ -122,6 +123,11 @@ export interface ControlTarget {
   role: SupportedAriaRole;
   name: string;
   exact: boolean;
+}
+
+export interface ControlPopupAgentAssociation {
+  owner: 'requested_control';
+  basis: 'agent_semantic_judgment';
 }
 
 export interface ControlOptionTarget {

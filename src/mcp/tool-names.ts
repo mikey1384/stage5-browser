@@ -12,6 +12,7 @@ export const MCP_TOOL_NAMES = {
   browserPageEvents: 'browser_page_events',
   browserStatus: 'browser_status',
   browserAvailable: 'browser_available',
+  browserAvailableMoves: 'browser_available_moves',
   browserDiagnostics: 'browser_diagnostics',
   browserStart: 'browser_start',
   browserSwitch: 'browser_switch',

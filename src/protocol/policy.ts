@@ -34,6 +34,7 @@ export const REVIEW_SAFE_DECLARED_INTENTS = new Set<BrowserActionIntent>([
 
 export const BROWSER_COMMAND_POLICY = {
   initialize: 'policy_configuration',
+  availableMoves: 'allowed_in_review',
   status: 'allowed_in_review',
   start: 'allowed_in_review',
   availableBrowsers: 'allowed_in_review',

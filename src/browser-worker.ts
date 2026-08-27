@@ -58,6 +58,8 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
     dialogExpectationFromPayload(request.payload),
     async () => {
   switch (request.command) {
+    case 'availableMoves':
+      return currentController.availableMoves(request.payload);
     case 'status':
       return currentController.status();
     case 'start':
@@ -75,6 +77,7 @@ async function dispatch(request: BrowserWorkerRequest): Promise<unknown> {
     case 'stop':
       return currentController.stop();
     case 'open':
+      currentController.requireContext();
       return currentController.open(request.payload);
     case 'navigateHistory':
       return currentController.navigateHistory(request.payload);

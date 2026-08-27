@@ -120,6 +120,10 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
   const inspectControlInputSchema = z.object({
     operationId: operationIdSchema.optional(),
     control: controlTargetSchema,
+    popupAssociation: z.object({
+      owner: z.literal('requested_control'),
+      basis: z.literal('agent_semantic_judgment'),
+    }).nullable().default(null),
     frameId: frameIdSchema,
     revealOptions: z.boolean().default(true),
     maxOptions: z.number().int().min(1).max(200).default(100),

@@ -1,7 +1,7 @@
 import { type BrowserCommandOutput, type ElementHandle, type Frame, type Locator, type Page, type PostconditionResult, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { boundedValue, type ObservedControlPopupSurface, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
-import type { ControlPopupAssociation } from './options.js';
+import type { ControlPopupAssociation } from './popup-association.js';
 import { renderedControlPopupSurfaceCount } from './popup-surfaces.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
 

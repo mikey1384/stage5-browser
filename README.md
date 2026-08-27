@@ -21,6 +21,7 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - classify every installed backend as startable, currently owned, recoverable, busy in another Stage5 session, or externally owned before an agent tries to launch it
 - preserve exact cross-worker ownership through a private atomic per-profile lease and recover only a conclusively proven Stage5 orphan
 - preserve the bounded privacy-safe last-action result across a compatible native-worker replacement only for the exact same tab and document
+- enumerate several currently viable generic motions with structural prerequisites, costs, authority boundaries, and replay consequences so the agent can choose the semantic tactic
 - release a persistent isolated profile into a visibly marked native browser for passwords, passkeys, tax identifiers, identity documents, selfies, or other private steps, then resume without exposing the user's input
 - dispatch role and ref clicks through one deadline-safe exact-target engine whose trusted-event evidence survives document replacement
 - stop or explicitly recover the browser
@@ -68,6 +69,7 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `lounge_history` | Manager-only audited paginated read of all room messages without claiming recipient delivery |
 | `browser_operation_status` | Recover a reserved or completed operation result without replaying its action, including terminal delivery timing |
 | `browser_execution_traces` | Query durable privacy-safe stable-agent, manager, phase, dispatch, reconciliation, and outcome evidence by operation ID |
+| `browser_available_moves` | List bounded current generic motions and preparation paths without page text or any expansion of authority |
 | `browser_page_events` | Read durable sanitized page/document replacement events and explicit unsaved-state risk |
 | `browser_status` | Report MCP/build freshness plus worker, browser, configured and actual runtime profile identity, tab, and active-page state |
 | `browser_available` | Report whether every backend is installed and actually startable, already owned, recoverable, busy in another Stage5 session, or externally owned—without launching or closing it |
@@ -96,7 +98,7 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_form_summary` | Inspect a bounded redacted form schema, required/valid state, and value presence without exposing values |
 | `browser_apply_form_plan` | Apply a staged sequence of exact authorized field operations, stopping at the first unconfirmed effect without replay |
 | `browser_set_checked` | Reconcile one exact checkbox/switch/radio to its requested state without blindly toggling |
-| `browser_inspect_control` | Inspect one exact select/autocomplete/custom control and its bounded available options |
+| `browser_inspect_control` | Inspect one exact select/autocomplete/custom control and its bounded options; an agent may explicitly resolve a current semantic owner tie only inside Stage5's structural gate |
 | `browser_select_option` | Set one exact native or custom option selected or unselected and prove the requested state |
 | `browser_select_options` | Select several exact multi-select options, refreshing capabilities between physical inputs and preserving completed evidence |
 | `browser_navigate_history` | Perform bounded back, forward, or reload navigation with document-capability invalidation |
@@ -150,7 +152,7 @@ observe → plan → preflight → prepare → dispatch once → reconcile → f
                          └── one recovery to preflight only after proven zero input
 ```
 
-The controller runtime is the single session-context owner. Live handles and refs remain document/action scoped and disposable; only privacy-minimized ownership, terminal outcomes, execution traces, page-lifecycle risk, transfer/dialog manifests, and Lounge coordination cross an explicit durability boundary. The exhaustive manager and technique matrix lives in `src/protocol/capabilities.ts`, while `src/protocol/command-contracts.ts` assigns every worker command to one manager, phase system, dispatch class, and replay rule. At a phase boundary, the hand should surface several structurally viable techniques—with prerequisites, expected effect, authority needs, cost, and replay class—so the agent can choose the semantic tactic instead of being forced down one brittle recipe. `src/mcp/tool-names.ts` is the canonical 55-tool name catalog, and `src/mcp/tool-contracts.ts` assigns every public browser, host-recovery, telemetry, and Lounge tool to exactly one manager.
+The controller runtime is the single session-context owner. Live handles and refs remain document/action scoped and disposable; only privacy-minimized ownership, terminal outcomes, execution traces, page-lifecycle risk, transfer/dialog manifests, and Lounge coordination cross an explicit durability boundary. The exhaustive manager and technique matrix lives in `src/protocol/capabilities.ts`, while `src/protocol/command-contracts.ts` assigns every worker command to one manager, phase system, dispatch class, replay rule, and structural prerequisite source of truth. `browser_available_moves` derives its bounded affordance view from that same contract plus current capability counts; it does not mirror page semantics or authorization state. At a phase boundary, the hand surfaces several structurally viable techniques—with prerequisites, expected effect, authority needs, cost, and replay class—so the agent can choose the semantic tactic instead of being forced down one brittle recipe. `src/mcp/tool-names.ts` is the canonical 56-tool name catalog, and `src/mcp/tool-contracts.ts` assigns every public browser, host-recovery, telemetry, and Lounge tool to exactly one manager.
 
 Key implementation files:
 
@@ -181,6 +183,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-framework-control-rebind.md` — phase-managed exact stale-opener rebind and zero-input failure telemetry in 0.15.12
 - `docs/dogfooding-2026-08-27-post-dispatch-popup-causality.md` — causal ownership for one newly rendered post-opener popup while passive ties remain closed in 0.17.0
 - `docs/dogfooding-2026-08-27-durable-lounge-work-notes.md` — revisioned per-identity handoff state, replacement-session fencing, and manager visibility in 0.17.0
+- `docs/dogfooding-2026-08-27-available-moves-and-agent-judgment.md` — current-move planning, bounded semantic judgment, explicit startup, telemetry, and Finance tie recovery in 0.18.0
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15

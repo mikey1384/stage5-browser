@@ -234,6 +234,46 @@ describe('privacy-safe execution telemetry', () => {
     expect(JSON.stringify(trace)).not.toContain('optionName');
   });
 
+  it('records an agent judgment gate categorically while omitting candidate semantics', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-popup-agent-judgment',
+      agentId: 'finance-agent',
+      command: 'inspectControl',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(10).toISOString(),
+      durationMs: 10,
+      outcome: 'succeeded',
+      error: null,
+      result: {
+        inspection: {
+          reveal: {
+            associationProof: 'agent_declared',
+            renderedPopupCount: 1,
+            popupOwnership: {
+              proofTier: 'spatial',
+              candidateCount: 5,
+              exteriorCandidateCount: 2,
+              overlappingCandidateCount: 3,
+              surfaceCoveredCandidateCount: 2,
+              decision: 'tie_or_near',
+            },
+          },
+          ownerCandidates: [{ name: 'Private candidate text', role: 'button' }],
+        },
+      },
+      workerRuntime: { version: 'fixture', protocolVersion: 14 },
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion).toMatchObject({
+      popupAssociationProof: 'agent_declared',
+      renderedPopupCount: 1,
+      popupOwnership: { candidateCount: 5, decision: 'tie_or_near' },
+    });
+    expect(JSON.stringify(trace)).not.toContain('Private candidate text');
+    expect(trace.privacy).toMatchObject({ names: 'omitted', pageContent: 'omitted' });
+  });
+
   it('records categorical exact-target viewport evidence without geometry or semantics', () => {
     const trace = buildExecutionTrace({
       operationId: 'operation-viewport-proof-fixture',

@@ -319,6 +319,7 @@ export const controlSelectionOperations = {
         observedBaseline = await observeCustomControlSelectionBaseline({
           associatePopup: (controlHandle, associationDeadlineAt) =>
             this.associatedControlPopup(frame, controlHandle, associationDeadlineAt, {
+              allowAgentDeclaredTargetOwner: inspection.popupAssociationProof === 'agent_declared',
               requireRendered: true,
             }),
           deadlineAt,

@@ -32,6 +32,14 @@ describe('browser command manager contract', () => {
     expect(Object.keys(BROWSER_MANAGER_CAPABILITIES).sort()).toEqual([...BROWSER_ACTION_MANAGERS].sort());
     const techniques = Object.values(BROWSER_MANAGER_CAPABILITIES).flatMap((manager) => manager.techniques);
     expect(new Set(techniques).size).toBe(techniques.length);
+    for (const contract of Object.values(BROWSER_COMMAND_CONTRACTS)) {
+      const managerTechniques = new Set(BROWSER_MANAGER_CAPABILITIES[contract.manager].techniques);
+      expect(contract.techniques.length).toBeGreaterThan(0);
+      for (const technique of contract.techniques) expect(managerTechniques.has(technique)).toBe(true);
+      for (const technique of Object.keys(contract.techniqueRequirementGroups)) {
+        expect(contract.techniques).toContain(technique);
+      }
+    }
     expect(BROWSER_ACTION_LOOP).toEqual([
       'observe',
       'plan',

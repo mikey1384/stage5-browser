@@ -141,6 +141,9 @@ describe('MCP nested scrolling', () => {
       expect(JSON.stringify(clickTool?.inputSchema)).toContain('"expectedHidden"');
     }
 
+    const started = await client.callTool({ name: 'browser_start', arguments: { browser: 'chromium' } });
+    expect(started.isError).not.toBe(true);
+
     const opened = await client.callTool({
       name: 'browser_open',
       arguments: {

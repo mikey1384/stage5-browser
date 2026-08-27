@@ -1,6 +1,6 @@
 import { type ElementHandle, type Frame, type Locator, Stage5BrowserError, type SupportedAriaRole } from '../dependencies.js';
 import { boundedValue, type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
-import type { ControlPopupAssociation } from './options.js';
+import type { ControlPopupAssociation } from './popup-association.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
 import { resolveUniqueControl } from './resolution.js';
 import { observeControlSelectionRepresentationsInAdaptiveScope, type ControlSelectionRepresentation } from './selection-evidence.js';

@@ -22,6 +22,7 @@ const POPUP_ASSOCIATION_PROOFS = new Set<ExecutionTraceConclusion['popupAssociat
   'focused',
   'expanded',
   'spatial',
+  'agent_declared',
   'post_dispatch_unique',
 ]);
 const POPUP_SURFACE_PROOFS = new Set<ExecutionTraceConclusion['popupSurfaceProof']>([

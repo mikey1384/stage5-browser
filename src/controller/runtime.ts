@@ -40,6 +40,7 @@ import { inputVirtualizationOperations, type InputVirtualizationOperations } fro
 import { inputDiagnosticsOperations, type InputDiagnosticsOperations } from './input/diagnostics.js';
 import { controlCapabilityOperations, type ControlCapabilityOperations } from './controls/capabilities.js';
 import { controlOptionOperations, type ControlOptionOperations } from './controls/options.js';
+import { controlPopupAssociationOperations, type ControlPopupAssociationOperations } from './controls/popup-association.js';
 import { controlInspectionOperations, type ControlInspectionOperations } from './controls/inspection.js';
 import { controlSelectionOperations, type ControlSelectionOperations } from './controls/selection.js';
 import { observationTabActivationOperations, type ObservationTabActivationOperations } from './observation/tab-activation.js';
@@ -66,6 +67,7 @@ import { popupPreparationOperations, type PopupPreparationOperations } from './c
 import { controlRevealOperations, type ControlRevealOperations } from './controls/reveal.js';
 import { controlMultiSelectionOperations, type ControlMultiSelectionOperations } from './controls/multi-selection.js';
 import { BrowserPageLifecycleManager, pageLifecycleOperations, type PageLifecycleOperations } from './lifecycle/page-events.js';
+import { observationAvailableMovesOperations, type ObservationAvailableMovesOperations } from './observation/available-moves.js';
 export interface BrowserControllerContext extends
   LifecycleStartOperations,
   LifecycleAvailabilityOperations,
@@ -106,6 +108,7 @@ export interface BrowserControllerContext extends
   InputDiagnosticsOperations,
   ControlCapabilityOperations,
   ControlOptionOperations,
+  ControlPopupAssociationOperations,
   ControlInspectionOperations,
   ControlSelectionOperations,
   ControlMultiSelectionOperations,
@@ -127,7 +130,8 @@ export interface BrowserControllerContext extends
   DialogOperations,
   PopupPreparationOperations,
   ControlRevealOperations,
-  PageLifecycleOperations {
+  PageLifecycleOperations,
+  ObservationAvailableMovesOperations {
   context: BrowserContext | undefined;
   activePage: Page | undefined;
   state: BrowserLifecycleState;
@@ -263,7 +267,8 @@ export interface BrowserController extends
   DialogOperations,
   PopupPreparationOperations,
   ControlRevealOperations,
-  PageLifecycleOperations {}
+  PageLifecycleOperations,
+  ObservationAvailableMovesOperations {}
 
 export class BrowserController {
   private context: BrowserContext | undefined;
@@ -403,6 +408,7 @@ for (const operations of [
   inputDiagnosticsOperations,
   controlCapabilityOperations,
   controlOptionOperations,
+  controlPopupAssociationOperations,
   controlInspectionOperations,
   controlSelectionOperations,
   controlMultiSelectionOperations,
@@ -425,6 +431,7 @@ for (const operations of [
   popupPreparationOperations,
   controlRevealOperations,
   pageLifecycleOperations,
+  observationAvailableMovesOperations,
 ]) {
   installOperations(BrowserController.prototype, operations);
 }

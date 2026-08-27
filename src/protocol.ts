@@ -1,4 +1,5 @@
 export * from './protocol/authentication.js';
+export * from './protocol/available-moves.js';
 export * from './protocol/browser-state.js';
 export * from './protocol/capabilities.js';
 export * from './protocol/commands.js';

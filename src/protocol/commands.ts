@@ -5,7 +5,7 @@ import type { RuntimeProcessInfo } from '../runtime-info.js';
 import type { SanitizedPageActivationEvidence } from '../page-diagnostics.js';
 import type { AuthenticationStatus } from './authentication.js';
 import type { AvailableBrowsers, BrowserStatus, BrowserTabSummary, FrameSummary, PageSummary } from './browser-state.js';
-import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlSelectionEvidence, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
+import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlPopupAgentAssociation, ControlSelectionEvidence, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
 import type { ScrollContainerObservation, ScrollDirection, ScrollEndState, ScrollPosition, ScrollWaitCondition, ScrollWaitResult } from './scroll.js';
 import type { BrowserMotionInput, BrowserMotionOutput } from './motions.js';
 import type { CloseTabOutput, NavigateHistoryInput, NavigateHistoryOutput } from './navigation.js';
@@ -17,6 +17,7 @@ import type { BrowserDialogActionResult, BrowserDialogExpectation, BrowserDialog
 import type { PageLifecycleStatus } from './page-lifecycle.js';
 import type { SetInputFilesInput, SetInputFilesOutput } from './uploads.js';
 import type { ViewportPreparationTelemetry } from './telemetry.js';
+import type { BrowserAvailableMovesInput, BrowserAvailableMovesOutput } from './available-moves.js';
 
 export interface BrowserCommandMap {
   initialize: {
@@ -35,6 +36,10 @@ export interface BrowserCommandMap {
   status: {
     input: Record<string, never>;
     output: BrowserStatus;
+  };
+  availableMoves: {
+    input: BrowserAvailableMovesInput;
+    output: BrowserAvailableMovesOutput;
   };
   start: {
     input: { browser?: BrowserProduct };
@@ -278,6 +283,7 @@ export interface BrowserCommandMap {
   inspectControl: {
     input: {
       control: ControlTarget;
+      popupAssociation?: ControlPopupAgentAssociation | null;
       frameId: string | null;
       revealOptions: boolean;
       maxOptions: number;

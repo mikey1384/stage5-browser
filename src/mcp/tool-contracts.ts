@@ -42,6 +42,7 @@ export const MCP_TOOL_CONTRACTS = {
   [TOOL.browserPageEvents]: worker('pageEvents'),
   [TOOL.browserStatus]: worker('status'),
   [TOOL.browserAvailable]: worker('availableBrowsers'),
+  [TOOL.browserAvailableMoves]: worker('availableMoves'),
   [TOOL.browserDiagnostics]: worker('diagnostics'),
   [TOOL.browserStart]: worker('start'),
   [TOOL.browserSwitch]: worker('switchBrowser'),

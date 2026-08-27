@@ -241,6 +241,89 @@ describe('BrowserController composite popup ownership', () => {
     await expect(page.locator('#opens').textContent()).resolves.toBe('1');
   });
 
+  it('lets the agent declare one tied current popup owner without dispatching input', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; min-height: 300px; }
+      button, #options { position: absolute; left: 20px; width: 240px; height: 40px; box-sizing: border-box; }
+      #target { top: 20px; }
+      #options { top: 60px; height: 160px; border: 1px solid black; z-index: 2; }
+      #other-exterior { top: 220px; }
+      #covered-a { top: 80px; }
+      #covered-b { top: 120px; }
+      #uncovered { top: 160px; z-index: 3; }
+    </style></head><body tabindex="-1">
+      <button id="target" aria-multiselectable="true">Target field</button>
+      <div id="options" role="listbox" aria-multiselectable="true">
+        <div role="option" aria-selected="true">Preserved choice</div>
+        <div role="option" aria-selected="false">Another choice</div>
+      </div>
+      <button id="other-exterior">Other exterior field</button>
+      <button id="covered-a">Covered field A</button>
+      <button id="covered-b">Covered field B</button>
+      <button id="uncovered">Uncovered field</button>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of ['target', 'other-exterior', 'covered-a', 'covered-b', 'uncovered']
+          .map((id) => document.getElementById(id))) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    await expect(controller?.inspectControl({
+      control: { role: 'button', name: 'Target field', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      code: 'AMBIGUOUS_TARGET',
+      details: {
+        reason: 'ambiguous_control_popup',
+        actionDispatched: false,
+        requestedControlIsCandidate: true,
+        agentJudgmentAvailable: true,
+        ownerCandidates: expect.arrayContaining([
+          expect.objectContaining({ name: 'Target field', requestedControl: true }),
+        ]),
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 5,
+          exteriorCandidateCount: 2,
+          overlappingCandidateCount: 3,
+          surfaceCoveredCandidateCount: 2,
+          decision: 'tie_or_near',
+        },
+      },
+    });
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Target field', exact: true },
+      popupAssociation: {
+        owner: 'requested_control',
+        basis: 'agent_semantic_judgment',
+      },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    expect(inspected?.inspection).toMatchObject({
+      multiple: true,
+      options: [{ name: 'Preserved choice' }, { name: 'Another choice' }],
+      reveal: {
+        openerActionDispatched: false,
+        preparationActionDispatched: false,
+        popupOpened: true,
+        associationProof: 'agent_declared',
+        renderedPopupCount: 1,
+      },
+    });
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
   it('does not infer causality when a popup appears during reversible opener preparation', async () => {
     const page = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; min-height: 1800px; }
