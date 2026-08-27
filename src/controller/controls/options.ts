@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { type ControlPopupAssociationProof, type ControlPopupOwnershipEvidence, type ControlPopupSurfaceProof, type ElementHandle, type Frame, type Locator } from '../dependencies.js';
 import { boundedValue, CONTROL_INSPECTION_SCROLL_SETTLE_MS, CONTROL_OPTION_SELECTOR, CONTROL_POPUP_OPTION_SELECTOR, MAX_CONTROL_INSPECTION_SCROLL_STEPS, MAX_CONTROL_POPUP_OPTION_CANDIDATES, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { inspectControlOptionElement } from './option-state.js';
 import { resolveControlPopupOwner } from './popup-ownership.js';
 import { discoverControlPopupSurfaces } from './popup-surfaces.js';
 
@@ -262,12 +263,14 @@ export const controlOptionOperations = {
     complete: boolean;
     scrollSteps: number;
     boundaryReached: boolean;
+    multipleSignal: boolean;
   }> {
     const options = new Map<string, ObservedControlOption>();
     const optionsBySemantic = new Map<string, ObservedControlOption[]>();
     let scrollSteps = 0;
     let boundaryReached = false;
     let candidateScanBounded = true;
+    let multipleSignal = false;
 
     const capture = async (): Promise<boolean> => {
       const locator = popupLocator === null
@@ -297,12 +300,14 @@ export const controlOptionOperations = {
           await handle.dispose().catch(() => undefined);
           continue;
         }
-        const semantic = await this.controlOptionSemantic(candidate, handle, deadlineAt);
+        const semantic = await this.controlOptionSemantic(handle, deadlineAt);
         if (semantic === null) {
           await handle.dispose().catch(() => undefined);
           continue;
         }
-        const key = `${semantic.role}\u0000${semantic.name}`;
+        const { multipleSignal: optionMultipleSignal, ...observation } = semantic;
+        multipleSignal ||= optionMultipleSignal;
+        const key = `${observation.role}\u0000${observation.name}`;
         const occurrence = occurrences.get(key) ?? 0;
         occurrences.set(key, occurrence + 1);
         const known = optionsBySemantic.get(key) ?? [];
@@ -320,14 +325,14 @@ export const controlOptionOperations = {
           await existing.handle.dispose().catch(() => undefined);
           existing.handle = handle;
           existing.locator = candidate;
-          existing.observation = { ...existing.observation, ...semantic };
+          existing.observation = { ...existing.observation, ...observation };
           continue;
         }
         const optionId = `option-${randomUUID()}`;
         const observed: ObservedControlOption = {
           locator: candidate,
           handle,
-          observation: { optionId, ...semantic },
+          observation: { optionId, ...observation },
         };
         options.set(optionId, observed);
         known.push(observed);
@@ -369,11 +374,11 @@ export const controlOptionOperations = {
       complete: candidateScanBounded && boundaryReached && options.size < maxOptions,
       scrollSteps,
       boundaryReached,
+      multipleSignal,
     };
   },
 
   async controlOptionSemantic(
-    locator: Locator,
     handle: ElementHandle<HTMLElement>,
     deadlineAt: number,
   ): Promise<{
@@ -381,31 +386,10 @@ export const controlOptionOperations = {
     role: 'menuitem' | 'menuitemcheckbox' | 'menuitemradio' | 'option' | 'radio' | 'treeitem';
     selected: boolean | null;
     disabled: boolean;
+    multipleSignal: boolean;
   } | null> {
     const state = await boundedValue(
-      handle.evaluate((element) => {
-        if (!element.isConnected) return null;
-        const style = getComputedStyle(element);
-        if (style.display === 'none' || style.visibility === 'hidden') return null;
-        const role = (element.getAttribute('role') ?? '').toLocaleLowerCase();
-        const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
-          .split(/\s+/).filter(Boolean)
-          .map((id) => element.ownerDocument.getElementById(id)?.textContent ?? '').join(' ');
-        const rawName = element.getAttribute('aria-label') || labelledBy ||
-          (element instanceof HTMLOptionElement ? element.label : '') ||
-          element.innerText || element.textContent || element.getAttribute('title') || '';
-        const ariaSelected = element.getAttribute('aria-selected');
-        const ariaChecked = element.getAttribute('aria-checked');
-        return {
-          role,
-          name: rawName.replace(/\s+/g, ' ').trim(),
-          selected: ariaSelected === null
-            ? ariaChecked === null ? null : ariaChecked === 'true'
-            : ariaSelected === 'true',
-          disabled: element.getAttribute('aria-disabled') === 'true' ||
-            ('disabled' in element && Boolean((element as HTMLButtonElement).disabled)),
-        };
-      }),
+      handle.evaluate(inspectControlOptionElement),
       Math.max(1, remainingUntil(deadlineAt)),
       null,
     );
@@ -415,7 +399,16 @@ export const controlOptionOperations = {
       role: state.role as 'menuitem' | 'menuitemcheckbox' | 'menuitemradio' | 'option' | 'radio' | 'treeitem',
       selected: state.selected,
       disabled: state.disabled,
+      multipleSignal: state.multipleSignal,
     };
+  },
+
+  async controlOptionSelectedState(locator: Locator): Promise<boolean | null> {
+    try {
+      return (await locator.evaluate(inspectControlOptionElement))?.selected ?? null;
+    } catch {
+      return null;
+    }
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
 

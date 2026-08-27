@@ -201,7 +201,7 @@ export const controlInspectionOperations = {
             descriptor = {
               ...descriptor,
               multiple: descriptor.multiple || popupMultiple ||
-                [...custom.options.values()].some(({ observation }) => observation.role === 'menuitemcheckbox'),
+                custom.multipleSignal,
             };
           }
         }

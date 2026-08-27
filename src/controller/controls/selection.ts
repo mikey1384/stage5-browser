@@ -370,7 +370,7 @@ export const controlSelectionOperations = {
             page,
             popup: baseline.popupHandle,
             requireSelected: requireSelected || inspection.multiple,
-            selectedState: (locator) => this.selectedState(locator),
+            selectedState: (locator) => this.controlOptionSelectedState(locator),
           });
           return reconciliation.postcondition;
         },
