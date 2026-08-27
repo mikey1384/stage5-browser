@@ -19,6 +19,8 @@ export const observationAvailableMovesOperations = {
       currentFrame(inspection.frame) && inspection.documentVersion === this.documentVersion(inspection.frame));
     const formInspections = [...this.formInspections.values()].filter((inspection) =>
       currentFrame(inspection.frame) && inspection.documentVersion === this.documentVersion(inspection.frame));
+    const popupOwnerCandidates = [...this.popupOwnerDecisions.values()].filter((decision) =>
+      currentFrame(decision.frame) && decision.documentVersion === this.documentVersion(decision.frame));
     const context = this.usableContext();
     const observedTabs = context === undefined
       ? 0
@@ -49,6 +51,7 @@ export const observationAvailableMovesOperations = {
         scrollContainerRefs: snapshots.reduce((count, [, snapshot]) => count + snapshot.scrollContainers.size, 0),
         controlInspections: controlInspections.length,
         controlOptions: controlInspections.reduce((count, inspection) => count + inspection.options.size, 0),
+        popupOwnerCandidates: popupOwnerCandidates.length,
         formInspections: formInspections.length,
         formFields: formInspections.reduce((count, inspection) => count + inspection.fields.size, 0),
       },

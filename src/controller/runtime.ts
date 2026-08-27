@@ -163,6 +163,7 @@ export interface BrowserControllerContext extends
   externalClickDispatchObservations: Map<string, ExternalClickDispatchObservation>;
   actionPhases: ActionPhaseManager;
   controlInspections: Map<string, import('./model.js').ObservedControlInspection>;
+  popupOwnerDecisions: Map<string, import('./model.js').ObservedPopupOwnerDecision>;
   formInspections: Map<string, ObservedFormInspection>;
   formWorkflows: FormWorkflowManager;
   privateFieldHandoff: PrivateFieldHandoff | null;
@@ -302,6 +303,7 @@ export class BrowserController {
   private readonly externalClickDispatchObservations = new Map<string, ExternalClickDispatchObservation>();
   private readonly actionPhases = new ActionPhaseManager();
   private readonly controlInspections = new Map<string, import('./model.js').ObservedControlInspection>();
+  private readonly popupOwnerDecisions = new Map<string, import('./model.js').ObservedPopupOwnerDecision>();
   private readonly formInspections = new Map<string, ObservedFormInspection>();
   private readonly formWorkflows = new FormWorkflowManager();
   private privateFieldHandoff: PrivateFieldHandoff | null = null;

@@ -37,6 +37,7 @@ export const BROWSER_MOVE_PREREQUISITES = [
   'file_input_ref',
   'form_inspection',
   'observed_tabs',
+  'popup_owner_candidate',
   'private_field_handoff',
   'scroll_container_ref',
   'selected_page',
@@ -106,7 +107,9 @@ export const BROWSER_COMMAND_CONTRACTS = {
   waitForDownload: contract('transfer_manager', ['wait_for_download'], 'read_only_observation', 'none', 'idempotent_observation', RUNNING, {}, 'not_meaningful'),
   fillByRole: contract('form_manager', ['fill_text', 'fill_date'], 'action_phases', 'element_input', 'never_after_possible_dispatch', PAGE),
   fillRef: contract('form_manager', ['fill_text', 'fill_date'], 'action_phases', 'element_input', 'never_after_possible_dispatch', [...PAGE, ['semantic_snapshot'], ['text_editor_ref']]),
-  inspectControl: contract('form_manager', ['inspect_options', 'declare_popup_owner_from_observed_candidates'], 'action_phases', 'reversible_view_state', 'never_after_possible_dispatch', PAGE),
+  inspectControl: contract('form_manager', ['inspect_options', 'declare_popup_owner_from_observed_candidates'], 'action_phases', 'reversible_view_state', 'never_after_possible_dispatch', PAGE, {
+    declare_popup_owner_from_observed_candidates: [['popup_owner_candidate']],
+  }),
   selectOption: contract('form_manager', ['set_option_state'], 'action_phases', 'element_input', 'never_after_possible_dispatch', PAGE),
   selectOptions: contract('form_manager', ['select_multiple_options'], 'form_workflow', 'element_input', 'never_after_possible_dispatch', PAGE),
   formSummary: contract('form_manager', ['summarize_form'], 'read_only_observation', 'none', 'idempotent_observation', PAGE),

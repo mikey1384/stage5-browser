@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { type BrowserCommandInput, type BrowserCommandOutput, type ElementHandle, type Frame, Stage5BrowserError } from '../dependencies.js';
-import { type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
+import { type AgentDeclaredPopupOwner, type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import type { ControlPopupAssociation } from './popup-association.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering, popupSurfaceSetMultiple } from './popup-set.js';
@@ -36,8 +36,28 @@ export const controlInspectionOperations = {
     let scrollSteps = 0;
     let boundaryReached = false;
     let optionsComplete = false;
-    const allowAgentDeclaredTargetOwner = input.popupAssociation?.owner === 'requested_control' &&
-      input.popupAssociation.basis === 'agent_semantic_judgment';
+    let agentDeclaredPopupOwner: AgentDeclaredPopupOwner | null = null;
+
+    const ambiguousPopupFailure = (
+      association: Extract<ControlPopupAssociation, { kind: 'ambiguous' }>,
+      actionDispatched: boolean | 'unknown',
+      reason?: string,
+    ): Stage5BrowserError => {
+      const decision = this.issuePopupOwnerDecision(
+        frame,
+        documentVersion,
+        input.control,
+        association.ownerCandidates,
+        actionDispatched === false &&
+          association.renderedSurfaceCount === 1 &&
+          !association.ownerCandidatesTruncated,
+      );
+      return popupAssociationFailure({
+        ...association,
+        ownerCandidates: decision.candidates,
+        agentJudgmentAvailable: decision.agentJudgmentAvailable,
+      }, actionDispatched, reason);
+    };
 
     try {
       let descriptor = await this.inspectControlDescriptor(controlHandle, deadlineAt);
@@ -49,6 +69,16 @@ export const controlInspectionOperations = {
       }
 
       if (descriptor.kind === 'native_select') {
+        if (input.popupAssociation != null) {
+          throw new Stage5BrowserError('OPERATION_FAILED', 'Popup ownership applies only to a current custom popup control.', {
+            recoverable: true,
+            details: {
+              reason: 'popup_association_not_custom_control',
+              actionDispatched: false,
+              suggestedAction: 'Inspect the native select directly without popupAssociation. No control input was dispatched.',
+            },
+          });
+        }
         const native = await this.collectNativeControlOptions(
           controlLocator,
           controlHandle,
@@ -59,13 +89,19 @@ export const controlInspectionOperations = {
         optionsComplete = native.complete;
         boundaryReached = native.complete;
       } else {
+        agentDeclaredPopupOwner = this.consumeAgentDeclaredPopupOwner(
+          frame,
+          documentVersion,
+          input.control,
+          input.popupAssociation,
+        );
         let associated = await this.associatedControlPopup(frame, controlHandle, deadlineAt, {
-          allowAgentDeclaredTargetOwner,
+          agentDeclaredOwner: agentDeclaredPopupOwner,
         });
         renderedPopupCount = associated.renderedSurfaceCount;
         popupOwnership = associated.popupOwnership;
         if (associated.kind === 'ambiguous') {
-          throw popupAssociationFailure(associated, false, 'ambiguous_control_popup');
+          throw ambiguousPopupFailure(associated, false, 'ambiguous_control_popup');
         }
         if (associated.kind === 'resolved') {
           popupSurfaces = associated.surfaces;
@@ -102,20 +138,21 @@ export const controlInspectionOperations = {
               frame,
               controlHandle,
               deadlineAt,
-              { allowAgentDeclaredTargetOwner, requireRendered: true },
+              { agentDeclaredOwner: agentDeclaredPopupOwner, requireRendered: true },
             );
             renderedPopupCount = associated.renderedSurfaceCount;
             popupOwnership = associated.popupOwnership;
+            if (associated.kind === 'ambiguous') {
+              throw ambiguousPopupFailure(associated, false, 'ambiguous_control_popup');
+            }
             if (associated.kind !== 'resolved') {
               throw new Stage5BrowserError(
-                associated.kind === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'POSTCONDITION_FAILED',
+                'POSTCONDITION_FAILED',
                 'The already-open target popup could not be retained as one exact owned surface set.',
                 {
                   recoverable: true,
                   details: {
-                    reason: associated.kind === 'ambiguous'
-                      ? 'ambiguous_control_popup'
-                      : 'control_popup_not_observed',
+                    reason: 'control_popup_not_observed',
                     actionDispatched: false,
                     renderedPopupCount,
                     popupOwnership,
@@ -169,7 +206,7 @@ export const controlInspectionOperations = {
               controlHandle,
               deadlineAt,
               {
-                allowAgentDeclaredTargetOwner,
+                agentDeclaredOwner: agentDeclaredPopupOwner,
                 allowUniqueRenderedAfterDispatch:
                   revealEvidence.zeroRenderedSurfaceBaseline && openerActionDispatched !== false,
                 requireRendered: true,
@@ -185,7 +222,10 @@ export const controlInspectionOperations = {
             rendered = (await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.anyRendered === true;
             popupOpened = rendered;
             if (associated.kind === 'ambiguous') {
-              throw popupAssociationFailure(associated, openerActionDispatched);
+              throw ambiguousPopupFailure(
+                associated,
+                combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched),
+              );
             }
             if (!rendered && revealError !== null) throw revealError;
             if (!rendered || associated.kind !== 'resolved') {
@@ -272,6 +312,9 @@ export const controlInspectionOperations = {
         controlHandle,
         popupSurfaces,
         popupAssociationProof,
+        agentDeclaredPopupOwner: popupAssociationProof === 'agent_declared'
+          ? agentDeclaredPopupOwner
+          : null,
         ...(representationScopeHandle === null ? {} : { representationScopeHandle }),
         multiple: descriptor.multiple,
         optionsComplete,
@@ -391,7 +434,7 @@ function popupAssociationFailure(
         agentJudgmentAvailable: association.agentJudgmentAvailable,
         decision: { kind: 'decision_required', responsible: 'agent' },
         suggestedAction: actionDispatched === false && association.agentJudgmentAvailable
-          ? 'Judge the bounded current owner candidates from page semantics. If the requested control is the owner, repeat one passive inspection with popupAssociation={owner:requested_control,basis:agent_semantic_judgment}; this only associates the popup and dispatches no input.'
+          ? 'Choose exactly one current ownerCandidates ownerCandidateId using page semantics, then repeat one passive inspection with popupAssociation={owner:observed_candidate,ownerCandidateId,basis:agent_semantic_judgment}. The capability is document-bound and one-use; association dispatches no input.'
           : 'Inspect authoritative control state. Possible opener input is never replayed; use an agent-declared owner only in a separately authorized fresh passive inspection.',
       },
     },

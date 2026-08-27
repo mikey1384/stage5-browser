@@ -28,6 +28,7 @@ export interface BrowserMoveContext {
     scrollContainerRefs: number;
     controlInspections: number;
     controlOptions: number;
+    popupOwnerCandidates: number;
     formInspections: number;
     formFields: number;
   };
@@ -81,6 +82,7 @@ const PREPARABLE = new Set<BrowserMovePrerequisite>([
   'file_input_ref',
   'form_inspection',
   'observed_tabs',
+  'popup_owner_candidate',
   'scroll_container_ref',
   'selected_page',
   'semantic_snapshot',
@@ -181,6 +183,7 @@ function prerequisiteSatisfied(context: BrowserMoveContext, requirement: Browser
     case 'file_input_ref': return counts.fileInputRefs > 0;
     case 'form_inspection': return counts.formInspections > 0;
     case 'observed_tabs': return counts.observedTabs > 0;
+    case 'popup_owner_candidate': return counts.popupOwnerCandidates > 0;
     case 'private_field_handoff': return context.controlMode === 'private_field';
     case 'scroll_container_ref': return counts.scrollContainerRefs > 0;
     case 'selected_page': return context.selectedPage;
@@ -219,6 +222,7 @@ function enablingCommandsFor(
       requirement === 'text_editor_ref' || requirement === 'file_input_ref' ||
       requirement === 'scroll_container_ref') commands.add('snapshot');
     else if (requirement === 'control_inspection') commands.add('inspectControl');
+    else if (requirement === 'popup_owner_candidate') commands.add('inspectControl');
     else if (requirement === 'form_inspection') commands.add('formSummary');
     else if (requirement === 'private_field_handoff') commands.add('requestPrivateFieldHandoff');
     else if (requirement === 'authentication_release_pending') commands.add('requestLoginHandoff');

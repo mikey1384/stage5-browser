@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -23,6 +23,7 @@
       "Browser automation",
       "Privacy-safe current move map",
       "Auditable agent semantic judgment",
+      "One-use observed popup-owner choices",
       "Agent-to-agent messaging",
       "Revisioned pinned notices",
       "Audited manager history",

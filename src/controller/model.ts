@@ -66,6 +66,20 @@ export interface ObservedControlPopupSurface {
   surfaceProof: ControlPopupSurfaceProof;
 }
 
+export type AgentDeclaredPopupOwner =
+  | { kind: 'requested_control' }
+  | { kind: 'observed_candidate'; role: string; name: string };
+
+export interface ObservedPopupOwnerDecision {
+  frame: Frame;
+  documentVersion: number;
+  controlRole: string;
+  controlName: string;
+  controlExact: boolean;
+  ownerRole: string;
+  ownerName: string;
+}
+
 export interface ObservedControlInspection {
   id: string;
   frame: Frame;
@@ -79,6 +93,7 @@ export interface ObservedControlInspection {
   representationScopeHandle?: ElementHandle<HTMLElement>;
   popupSurfaces: ObservedControlPopupSurface[];
   popupAssociationProof: ControlPopupAssociationProof | null;
+  agentDeclaredPopupOwner: AgentDeclaredPopupOwner | null;
   multiple: boolean;
   optionsComplete: boolean;
   options: Map<string, ObservedControlOption>;

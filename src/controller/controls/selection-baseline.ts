@@ -73,7 +73,7 @@ export async function observeCustomControlSelectionBaseline(
       ? { anyRendered: false, allRendered: false }
       : await inspectPopupSurfaceSetRendering(popupSurfaces, observationDeadlineAt);
     if (popupRendering === null) throwBaselineUnavailable();
-    if (!popupRendering.allRendered) {
+    if (inspection.agentDeclaredPopupOwner !== null || !popupRendering.allRendered) {
       const associated = await waitForRenderedReplacementPopup(
         input,
         controlHandle,

@@ -83,6 +83,7 @@ export const formFieldSelectOperations = {
         controlHandle: field.handle,
         popupSurfaces: [],
         popupAssociationProof: null,
+        agentDeclaredPopupOwner: null,
         multiple: field.observation.multiple,
         optionsComplete: true,
         options: new Map([[observedOption.observation.optionId, observedOption]]),

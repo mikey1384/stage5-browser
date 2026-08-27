@@ -7,6 +7,7 @@ import {
   type Locator,
 } from '../dependencies.js';
 import {
+  type AgentDeclaredPopupOwner,
   boundedValue,
   type ObservedControlPopupSurface,
   remainingUntil,
@@ -28,7 +29,7 @@ interface PopupCandidate {
 }
 
 export interface ControlPopupAssociationPolicy {
-  allowAgentDeclaredTargetOwner?: boolean;
+  agentDeclaredOwner?: AgentDeclaredPopupOwner | null;
   allowUniqueRenderedAfterDispatch?: boolean;
   requireRendered?: boolean;
 }
@@ -178,6 +179,7 @@ export const controlPopupAssociationOperations = {
 
       let ownershipAmbiguous = false;
       let requestedControlIsAmbiguousCandidate = false;
+      let agentDeclaredOwnerIsAmbiguousCandidate = false;
       let ownerCandidates: PopupOwnerCandidateObservation[] = [];
       let ownerCandidatesTruncated = false;
       const ownershipDiagnostics: ControlPopupOwnershipEvidence[] = [];
@@ -200,6 +202,11 @@ export const controlPopupAssociationOperations = {
           ownershipAmbiguous = true;
           if (ownership.kind === 'ambiguous') {
             requestedControlIsAmbiguousCandidate ||= ownership.targetCandidate;
+            agentDeclaredOwnerIsAmbiguousCandidate ||= declaredOwnerMatches(
+              policy.agentDeclaredOwner,
+              ownership.targetCandidate,
+              ownership.candidates,
+            );
             ownerCandidates = ownership.candidates;
             ownerCandidatesTruncated = ownership.candidatesTruncated;
           }
@@ -214,9 +221,9 @@ export const controlPopupAssociationOperations = {
       }
       if (
         selected.size === 0 &&
-        policy.allowAgentDeclaredTargetOwner === true &&
+        policy.agentDeclaredOwner != null &&
         rendered.length === 1 &&
-        requestedControlIsAmbiguousCandidate
+        agentDeclaredOwnerIsAmbiguousCandidate
       ) {
         selected.add(rendered[0]!);
         selectedProof = 'agent_declared';
@@ -261,7 +268,9 @@ export const controlPopupAssociationOperations = {
           ownerCandidates,
           ownerCandidatesTruncated,
           requestedControlIsCandidate: requestedControlIsAmbiguousCandidate,
-          agentJudgmentAvailable: rendered.length === 1 && requestedControlIsAmbiguousCandidate,
+          agentJudgmentAvailable: rendered.length === 1 &&
+            !ownerCandidatesTruncated &&
+            hasUniquelyNamedCandidate(ownerCandidates),
         };
       }
       return { kind: 'missing', renderedSurfaceCount, popupOwnership };
@@ -271,5 +280,26 @@ export const controlPopupAssociationOperations = {
     }
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
+
+function declaredOwnerMatches(
+  declaredOwner: AgentDeclaredPopupOwner | null | undefined,
+  requestedControlIsCandidate: boolean,
+  candidates: PopupOwnerCandidateObservation[],
+): boolean {
+  if (declaredOwner == null) return false;
+  if (declaredOwner.kind === 'requested_control') return requestedControlIsCandidate;
+  return candidates.filter(({ role, name }) =>
+    role === declaredOwner.role && name === declaredOwner.name).length === 1;
+}
+
+function hasUniquelyNamedCandidate(candidates: PopupOwnerCandidateObservation[]): boolean {
+  const counts = new Map<string, number>();
+  for (const { role, name } of candidates) {
+    if (name.length === 0) continue;
+    const key = JSON.stringify([role, name]);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.values()].some((count) => count === 1);
+}
 
 export type ControlPopupAssociationOperations = typeof controlPopupAssociationOperations;

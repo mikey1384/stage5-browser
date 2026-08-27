@@ -94,6 +94,7 @@ export const BROWSER_CONTEXT_LAYERS = {
     'scroll_container_refs',
     'form_field_capabilities',
     'control_option_capabilities',
+    'popup_owner_candidate_capabilities',
   ],
   action: [
     'absolute_deadline',

@@ -11,6 +11,7 @@ const EMPTY_COUNTS: BrowserMoveContext['capabilityCounts'] = {
   scrollContainerRefs: 0,
   controlInspections: 0,
   controlOptions: 0,
+  popupOwnerCandidates: 0,
   formInspections: 0,
   formFields: 0,
 };
@@ -83,7 +84,9 @@ describe('browser available moves', () => {
     });
     expect(result.moves.find(({ moveId }) =>
       moveId === 'inspectControl:declare_popup_owner_from_observed_candidates')).toMatchObject({
-        availability: 'available',
+        availability: 'needs_preparation',
+        missingPrerequisites: ['popup_owner_candidate'],
+        enablingCommands: ['inspectControl'],
         callerRequirements: expect.arrayContaining(['current_bounded_candidate_judgment']),
       });
   });
@@ -103,6 +106,7 @@ describe('browser available moves', () => {
         scrollContainerRefs: 2,
         controlInspections: 1,
         controlOptions: 6,
+        popupOwnerCandidates: 1,
         formInspections: 1,
         formFields: 9,
       },
@@ -114,6 +118,7 @@ describe('browser available moves', () => {
       'scroll:scroll_observed_container',
       'selectTab:select_tab',
       'applyFormPlan:apply_staged_plan',
+      'inspectControl:declare_popup_owner_from_observed_candidates',
     ]) {
       expect(result.moves.find((move) => move.moveId === moveId)?.availability).toBe('available');
     }

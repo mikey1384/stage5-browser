@@ -135,6 +135,11 @@ describe('MCP nested scrolling', () => {
     });
     expect(tools.tools.find((tool) => tool.name === 'browser_execution_traces')?.inputSchema)
       .toMatchObject({ properties: { operationId: expect.any(Object), limit: expect.any(Object) } });
+    const inspectControlSchema = JSON.stringify(
+      tools.tools.find((tool) => tool.name === 'browser_inspect_control')?.inputSchema,
+    );
+    expect(inspectControlSchema).toContain('"observed_candidate"');
+    expect(inspectControlSchema).toContain('"ownerCandidateId"');
     for (const name of ['browser_click_by_role', 'browser_click_ref']) {
       const clickTool = tools.tools.find((tool) => tool.name === name);
       expect(clickTool, `${name} should be exposed`).toBeDefined();

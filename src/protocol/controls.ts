@@ -125,10 +125,16 @@ export interface ControlTarget {
   exact: boolean;
 }
 
-export interface ControlPopupAgentAssociation {
-  owner: 'requested_control';
-  basis: 'agent_semantic_judgment';
-}
+export type ControlPopupAgentAssociation =
+  | {
+      owner: 'requested_control';
+      basis: 'agent_semantic_judgment';
+    }
+  | {
+      owner: 'observed_candidate';
+      ownerCandidateId: string;
+      basis: 'agent_semantic_judgment';
+    };
 
 export interface ControlOptionTarget {
   name: string;

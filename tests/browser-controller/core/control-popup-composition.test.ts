@@ -324,6 +324,111 @@ describe('BrowserController composite popup ownership', () => {
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });
 
+  it('lets the agent bind a composite textbox to one observed button owner candidate', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; min-height: 320px; }
+      input, button, #options { position: absolute; box-sizing: border-box; }
+      #field { left: 20px; top: 20px; width: 200px; height: 40px; }
+      #owner { left: 220px; top: 20px; width: 40px; height: 40px; }
+      #options { left: 20px; top: 60px; width: 240px; height: 160px; border: 1px solid black; }
+      #other-exterior { left: 20px; top: 220px; width: 240px; height: 40px; }
+      #covered-a { left: 20px; top: 80px; width: 240px; height: 40px; }
+      #covered-b { left: 20px; top: 120px; width: 240px; height: 40px; }
+      #uncovered { left: 20px; top: 160px; width: 240px; height: 40px; z-index: 3; }
+    </style></head><body tabindex="-1">
+      <input id="field" role="textbox" aria-label="Funding sources" aria-multiselectable="true">
+      <button id="owner" aria-label="Funding sources">Open</button>
+      <div id="options" role="listbox" aria-multiselectable="true">
+        <div id="choice" role="option" aria-selected="false">Company capital</div>
+        <div role="option" aria-selected="false">Customer revenue</div>
+      </div>
+      <button id="other-exterior">Other exterior field</button>
+      <button id="covered-a">Covered field A</button>
+      <button id="covered-b">Covered field B</button>
+      <button id="uncovered">Uncovered field</button>
+      <output id="inputs">0</output>
+      <script>
+        for (const control of document.querySelectorAll('button')) {
+          control.addEventListener('click', () => { inputs.value = String(Number(inputs.value) + 1); });
+          control.addEventListener('keydown', () => { inputs.value = String(Number(inputs.value) + 1); });
+        }
+        choice.addEventListener('click', () => {
+          inputs.value = String(Number(inputs.value) + 1);
+          choice.setAttribute('aria-selected', 'true');
+        });
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    let failure: unknown;
+    try {
+      await controller?.inspectControl({
+        control: { role: 'textbox', name: 'Funding sources', exact: true },
+        frameId: null,
+        revealOptions: false,
+        maxOptions: 20,
+        timeoutMs: 5_000,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: 'AMBIGUOUS_TARGET',
+      details: {
+        actionDispatched: false,
+        requestedControlIsCandidate: false,
+        agentJudgmentAvailable: true,
+      },
+    });
+    const ownerCandidates = (failure as {
+      details: { ownerCandidates: Array<{ role: string; name: string; ownerCandidateId?: string }> };
+    }).details.ownerCandidates;
+    const ownerCandidate = ownerCandidates.find(({ role, name }) =>
+      role === 'button' && name === 'Funding sources');
+    expect(ownerCandidate?.ownerCandidateId).toMatch(/^popup-owner-candidate-[0-9a-f-]{36}$/u);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'textbox', name: 'Funding sources', exact: true },
+      popupAssociation: {
+        owner: 'observed_candidate',
+        ownerCandidateId: ownerCandidate!.ownerCandidateId!,
+        basis: 'agent_semantic_judgment',
+      },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    expect(inspected?.inspection).toMatchObject({
+      multiple: true,
+      options: [{ name: 'Company capital' }, { name: 'Customer revenue' }],
+      reveal: {
+        openerActionDispatched: false,
+        associationProof: 'agent_declared',
+        renderedPopupCount: 1,
+      },
+    });
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+
+    const choice = inspected?.inspection.options.find(({ name }) => name === 'Company capital');
+    const selected = await controller?.selectOption({
+      inspectionId: inspected!.inspection.inspectionId,
+      optionId: choice!.optionId,
+      control: null,
+      option: null,
+      selected: true,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(selected?.evidence).toMatchObject({
+      actionDispatched: true,
+      selectionEffectObserved: true,
+      selectedState: true,
+      popupClosed: false,
+    });
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('1');
+  });
+
   it('does not infer causality when a popup appears during reversible opener preparation', async () => {
     const page = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; min-height: 1800px; }

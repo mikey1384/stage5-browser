@@ -34,6 +34,7 @@ describe('BrowserController available moves', () => {
       capabilityCounts: {
         semanticSnapshots: 0,
         controlInspections: 0,
+        popupOwnerCandidates: 0,
         formInspections: 0,
       },
     });
@@ -85,6 +86,7 @@ describe('BrowserController available moves', () => {
       scrollContainerRefs: 1,
       controlInspections: 1,
       controlOptions: 1,
+      popupOwnerCandidates: 0,
       formInspections: 1,
     });
     expect(observed.context.capabilityCounts.snapshotRefs).toBeGreaterThan(0);

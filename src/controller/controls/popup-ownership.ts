@@ -37,6 +37,7 @@ export type PopupOwnerResolution =
   | { kind: 'missing' | 'unbounded'; diagnostics: ControlPopupOwnershipEvidence };
 
 export interface PopupOwnerCandidateObservation {
+  ownerCandidateId?: string;
   role: string;
   name: string;
   requestedControl: boolean;
