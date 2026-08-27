@@ -114,6 +114,7 @@ export const handoffHelpersOperations = {
     this.controlledStartBoundary = null;
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
+    this.nativeReattachObservation = null;
     this.controlledBrowserProcessId = null;
     this.controlledBrowserProcess = null;
     this.state = 'stopped';

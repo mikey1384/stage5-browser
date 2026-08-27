@@ -36,6 +36,7 @@ export const lifecycleContextOperations = {
         this.authenticationHandoff = null;
         this.runtimeProfileObservation = null;
         this.controlledStartBoundary = null;
+        this.nativeReattachObservation = null;
         this.controlledBrowserProcessId = null;
         this.controlledBrowserProcess = null;
         if (this.state !== 'recovering') {

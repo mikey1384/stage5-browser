@@ -1,6 +1,14 @@
-import { type Browser, BROWSER_ENGINES, type BrowserContext, type BrowserLaunchIdentity, type BrowserProduct, type BrowserStatus, chromiumProfileOwnerProcessId, nativeControlEndpoint, type NativeControlRecord, observeLaunchedBrowserProcess, type Page, playwrightBrowserType, processIsRunning, profileDirForBrowser, sanitizeUrlForJournal, Stage5BrowserError, writeNativeControlRecord } from '../dependencies.js';
+import { type Browser, BROWSER_ENGINES, type BrowserContext, type BrowserLaunchIdentity, type BrowserProduct, type BrowserStatus, chromiumProfileOwnerProcessId, nativeControlEndpoint, type NativeControlRecord, type NativeReattachObservation, observeLaunchedBrowserProcess, type Page, playwrightBrowserType, processIsRunning, profileDirForBrowser, sanitizeUrlForJournal, Stage5BrowserError, writeNativeControlRecord } from '../dependencies.js';
 import { boundedValue } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+
+const NATIVE_TARGET_SETTLE_LIMIT_MS = 750;
+const NATIVE_TARGET_SETTLE_INTERVAL_MS = 50;
+const MAX_REATTACH_PAGE_COUNT = 100;
+
+function boundedPageCount(pages: Page[]): number {
+  return Math.min(pages.length, MAX_REATTACH_PAGE_COUNT);
+}
 
 export const lifecycleNativeAttachOperations = {
   async attachToNativeChromium(
@@ -135,8 +143,10 @@ export const lifecycleNativeAttachOperations = {
       : null;
     this.bindContext(context);
 
-    const pages = context.pages();
-    const restoredSelectedPage = await this.restoreNativeSelectedPage(pages);
+    const settledSelection = await this.settleNativeSelectedPage(context);
+    const pages = settledSelection.pages;
+    const restoredSelectedPage = settledSelection.page;
+    this.nativeReattachObservation = settledSelection.observation;
     if (
       this.nativeControlRecord?.selectedTargetId !== undefined
       && this.nativeControlRecord.selectedTargetId !== null
@@ -147,7 +157,8 @@ export const lifecycleNativeAttachOperations = {
         details: {
           reason: 'selected_page_unavailable_after_reattach',
           actionDispatched: false,
-          suggestedAction: 'Inspect fresh browser status and tabs without acting. Stage5 Browser will not choose another page by URL, title, or position.',
+          nativeReattach: settledSelection.observation,
+          suggestedAction: 'Wait for the browser tabs to finish settling, then call browser_start once. If exact-target resolution remains unresolved, stop and inspect browser_execution_traces; Stage5 Browser will not choose another page by URL, title, or position.',
         },
       });
     }
@@ -199,6 +210,86 @@ export const lifecycleNativeAttachOperations = {
     this.lastLaunchFailure = null;
     this.state = 'running';
     return this.status();
+  },
+
+  async settleNativeSelectedPage(context: BrowserContext): Promise<{
+    page: Page | null;
+    pages: Page[];
+    observation: NativeReattachObservation | null;
+  }> {
+    const initialPages = context.pages().filter((page) => !page.isClosed());
+    if (this.nativeControlRecord === null) {
+      return { page: null, pages: initialPages, observation: null };
+    }
+    const selectedTargetRecorded = typeof this.nativeControlRecord.selectedTargetId === 'string';
+    if (!selectedTargetRecorded) {
+      return {
+        page: null,
+        pages: initialPages,
+        observation: {
+          selectedTargetRecorded: false,
+          initialPageCount: boundedPageCount(initialPages),
+          finalPageCount: boundedPageCount(initialPages),
+          selectedTargetInitiallyObserved: null,
+          selectedTargetObserved: null,
+          discoveryWaitAttempted: false,
+          discoveryWaitMs: 0,
+          resolution: 'not_recorded',
+        },
+      };
+    }
+
+    let page = await this.restoreNativeSelectedPage(initialPages);
+    if (page !== null) {
+      return {
+        page,
+        pages: initialPages,
+        observation: {
+          selectedTargetRecorded: true,
+          initialPageCount: boundedPageCount(initialPages),
+          finalPageCount: boundedPageCount(initialPages),
+          selectedTargetInitiallyObserved: true,
+          selectedTargetObserved: true,
+          discoveryWaitAttempted: false,
+          discoveryWaitMs: 0,
+          resolution: 'initial_exact',
+        },
+      };
+    }
+
+    const waitBudgetMs = Math.max(
+      0,
+      Math.min(this.config.readinessTimeoutMs, NATIVE_TARGET_SETTLE_LIMIT_MS),
+    );
+    const waitStartedAt = Date.now();
+    let pages = initialPages;
+    while (page === null && Date.now() - waitStartedAt < waitBudgetMs) {
+      const remainingMs = waitBudgetMs - (Date.now() - waitStartedAt);
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Math.min(NATIVE_TARGET_SETTLE_INTERVAL_MS, remainingMs),
+      ));
+      pages = context.pages().filter((candidate) => !candidate.isClosed());
+      page = await this.restoreNativeSelectedPage(pages);
+    }
+    const discoveryWaitMs = Math.min(
+      NATIVE_TARGET_SETTLE_LIMIT_MS,
+      Math.max(0, Date.now() - waitStartedAt),
+    );
+    return {
+      page,
+      pages,
+      observation: {
+        selectedTargetRecorded: true,
+        initialPageCount: boundedPageCount(initialPages),
+        finalPageCount: boundedPageCount(pages),
+        selectedTargetInitiallyObserved: false,
+        selectedTargetObserved: page !== null,
+        discoveryWaitAttempted: waitBudgetMs > 0,
+        discoveryWaitMs,
+        resolution: page === null ? 'unresolved' : 'settled_exact',
+      },
+    };
   },
 
   async restoreNativeSelectedPage(pages: Page[]): Promise<Page | null> {

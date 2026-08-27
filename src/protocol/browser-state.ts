@@ -26,6 +26,17 @@ export interface FrameSummary {
   isMainFrame: boolean;
 }
 
+export interface NativeReattachObservation {
+  selectedTargetRecorded: boolean;
+  initialPageCount: number;
+  finalPageCount: number;
+  selectedTargetInitiallyObserved: boolean | null;
+  selectedTargetObserved: boolean | null;
+  discoveryWaitAttempted: boolean;
+  discoveryWaitMs: number;
+  resolution: 'not_recorded' | 'initial_exact' | 'settled_exact' | 'unresolved';
+}
+
 export interface BrowserStatus {
   browser: BrowserProduct;
   state: BrowserLifecycleState;
@@ -39,6 +50,7 @@ export interface BrowserStatus {
   profileLockState: 'none' | 'owned_browser_running' | 'possible_external_owner';
   profileLockFiles: string[];
   profileOwner: ProfileOwnerEvidence;
+  nativeReattach?: NativeReattachObservation | null;
 }
 
 export interface AvailableBrowsers {

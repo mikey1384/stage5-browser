@@ -12,7 +12,7 @@ import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import type { ElementHandle, Frame, Locator, Page } from "playwright";
+import type { BrowserContext, ElementHandle, Frame, Locator, Page } from "playwright";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BrowserController } from "../../../src/browser-controller.js";
@@ -80,6 +80,69 @@ afterEach(async () => {
 });
 
 describe("BrowserController frame control, profile ownership, and reattachment", () => {
+  it("settles transient CDP discovery against the exact retained native target", async () => {
+    temporaryRoot = await mkdtemp(
+      path.join(os.tmpdir(), "stage5-browser-target-settle-"),
+    );
+    const config = browserConfig(temporaryRoot);
+    config.readinessTimeoutMs = 10;
+    controller = new BrowserController(config);
+    const internals = controller as unknown as {
+      nativeControlRecord: NativeControlRecord | null;
+      settleNativeSelectedPage: (context: BrowserContext) => Promise<{
+        page: Page | null;
+        observation: {
+          resolution: string;
+          selectedTargetInitiallyObserved: boolean | null;
+          selectedTargetObserved: boolean | null;
+          discoveryWaitAttempted: boolean;
+          discoveryWaitMs: number;
+        } | null;
+      }>;
+    };
+    internals.nativeControlRecord = {
+      version: 1,
+      kind: "chromium_cdp",
+      browser: "chromium",
+      state: "controlled",
+      processId: 42_424,
+      port: 29_123,
+      createdAt: "2026-08-27T04:00:00.000Z",
+      selectedTargetId: "exact-fixture-target",
+    };
+
+    let targetProbeCount = 0;
+    let exactPage: Page;
+    const session = {
+      send: vi.fn(async () => {
+        targetProbeCount += 1;
+        if (targetProbeCount === 1) throw new Error("Transient target discovery miss");
+        return { targetInfo: { targetId: "exact-fixture-target" } };
+      }),
+      detach: vi.fn(async () => undefined),
+    };
+    const context = {
+      pages: vi.fn(() => [exactPage]),
+      newCDPSession: vi.fn(async () => session),
+    } as unknown as BrowserContext;
+    exactPage = {
+      context: () => context,
+      isClosed: () => false,
+    } as unknown as Page;
+
+    const settled = await internals.settleNativeSelectedPage(context);
+
+    expect(settled.page).toBe(exactPage);
+    expect(settled.observation).toMatchObject({
+      resolution: "settled_exact",
+      selectedTargetInitiallyObserved: false,
+      selectedTargetObserved: true,
+      discoveryWaitAttempted: true,
+    });
+    expect(settled.observation?.discoveryWaitMs).toBeGreaterThan(0);
+    expect(targetProbeCount).toBe(2);
+  });
+
   it("inspects and acts inside an observed cross-origin frame without coordinate guessing", async () => {
     frameServer = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });

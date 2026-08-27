@@ -202,6 +202,22 @@ process.on('message', (message) => {
       pages: [],
       activePageIndex: null,
       lastKnownUrl: 'about:blank',
+      ...(process.env.STAGE5_BROWSER_TEST_NATIVE_REATTACH_TELEMETRY === '1'
+        ? {
+            nativeReattach: {
+              selectedTargetRecorded: true,
+              initialPageCount: 6,
+              finalPageCount: 6,
+              selectedTargetInitiallyObserved: false,
+              selectedTargetObserved: true,
+              discoveryWaitAttempted: true,
+              discoveryWaitMs: 50,
+              resolution: 'settled_exact',
+              privateUrl: 'https://private.invalid/never-retain',
+              selectedTargetId: 'never-retain-target-id',
+            },
+          }
+        : {}),
     });
     return;
   }

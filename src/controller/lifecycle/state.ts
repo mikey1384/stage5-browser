@@ -58,6 +58,7 @@ export const lifecycleStateOperations = {
     this.controlledStartBoundary = null;
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
+    this.nativeReattachObservation = null;
     this.controlledBrowserProcessId = null;
     this.controlledBrowserProcess = null;
     this.state = 'stopped';
@@ -160,6 +161,7 @@ export const lifecycleStateOperations = {
     this.boundPages = new WeakSet<Page>();
     this.nativeAttachedBrowser = undefined;
     this.nativeControlRecord = null;
+    this.nativeReattachObservation = null;
     this.controlledBrowserProcessId = null;
     this.controlledBrowserProcess = null;
     this.state = 'stopped';
@@ -235,6 +237,7 @@ export const lifecycleStateOperations = {
           handoffIdentity,
           handoffProcessRunning,
         ),
+        nativeReattach: this.nativeReattachObservation,
       };
     }
 
@@ -263,6 +266,7 @@ export const lifecycleStateOperations = {
         this.controlledLaunchIdentity,
         false,
       ),
+      nativeReattach: this.nativeReattachObservation,
     };
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;

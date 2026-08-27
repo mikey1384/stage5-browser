@@ -225,6 +225,7 @@ describe('privacy-safe execution telemetry', () => {
       popupOwnership: null,
       controlRecovery: null,
       handoffRelease: null,
+      nativeReattach: null,
       targetState: null,
     });
   });

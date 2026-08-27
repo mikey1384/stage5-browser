@@ -1,4 +1,4 @@
-import { type AuthenticationBoundaryOutcome, type Browser, type BrowserContext, type BrowserLaunchIdentity, type BrowserLifecycleState, type BrowserProduct, type Frame, type HumanBrowserLauncher, inspectChromiumProfileOwner, inspectControlledProfileStorage, inspectProfileStorage, inspectRuntimeProfile, type LaunchFailureDiagnostic, type NativeControlRecord, NativeHumanBrowserLauncher, NativeOwnedBrowserWindowActivator, type OwnedBrowserWindowActivator, type OwnedProcessObservation, type Page, PageDiagnosticBuffer, path, ProfileOwnershipLeaseController, randomUUID, type RuntimeProfileObservation, type SafeTargetState, type SanitizedActionDiagnostic, type SanitizedClickDispatchEvidence, type Stage5BrowserConfig, type WorkerCommandTelemetry } from './dependencies.js';
+import { type AuthenticationBoundaryOutcome, type Browser, type BrowserContext, type BrowserLaunchIdentity, type BrowserLifecycleState, type BrowserProduct, type Frame, type HumanBrowserLauncher, inspectChromiumProfileOwner, inspectControlledProfileStorage, inspectProfileStorage, inspectRuntimeProfile, type LaunchFailureDiagnostic, type NativeControlRecord, type NativeReattachObservation, NativeHumanBrowserLauncher, NativeOwnedBrowserWindowActivator, type OwnedBrowserWindowActivator, type OwnedProcessObservation, type Page, PageDiagnosticBuffer, path, ProfileOwnershipLeaseController, randomUUID, type RuntimeProfileObservation, type SafeTargetState, type SanitizedActionDiagnostic, type SanitizedClickDispatchEvidence, type Stage5BrowserConfig, type WorkerCommandTelemetry } from './dependencies.js';
 import { ActionPhaseManager } from './action/phase-manager.js';
 import { clickExecutorOperations, type ClickExecutorOperations } from './action/click-executor.js';
 import { type AuthenticationHandoff, type ClickDispatchConclusion, type ControlledStartBoundaryObservation, type ExternalClickDispatchObservation, type ObservedFormInspection, type ObservedSnapshot, type PendingHandoffRelease, type PrivateFieldHandoff, type ScrollHistory } from './model.js';
@@ -155,6 +155,7 @@ export interface BrowserControllerContext extends
   controlledStartBoundary: ControlledStartBoundaryObservation | null;
   nativeAttachedBrowser: Browser | undefined;
   nativeControlRecord: NativeControlRecord | null;
+  nativeReattachObservation: NativeReattachObservation | null;
   controlledBrowserProcessId: number | null;
   controlledBrowserProcess: OwnedProcessObservation | null;
   ownershipLease: ProfileOwnershipLeaseController;
@@ -295,6 +296,7 @@ export class BrowserController {
   private controlledStartBoundary: ControlledStartBoundaryObservation | null = null;
   private nativeAttachedBrowser: Browser | undefined;
   private nativeControlRecord: NativeControlRecord | null = null;
+  private nativeReattachObservation: NativeReattachObservation | null = null;
   private controlledBrowserProcessId: number | null = null;
   private controlledBrowserProcess: OwnedProcessObservation | null = null;
   private readonly ownershipLease = new ProfileOwnershipLeaseController();

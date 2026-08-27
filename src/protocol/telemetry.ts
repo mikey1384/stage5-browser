@@ -7,6 +7,7 @@ import type {
   ControlRecoveryEvidence,
   PostconditionCheck,
 } from './controls.js';
+import type { NativeReattachObservation } from './browser-state.js';
 
 export interface ViewportPreparationTelemetry {
   attempts: number;
@@ -88,6 +89,7 @@ export interface ExecutionTraceConclusion {
     processReused: boolean | null;
     ownershipRetained: boolean | null;
   } | null;
+  nativeReattach: NativeReattachObservation | null;
   targetState: {
     visible: boolean | null;
     enabled: boolean | null;
