@@ -57,7 +57,11 @@ describe('privacy-safe execution telemetry', () => {
           ],
           dispatchState: 'dispatched',
           dispatchAttempts: 1,
-          recovery: null,
+          recovery: {
+            reason: 'target_changed_before_input',
+            authorizedAtMs: startedAtMs + 15,
+            completedDispatchAttempts: 0,
+          },
           viewportPreparation: {
             attempts: 2,
             movements: 2,
@@ -88,6 +92,7 @@ describe('privacy-safe execution telemetry', () => {
         action: 'select_option',
         dispatchState: 'dispatched',
         dispatchAttempts: 1,
+        recoveryReason: 'target_changed_before_input',
         viewportPreparation: {
           attempts: 2,
           movements: 2,

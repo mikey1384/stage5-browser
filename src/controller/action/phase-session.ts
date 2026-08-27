@@ -93,6 +93,27 @@ export class ActionPhaseSession {
     this.currentPhase = 'plan';
   }
 
+  recordPreDispatchRecovery(reason: NoDispatchRecoveryReason): void {
+    this.assertActive();
+    if (
+      (this.currentPhase !== 'observe' && this.currentPhase !== 'plan' && this.currentPhase !== 'preflight') ||
+      this.dispatchState !== 'not_attempted' ||
+      this.dispatchAttempts !== 0
+    ) {
+      throw new ActionPhaseInvariantError(
+        'Read-only recovery must finish before the first dispatch attempt.',
+      );
+    }
+    if (this.recovery !== null) {
+      throw new ActionPhaseInvariantError('Only one bounded pre-dispatch recovery is permitted.');
+    }
+    this.recovery = {
+      reason,
+      authorizedAtMs: this.now(),
+      completedDispatchAttempts: 0,
+    };
+  }
+
   beginFinalization(): void {
     this.assertActive();
     if (this.currentPhase === 'finalize') return;

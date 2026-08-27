@@ -54,6 +54,9 @@ export const clickExecutorOperations = {
       const observation = await definition.observe();
       phases.enter('plan');
       plan = await definition.plan(observation);
+      if (plan.preDispatchRecoveryReason !== undefined) {
+        phases.recordPreDispatchRecovery(plan.preDispatchRecoveryReason);
+      }
       phases.enter('preflight');
       await definition.preflight(plan);
       if (plan.satisfiedWithoutDispatch !== undefined) {

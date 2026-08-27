@@ -52,6 +52,26 @@ describe('ActionPhaseManager', () => {
     });
   });
 
+  it('records one read-only recovery before the first dispatch attempt', () => {
+    const session = new ActionPhaseSession('select_option', 1_000);
+    session.enter('observe');
+    session.enter('plan');
+    session.recordPreDispatchRecovery('target_changed_before_input');
+    session.enter('preflight');
+    session.enter('prepare');
+    session.beginDispatch();
+    session.concludeDispatch({ actionDispatched: true });
+    session.enter('reconcile');
+    session.beginFinalization();
+    session.complete('succeeded');
+
+    expect(session.snapshot()).toMatchObject({
+      dispatchAttempts: 1,
+      dispatchState: 'dispatched',
+      recovery: { reason: 'target_changed_before_input', completedDispatchAttempts: 0 },
+    });
+  });
+
   it('blocks recovery after possible input and blocks a second recovery', () => {
     const possible = new ActionPhaseSession('click', 1_000);
     advanceToPreparation(possible);

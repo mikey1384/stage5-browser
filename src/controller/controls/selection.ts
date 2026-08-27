@@ -284,6 +284,9 @@ export const controlSelectionOperations = {
         page,
         frame,
         postcondition: null,
+        ...(baseline.capabilityRebound
+          ? { preDispatchRecoveryReason: 'target_changed_before_input' as const }
+          : {}),
         ...(baseline.representation.controlRepresentsOption
           ? { satisfiedWithoutDispatch: {
               postcondition: {

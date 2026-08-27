@@ -1,5 +1,6 @@
 import type { ClickPostcondition, Frame, Locator, Page, PostconditionResult, SanitizedActionDiagnostic, SanitizedNativeWindowActivationEvidence } from '../dependencies.js';
 import type { PreparedObservedClickTarget } from '../model.js';
+import type { NoDispatchRecoveryReason } from './types.js';
 
 export interface ClickActionPlan {
   action: Extract<SanitizedActionDiagnostic['action'], 'click_by_ref' | 'click_by_role' | 'select_option' | 'set_checked'>;
@@ -14,6 +15,7 @@ export interface ClickActionPlan {
   ): Promise<PreparedObservedClickTarget>;
   reconciliationLocator(prepared: PreparedObservedClickTarget): Locator;
   reconcile?(prepared: PreparedObservedClickTarget, remainingTimeoutMs: number): Promise<PostconditionResult | null>;
+  preDispatchRecoveryReason?: NoDispatchRecoveryReason;
   satisfiedWithoutDispatch?: { postcondition: PostconditionResult | null };
   discardCapabilities(): void;
 }

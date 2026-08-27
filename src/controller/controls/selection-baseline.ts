@@ -9,11 +9,11 @@ const RETAINED_CONTROL_PROBE_MS = 500;
 const SELECTION_BASELINE_OBSERVATION_MS = 2_000;
 
 export interface CustomControlSelectionBaseline {
+  capabilityRebound: boolean;
   controlHandle: ElementHandle<HTMLElement>;
   popupHandle: ElementHandle<HTMLElement>;
   representationScope: ElementHandle<HTMLElement>;
   representation: ControlSelectionRepresentation;
-  rebound: boolean;
 }
 
 interface BaselineInput {
@@ -46,7 +46,8 @@ export async function observeCustomControlSelectionBaseline(
   let controlHandle = inspection.controlHandle;
   let popupLocator = inspection.popupLocator;
   let popupHandle = inspection.popupHandle;
-  let rebound = false;
+  let controlRebound = false;
+  let popupRebound = false;
   let freshControl: ElementHandle<HTMLElement> | null = null;
   let freshPopup: ElementHandle<HTMLElement> | null = null;
   let freshScope: ElementHandle<HTMLElement> | null = null;
@@ -65,26 +66,26 @@ export async function observeCustomControlSelectionBaseline(
       controlLocator = resolved.locator;
       controlHandle = resolved.handle;
       freshControl = resolved.handle;
-      rebound = true;
+      controlRebound = true;
     }
 
-    const popupState = rebound
+    const popupState = controlRebound
       ? false
       : await popupRenderedState(popupHandle, observationDeadlineAt);
     if (popupState === null) throwBaselineUnavailable();
     if (popupState !== true) {
-      if (!rebound) throwPopupChanged();
       const associated = await input.associatePopup(controlHandle, observationDeadlineAt);
       if (associated.kind !== 'resolved') throwPopupChanged(associated.kind);
       popupLocator = associated.locator;
       popupHandle = associated.handle;
       freshPopup = associated.handle;
+      popupRebound = true;
       if (await popupRenderedState(popupHandle, observationDeadlineAt) !== true) throwPopupChanged();
     }
     if (popupHandle === null) throwPopupChanged();
 
     let representationScope = inspection.representationScopeHandle;
-    if (representationScope !== undefined && !rebound) {
+    if (representationScope !== undefined && !controlRebound) {
       const retainedScope = await boundedValue(
         representationScope.evaluate((scope, control) =>
           scope.isConnected && control.isConnected && (scope === control || scope.contains(control)), controlHandle),
@@ -115,7 +116,7 @@ export async function observeCustomControlSelectionBaseline(
     );
     if (representation === null) throwBaselineUnavailable();
 
-    if (rebound) {
+    if (controlRebound) {
       await Promise.allSettled([
         inspection.controlHandle.dispose(),
         inspection.popupHandle?.dispose() ?? Promise.resolve(),
@@ -129,13 +130,27 @@ export async function observeCustomControlSelectionBaseline(
       freshControl = null;
       freshPopup = null;
       freshScope = null;
-    } else if (inspection.representationScopeHandle !== representationScope) {
-      await inspection.representationScopeHandle?.dispose().catch(() => undefined);
-      inspection.representationScopeHandle = representationScope;
-      freshScope = null;
+    } else {
+      if (popupRebound) {
+        await inspection.popupHandle?.dispose().catch(() => undefined);
+        inspection.popupLocator = popupLocator;
+        inspection.popupHandle = popupHandle;
+        freshPopup = null;
+      }
+      if (inspection.representationScopeHandle !== representationScope) {
+        await inspection.representationScopeHandle?.dispose().catch(() => undefined);
+        inspection.representationScopeHandle = representationScope;
+        freshScope = null;
+      }
     }
 
-    return { controlHandle, popupHandle, representationScope, representation, rebound };
+    return {
+      capabilityRebound: controlRebound || popupRebound,
+      controlHandle,
+      popupHandle,
+      representationScope,
+      representation,
+    };
   } finally {
     await Promise.allSettled([
       freshControl?.dispose() ?? Promise.resolve(),
