@@ -101,20 +101,120 @@ describe('BrowserController causal popup surface sets', () => {
     await expect(page.locator('#opens').textContent()).resolves.toBe('1');
   });
 
+  it('offers bounded agent judgment for an already-open logical surface set', async () => {
+    const { controller: activeController, page } = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; min-height: 600px; position: relative; }
+      #field, button { position: absolute; top: 20px; height: 40px; box-sizing: border-box; }
+      #field { left: 20px; width: 180px; }
+      #owner { left: 200px; width: 40px; }
+      #competitor { left: 240px; width: 40px; }
+      #portal { position: absolute; left: 20px; top: 60px; width: 260px; padding: 8px; }
+      [role=listbox] { height: 44px; }
+    </style></head><body tabindex="-1">
+      <input id="field" role="textbox" aria-label="Ordinary field">
+      <button id="owner" type="button" aria-label="Ordinary field">Open</button>
+      <button id="competitor" type="button">Other field</button>
+      <div id="portal">
+        <div role="listbox"><div role="option">Choice 1</div></div>
+        <div role="listbox"><div role="option">Choice 2</div></div>
+        <div role="listbox"><div role="option">Choice 3</div></div>
+        <div role="listbox"><div role="option">Choice 4</div></div>
+        <div role="listbox"><div role="option">Choice 5</div></div>
+        <div role="listbox"><div role="option">Choice 6</div></div>
+        <div role="listbox"><div role="option">Choice 7</div></div>
+      </div>
+      <output id="inputs">0</output>
+      <script>
+        for (const button of document.querySelectorAll('button')) {
+          button.addEventListener('click', () => {
+            inputs.value = String(Number(inputs.value) + 1);
+          });
+          button.addEventListener('keydown', () => {
+            inputs.value = String(Number(inputs.value) + 1);
+          });
+        }
+        document.body.focus();
+      </script>
+    </body></html>`);
+
+    let failure: unknown;
+    try {
+      await activeController.inspectControl({
+        control: { role: 'textbox', name: 'Ordinary field', exact: true },
+        frameId: null,
+        revealOptions: false,
+        maxOptions: 20,
+        timeoutMs: 5_000,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: 'AMBIGUOUS_TARGET',
+      details: {
+        actionDispatched: false,
+        renderedPopupCount: 7,
+        requestedControlIsCandidate: false,
+        agentJudgmentAvailable: true,
+      },
+    });
+    const ownerCandidates = (failure as {
+      details: { ownerCandidates: Array<{ role: string; name: string; ownerCandidateId?: string }> };
+    }).details.ownerCandidates;
+    const owner = ownerCandidates.find(({ role, name }) =>
+      role === 'button' && name === 'Ordinary field');
+    expect(owner?.ownerCandidateId).toMatch(/^popup-owner-candidate-[0-9a-f-]{36}$/u);
+
+    const inspected = await activeController.inspectControl({
+      control: { role: 'textbox', name: 'Ordinary field', exact: true },
+      popupAssociation: {
+        owner: 'observed_candidate',
+        ownerCandidateId: owner!.ownerCandidateId!,
+        basis: 'agent_semantic_judgment',
+      },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    expect(inspected.inspection).toMatchObject({
+      optionsComplete: true,
+      reveal: {
+        openerActionDispatched: false,
+        associationProof: 'agent_declared',
+        surfaceProof: 'semantic_role',
+        renderedPopupCount: 7,
+      },
+    });
+    expect(inspected.inspection.options.map(({ name }) => name)).toEqual([
+      'Choice 1',
+      'Choice 2',
+      'Choice 3',
+      'Choice 4',
+      'Choice 5',
+      'Choice 6',
+      'Choice 7',
+    ]);
+    await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
+  });
+
   it('does not compose newly rendered surfaces from independent positioned portals', async () => {
     const { controller: activeController, page } = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; min-height: 600px; position: relative; }
       #target { position: absolute; left: 20px; top: 20px; width: 180px; height: 40px; }
+      #overlay { position: fixed; inset: 0; }
       .portal { position: absolute; top: 120px; width: 220px; }
       #portal-a { left: 320px; }
       #portal-b { left: 700px; }
     </style></head><body tabindex="-1">
       <button id="target" type="button">Ordinary field</button>
-      <div id="portal-a" class="portal" hidden>
-        <div role="listbox"><div role="option">First independent choice</div></div>
-      </div>
-      <div id="portal-b" class="portal" hidden>
-        <div role="listbox"><div role="option">Second independent choice</div></div>
+      <div id="overlay" hidden>
+        <div id="portal-a" class="portal">
+          <div role="listbox"><div role="option">First independent choice</div></div>
+        </div>
+        <div id="portal-b" class="portal">
+          <div role="listbox"><div role="option">Second independent choice</div></div>
+        </div>
       </div>
       <output id="opens">0</output>
       <script>
@@ -122,8 +222,7 @@ describe('BrowserController causal popup surface sets', () => {
         const opens = document.getElementById('opens');
         target.addEventListener('click', () => {
           opens.value = String(Number(opens.value) + 1);
-          document.getElementById('portal-a').hidden = false;
-          document.getElementById('portal-b').hidden = false;
+          document.getElementById('overlay').hidden = false;
           document.body.focus();
         });
       </script>

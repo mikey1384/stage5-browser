@@ -17,7 +17,7 @@ import {
   resolveControlPopupOwner,
   type PopupOwnerCandidateObservation,
 } from './popup-ownership.js';
-import { isOnePositionedPopupSurfaceSet } from './popup-causal-set.js';
+import { resolvePositionedPopupSurfaceEnvelope } from './popup-causal-set.js';
 import { discoverControlPopupSurfaces } from './popup-surfaces.js';
 
 interface PopupCandidate {
@@ -123,6 +123,7 @@ export const controlPopupAssociationOperations = {
       };
     }
     const candidates: PopupCandidate[] = [];
+    let positionedEnvelope: ElementHandle<HTMLElement> | null = null;
     try {
       for (const surface of discovery.surfaces) {
         const { locator, handle, surfaceProof } = surface;
@@ -168,6 +169,14 @@ export const controlPopupAssociationOperations = {
         (candidate) => candidate.structurallyRelated && candidate.rendered,
       );
       const rendered = candidates.filter((candidate) => candidate.rendered);
+      const renderedRoots = await outermostPopupCandidates(rendered, deadlineAt);
+      positionedEnvelope = renderedRoots.length > 1
+        ? await resolvePositionedPopupSurfaceEnvelope(
+            renderedRoots.map(({ handle }) => handle),
+            deadlineAt,
+          )
+        : null;
+      const oneLogicalSurfaceSet = renderedRoots.length === 1 || positionedEnvelope !== null;
       const selected = new Set<PopupCandidate>();
       let selectedProof: ControlPopupAssociationProof | null = activeExplicit.length > 0
         ? 'explicit'
@@ -183,12 +192,14 @@ export const controlPopupAssociationOperations = {
       let agentDeclaredOwnerIsAmbiguousCandidate = false;
       let ownerCandidates: PopupOwnerCandidateObservation[] = [];
       let ownerCandidatesTruncated = false;
+      let candidateSetCanBindLogicalSet = false;
+      let surfaceSetOwnership: ControlPopupOwnershipEvidence | null = null;
       const ownershipDiagnostics: ControlPopupOwnershipEvidence[] = [];
       const ownerMatched: Array<{
         candidate: PopupCandidate;
         proof: 'structural' | 'focused' | 'expanded' | 'spatial';
       }> = [];
-      for (const candidate of rendered) {
+      for (const candidate of renderedRoots) {
         const ownership = await resolveControlPopupOwner(
           frame,
           candidate.handle,
@@ -210,7 +221,40 @@ export const controlPopupAssociationOperations = {
             );
             ownerCandidates = ownership.candidates;
             ownerCandidatesTruncated = ownership.candidatesTruncated;
+            candidateSetCanBindLogicalSet = renderedRoots.length === 1;
           }
+        }
+      }
+
+      // Preserve stronger per-partition ownership first. Only when no exact
+      // target partition was resolved may one proven common envelope provide
+      // a bounded semantic-owner decision for the whole logical set.
+      if (ownerMatched.length === 0 && positionedEnvelope !== null) {
+        const ownership = await resolveControlPopupOwner(
+          frame,
+          positionedEnvelope,
+          controlHandle,
+          deadlineAt,
+        );
+        surfaceSetOwnership = ownership.diagnostics;
+        if (ownership.kind === 'resolved') {
+          if (ownership.targetMatch) {
+            for (const candidate of renderedRoots) {
+              ownerMatched.push({ candidate, proof: ownership.proof });
+            }
+          }
+          await ownership.owner.dispose().catch(() => undefined);
+        } else if (ownership.kind === 'ambiguous') {
+          ownershipAmbiguous = true;
+          requestedControlIsAmbiguousCandidate = ownership.targetCandidate;
+          agentDeclaredOwnerIsAmbiguousCandidate = declaredOwnerMatches(
+            policy.agentDeclaredOwner,
+            ownership.targetCandidate,
+            ownership.candidates,
+          );
+          ownerCandidates = ownership.candidates;
+          ownerCandidatesTruncated = ownership.candidatesTruncated;
+          candidateSetCanBindLogicalSet = true;
         }
       }
 
@@ -223,36 +267,35 @@ export const controlPopupAssociationOperations = {
       if (
         selected.size === 0 &&
         policy.agentDeclaredOwner != null &&
-        rendered.length === 1 &&
+        candidateSetCanBindLogicalSet &&
         agentDeclaredOwnerIsAmbiguousCandidate
       ) {
-        selected.add(rendered[0]!);
+        for (const candidate of renderedRoots) selected.add(candidate);
         selectedProof = 'agent_declared';
       }
       if (
         selected.size === 0 &&
         policy.allowUniqueRenderedAfterDispatch === true
       ) {
-        const renderedRoots = await outermostPopupCandidates(rendered, deadlineAt);
-        const oneCausalSurfaceSet = renderedRoots.length === 1 || await isOnePositionedPopupSurfaceSet(
-          renderedRoots.map(({ handle }) => handle),
-          deadlineAt,
-        );
-        if (oneCausalSurfaceSet) {
+        if (oneLogicalSurfaceSet) {
           for (const candidate of renderedRoots) selected.add(candidate);
           selectedProof = 'post_dispatch_unique';
         }
       }
 
+      await positionedEnvelope?.dispose().catch(() => undefined);
+      positionedEnvelope = null;
       const selectedSurfaces = await outermostPopupCandidates([...selected], deadlineAt);
       const retained = new Set(selectedSurfaces);
       for (const candidate of candidates) {
         if (!retained.has(candidate)) await candidate.handle.dispose().catch(() => undefined);
       }
       const renderedSurfaceCount = rendered.length;
-      const popupOwnership = rendered.length === 1 && ownershipDiagnostics.length === 1
-        ? ownershipDiagnostics[0]!
-        : null;
+      const popupOwnership = surfaceSetOwnership ?? (
+        rendered.length === 1 && ownershipDiagnostics.length === 1
+          ? ownershipDiagnostics[0]!
+          : null
+      );
       if (selectedSurfaces.length > 0 && selectedProof !== null) {
         return {
           kind: 'resolved',
@@ -275,14 +318,17 @@ export const controlPopupAssociationOperations = {
           ownerCandidates,
           ownerCandidatesTruncated,
           requestedControlIsCandidate: requestedControlIsAmbiguousCandidate,
-          agentJudgmentAvailable: rendered.length === 1 &&
+          agentJudgmentAvailable: candidateSetCanBindLogicalSet &&
             !ownerCandidatesTruncated &&
             hasUniquelyNamedCandidate(ownerCandidates),
         };
       }
       return { kind: 'missing', renderedSurfaceCount, popupOwnership };
     } catch (error) {
-      await Promise.allSettled(candidates.map(({ handle }) => handle.dispose()));
+      await Promise.allSettled([
+        positionedEnvelope?.dispose() ?? Promise.resolve(),
+        ...candidates.map(({ handle }) => handle.dispose()),
+      ]);
       throw error;
     }
   },

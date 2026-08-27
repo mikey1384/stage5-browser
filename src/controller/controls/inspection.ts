@@ -49,7 +49,7 @@ export const controlInspectionOperations = {
         input.control,
         association.ownerCandidates,
         actionDispatched === false &&
-          association.renderedSurfaceCount === 1 &&
+          association.agentJudgmentAvailable &&
           !association.ownerCandidatesTruncated,
       );
       return popupAssociationFailure({
