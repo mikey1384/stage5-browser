@@ -132,6 +132,7 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     optionId: z.string().regex(/^option-[0-9a-f-]{36}$/u).nullable().default(null),
     control: controlTargetSchema.nullable().default(null),
     option: controlOptionTargetSchema.nullable().default(null),
+    selected: z.boolean().default(true),
     frameId: frameIdSchema,
     timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
     intent: actionIntentSchema,

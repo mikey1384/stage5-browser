@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.15.16",
+  "version": "0.16.0",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -58,7 +58,7 @@
       "Privacy-safe action proprioception",
       "Composable pointer and keyboard motions",
       "Generic form summaries and staged plans",
-      "First-class single and multi-option selection",
+      "First-class desired-state single and multi-option selection",
       "Field-scoped private input handoff",
       "Expected-dialog reconciliation",
       "Private durable download capture",

@@ -28,6 +28,7 @@ describe('privacy-safe execution telemetry', () => {
       result: {
         page: { url: 'https://private.example/secret?token=never-store', title: 'Private account title' },
         selectedName: 'Private choice name',
+        selected: false,
         suppliedValue: 'Never persist this form value',
         dispatch: { actionDispatched: true, clickDispatched: true },
         postcondition: {
@@ -36,7 +37,8 @@ describe('privacy-safe execution telemetry', () => {
         },
         evidence: {
           selectionEffectObserved: true,
-          selectedRepresentationObserved: true,
+          selectedRepresentationObserved: false,
+          selectedState: false,
           popupClosed: false,
         },
       },
@@ -110,8 +112,10 @@ describe('privacy-safe execution telemetry', () => {
         clickDispatched: true,
         postconditionPassed: true,
         checks: [{ kind: 'url', passed: true, observed: 'redacted_string' }],
+        selectionDesiredState: false,
+        selectionObservedState: false,
         selectionEffectObserved: true,
-        selectedRepresentationObserved: true,
+        selectedRepresentationObserved: false,
         popupClosed: false,
       },
       privacy: { urls: 'omitted', selectors: 'omitted', names: 'omitted', values: 'omitted', pageContent: 'omitted' },
@@ -165,6 +169,8 @@ describe('privacy-safe execution telemetry', () => {
         { kind: 'selected', passed: false, observed: null },
         { kind: 'popup_closed', passed: true, observed: true },
       ],
+      selectionDesiredState: null,
+      selectionObservedState: null,
       selectionEffectObserved: null,
       selectedRepresentationObserved: null,
       popupClosed: null,

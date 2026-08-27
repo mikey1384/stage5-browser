@@ -187,6 +187,8 @@ function conclusionFrom(
     clickDispatched: dispatchConclusion(valuesForKey(combined, 'clickDispatched')),
     postconditionPassed: postconditionPassed(combined),
     checks,
+    selectionDesiredState: directBoolean(result, 'selected'),
+    selectionObservedState: booleanConclusion(valuesForKey(combined, 'selectedState')),
     selectionEffectObserved: booleanConclusion(valuesForKey(combined, 'selectionEffectObserved')),
     selectedRepresentationObserved: booleanConclusion(valuesForKey(combined, 'selectedRepresentationObserved')),
     popupClosed: booleanConclusion(valuesForKey(combined, 'popupClosed')),
@@ -199,6 +201,11 @@ function conclusionFrom(
     popupOwnership: popupOwnershipConclusion(combined),
     targetState: targetStateConclusion(combined),
   };
+}
+
+function directBoolean(value: unknown, key: string): boolean | null {
+  if (!isRecord(value)) return null;
+  return typeof value[key] === 'boolean' ? value[key] : null;
 }
 
 function phaseDispatchConclusion(

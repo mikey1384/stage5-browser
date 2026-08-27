@@ -34,7 +34,7 @@ export const BROWSER_MANAGER_CAPABILITIES = {
   },
   form_manager: {
     responsibility: 'Inspect, edit, validate, and stage exact form fields and option controls without deciding business meaning.',
-    techniques: ['summarize_form', 'fill_text', 'fill_date', 'inspect_options', 'select_option', 'select_multiple_options', 'set_checked', 'apply_staged_plan'],
+    techniques: ['summarize_form', 'fill_text', 'fill_date', 'inspect_options', 'set_option_state', 'select_multiple_options', 'set_checked', 'apply_staged_plan'],
     compositionBoundary: 'Structural facts are deterministic; the agent chooses semantic values within user authority.',
   },
   transfer_manager: {

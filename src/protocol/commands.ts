@@ -297,6 +297,7 @@ export interface BrowserCommandMap {
       optionId: string | null;
       control: ControlTarget | null;
       option: ControlOptionTarget | null;
+      selected?: boolean;
       frameId: string | null;
       timeoutMs: number;
       intent?: BrowserActionIntent;
@@ -308,6 +309,7 @@ export interface BrowserCommandMap {
       inspectionId: string;
       optionId: string;
       selectedName: string;
+      selected: boolean;
       kind: ControlOptionsInspection['kind'];
       evidence: ControlSelectionEvidence;
       dialog?: BrowserDialogActionResult;

@@ -3,7 +3,7 @@ import { boundedValue, type ObservedControlInspection, remainingUntil } from '..
 import type { ControlPopupAssociation } from './options.js';
 import { popupRenderedState } from './rendering.js';
 import { resolveUniqueControl } from './resolution.js';
-import { observeControlSelectionRepresentation, type ControlSelectionRepresentation, resolveControlSelectionRepresentationScope } from './selection-evidence.js';
+import { observeControlSelectionRepresentationsInAdaptiveScope, type ControlSelectionRepresentation } from './selection-evidence.js';
 
 const RETAINED_CONTROL_PROBE_MS = 500;
 const SELECTION_BASELINE_OBSERVATION_MS = 2_000;
@@ -100,24 +100,20 @@ export async function observeCustomControlSelectionBaseline(
     } else {
       representationScope = undefined;
     }
-    if (representationScope === undefined) {
-      freshScope = await resolveControlSelectionRepresentationScope(
-        controlHandle,
-        popupHandle,
-        observationDeadlineAt,
-      );
-      if (freshScope === null) throwScopeUnavailable();
-      representationScope = freshScope;
-    }
-
-    const representation = await observeControlSelectionRepresentation(
+    const representationObservation = await observeControlSelectionRepresentationsInAdaptiveScope(
       controlHandle,
-      representationScope,
       popupHandle,
-      input.optionName,
+      [input.optionName],
       observationDeadlineAt,
+      representationScope,
     );
-    if (representation === null) throwBaselineUnavailable();
+    if (representationObservation === null) throwScopeUnavailable();
+    if (representationObservation.scope !== representationScope) {
+      freshScope = representationObservation.scope;
+      representationScope = representationObservation.scope;
+    }
+    const representation = representationObservation.representations?.get(input.optionName);
+    if (representation === undefined) throwBaselineUnavailable();
 
     if (controlRebound) {
       await Promise.allSettled([

@@ -14,6 +14,11 @@ export interface ControlSelectionReconciliation {
   selectedState: boolean | null;
 }
 
+export interface AdaptiveControlSelectionRepresentations {
+  scope: ElementHandle<HTMLElement>;
+  representations: Map<string, ControlSelectionRepresentation> | null;
+}
+
 interface ControlRepresentationEvaluator {
   evaluate<Result>(
     pageFunction: (
@@ -32,8 +37,11 @@ export async function resolveControlSelectionRepresentationScope(
   control: ElementHandle<HTMLElement>,
   popup: ElementHandle<HTMLElement> | null,
   deadlineAt: number,
+  includeSameNamedCompositeFields = false,
 ): Promise<ElementHandle<HTMLElement> | null> {
   const pendingScope = control.evaluateHandle((element, input) => {
+    const normalize = (value: string | null | undefined): string =>
+      (value ?? '').replaceAll(/\s+/gu, ' ').trim().toLocaleLowerCase();
     const fieldSelector = [
       'input:not([type="hidden"])',
       'textarea',
@@ -48,21 +56,50 @@ export async function resolveControlSelectionRepresentationScope(
       '[aria-haspopup]',
     ].join(',');
     const popupContains = (candidate: Element): boolean =>
-      input !== null && (candidate === input || input.contains(candidate));
-    const hasCompetingField = (candidate: HTMLElement): boolean =>
-      Array.from(candidate.querySelectorAll(fieldSelector)).some((field) =>
+      input.popup !== null && (candidate === input.popup || input.popup.contains(candidate));
+    const semanticName = (candidate: Element): string => {
+      const labelledBy = (candidate.getAttribute('aria-labelledby') ?? '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => candidate.ownerDocument.getElementById(id)?.textContent ?? '')
+        .join(' ');
+      const labels = candidate instanceof HTMLButtonElement ||
+        candidate instanceof HTMLInputElement ||
+        candidate instanceof HTMLSelectElement ||
+        candidate instanceof HTMLTextAreaElement
+        ? Array.from(candidate.labels ?? []).map((label) => label.textContent ?? '').join(' ')
+        : '';
+      return normalize(candidate.getAttribute('aria-label') || labelledBy || labels ||
+        candidate.textContent || candidate.getAttribute('title'));
+    };
+    const controlName = semanticName(element);
+    const competingFields = (candidate: HTMLElement): Element[] =>
+      Array.from(candidate.querySelectorAll(fieldSelector)).filter((field) =>
         field !== element && !element.contains(field) && !popupContains(field));
 
     let owner = element;
     let candidate = element.parentElement;
     while (candidate !== null) {
       if (candidate === element.ownerDocument.body || candidate === element.ownerDocument.documentElement) break;
-      if (hasCompetingField(candidate)) break;
+      const competing = competingFields(candidate);
+      if (competing.length > 0) {
+        if (
+          input.includeSameNamedCompositeFields &&
+          controlName.length > 0 &&
+          competing.every((field) => semanticName(field) === controlName)
+        ) {
+          owner = candidate;
+          candidate = candidate.parentElement;
+          continue;
+        }
+        break;
+      }
       owner = candidate;
       candidate = candidate.parentElement;
     }
     return owner;
-  }, popup).then((handle) => handle.asElement() as ElementHandle<HTMLElement> | null);
+  }, { popup, includeSameNamedCompositeFields }).then((handle) =>
+    handle.asElement() as ElementHandle<HTMLElement> | null);
   const scope = await boundedValue(
     pendingScope,
     Math.max(1, remainingUntil(deadlineAt)),
@@ -91,6 +128,60 @@ export async function observeControlSelectionRepresentation(
   return representations?.get(optionName) ?? null;
 }
 
+export async function observeControlSelectionRepresentationsInAdaptiveScope(
+  control: ElementHandle<HTMLElement>,
+  popup: ElementHandle<HTMLElement> | null,
+  optionNames: string[],
+  deadlineAt: number,
+  initialScope?: ElementHandle<HTMLElement>,
+): Promise<AdaptiveControlSelectionRepresentations | null> {
+  const ownsInitialScope = initialScope === undefined;
+  const scope = initialScope ?? await resolveControlSelectionRepresentationScope(
+    control,
+    popup,
+    deadlineAt,
+  );
+  if (scope === null) return null;
+  const representations = await observeControlSelectionRepresentations(
+    control,
+    scope,
+    popup,
+    optionNames,
+    deadlineAt,
+  );
+  if (
+    representations === null ||
+    optionNames.length === 0 ||
+    [...representations.values()].some(representationSelected)
+  ) {
+    return { scope, representations };
+  }
+
+  const expandedScope = await resolveControlSelectionRepresentationScope(
+    control,
+    popup,
+    deadlineAt,
+    true,
+  );
+  if (expandedScope === null) return { scope, representations };
+  const expandedRepresentations = await observeControlSelectionRepresentations(
+    control,
+    expandedScope,
+    popup,
+    optionNames,
+    deadlineAt,
+  );
+  if (
+    expandedRepresentations !== null &&
+    [...expandedRepresentations.values()].some(representationSelected)
+  ) {
+    if (ownsInitialScope) await scope.dispose().catch(() => undefined);
+    return { scope: expandedScope, representations: expandedRepresentations };
+  }
+  await expandedScope.dispose().catch(() => undefined);
+  return { scope, representations };
+}
+
 export async function observeControlSelectionRepresentations(
   control: ElementHandle<HTMLElement>,
   owner: ElementHandle<HTMLElement>,
@@ -113,8 +204,8 @@ export async function observeControlSelectionRepresentations(
       }
       const uniqueRequests = requests.filter(({ normalized }) =>
         normalized.length > 0 && frequencies.get(normalized) === 1);
-      const requested = new Set(uniqueRequests.map(({ normalized }) => normalized));
-      const sources = new Set([
+      const requested = uniqueRequests.map(({ normalized }) => normalized);
+      const sources = [
         element.getAttribute('aria-valuetext'),
         element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
           ? element.value
@@ -122,7 +213,7 @@ export async function observeControlSelectionRepresentations(
         element instanceof HTMLSelectElement
           ? Array.from(element.selectedOptions).map((option) => option.label || option.textContent || '').join(' ')
           : null,
-      ].map(normalize).filter(Boolean));
+      ].map(normalize).filter(Boolean);
       const rendered = (candidate: Element): boolean => {
         const rect = candidate.getBoundingClientRect();
         const style = getComputedStyle(candidate);
@@ -132,21 +223,46 @@ export async function observeControlSelectionRepresentations(
       const outsidePopup = (candidate: Element): boolean =>
         (popupElement === null || (candidate !== popupElement && !popupElement.contains(candidate))) &&
         candidate.closest('[role="listbox"], [role="menu"], [role="tree"]') === null;
-      const exactRenderedLeafName = (candidate: Element): string | null => {
-        const name = normalize(candidate.textContent);
-        if (!requested.has(name)) return null;
+      const matchingRequest = (candidateName: string): string | null => {
+        if (candidateName.length === 0) return null;
+        const matches = requested.filter((requestedName) =>
+          requestedName === candidateName || requestedName.startsWith(`${candidateName} `));
+        return matches.length === 1 ? matches[0]! : null;
+      };
+      const candidateRequest = (candidate: Element): string | null => {
+        const labelledBy = (candidate.getAttribute('aria-labelledby') ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((id) => candidate.ownerDocument.getElementById(id)?.textContent ?? '')
+          .join(' ');
+        const names = new Set([
+          candidate.textContent,
+          candidate.getAttribute('aria-label'),
+          labelledBy,
+          candidate.getAttribute('title'),
+        ].map(normalize).filter(Boolean));
+        const matches = new Set([...names].map(matchingRequest).filter((match): match is string => match !== null));
+        return matches.size === 1 ? [...matches][0]! : null;
+      };
+      const renderedLeafRequest = (candidate: Element): string | null => {
+        const name = candidateRequest(candidate);
+        if (name === null) return null;
         if (!rendered(candidate) || !outsidePopup(candidate)) return null;
         return Array.from(candidate.children).some((child) =>
-          rendered(child) && outsidePopup(child) && normalize(child.textContent) === name)
+          rendered(child) && outsidePopup(child) && candidateRequest(child) === name)
           ? null
           : name;
       };
       const representations = new Map(uniqueRequests.map(({ normalized }) => [normalized, {
-        controlRepresentsOption: sources.has(normalized) || normalize(element.textContent) === normalized,
+        controlRepresentsOption: false,
         localExactRepresentationCount: 0,
       }]));
+      for (const source of [...sources, normalize(element.textContent)]) {
+        const name = matchingRequest(source);
+        if (name !== null) representations.get(name)!.controlRepresentsOption = true;
+      }
       for (const candidate of Array.from(scope.querySelectorAll('*'))) {
-        const name = exactRenderedLeafName(candidate);
+        const name = renderedLeafRequest(candidate);
         if (name === null) continue;
         const representation = representations.get(name);
         if (representation === undefined) continue;
@@ -176,12 +292,14 @@ export async function reconcileCustomControlSelection(input: {
   owner: ElementHandle<HTMLElement>;
   page: Page;
   popup: ElementHandle<HTMLElement>;
+  desiredSelected: boolean;
   requireSelected: boolean;
   selectedState: (locator: Locator) => Promise<boolean | null>;
 }): Promise<ControlSelectionReconciliation> {
   let selectedState: boolean | null = null;
   let popupClosed = false;
   let selectedRepresentationObserved = false;
+  const beforeRepresentationSelected = representationSelected(input.before);
   while (true) {
     selectedState = await boundedValue(
       input.selectedState(input.option),
@@ -196,23 +314,23 @@ export async function reconcileCustomControlSelection(input: {
       input.optionName,
       input.deadlineAt,
     );
-    selectedRepresentationObserved = represented !== null && (
-      (!input.before.controlRepresentsOption && represented.controlRepresentsOption) ||
-      represented.localExactRepresentationCount > input.before.localExactRepresentationCount
-    );
-    const satisfied = selectedState === true || selectedRepresentationObserved ||
-      (!input.requireSelected && popupClosed);
+    selectedRepresentationObserved = represented !== null && representationSelected(represented);
+    const representationMatched = represented !== null &&
+      beforeRepresentationSelected !== input.desiredSelected &&
+      selectedRepresentationObserved === input.desiredSelected;
+    const satisfied = selectedState === input.desiredSelected || representationMatched ||
+      (input.desiredSelected && !input.requireSelected && popupClosed);
     const checks = [
       {
         kind: 'selection_representation' as const,
-        passed: selectedRepresentationObserved,
-        expected: true,
+        passed: representationMatched,
+        expected: input.desiredSelected,
         observed: selectedRepresentationObserved,
       },
       {
         kind: 'selected' as const,
-        passed: selectedState === true,
-        expected: true,
+        passed: selectedState === input.desiredSelected,
+        expected: input.desiredSelected,
         observed: selectedState,
       },
       {
@@ -233,20 +351,26 @@ export async function reconcileCustomControlSelection(input: {
     if (remainingUntil(input.deadlineAt) <= 0) {
       throw new Stage5BrowserError(
         'POSTCONDITION_FAILED',
-        'The option received click input, but no authoritative selected representation was observed.',
+        `The option received click input, but the requested ${input.desiredSelected ? 'selected' : 'unselected'} state was not observed.`,
         {
           recoverable: true,
           details: {
-            reason: 'control_option_selection_not_observed',
+            reason: input.desiredSelected
+              ? 'control_option_selection_not_observed'
+              : 'control_option_deselection_not_observed',
             actionDispatched: true,
             clickDispatched: true,
             actionOutcome: 'click_dispatched_postcondition_failed',
             checks,
-            suggestedAction: 'Inspect authoritative form state. Do not replay the selection unless one fresh observation proves the option remains unsatisfied and a new action is safe.',
+            suggestedAction: 'Inspect authoritative form state. Do not replay the option input unless one fresh observation proves the requested state remains unsatisfied and a new action is safe.',
           },
         },
       );
     }
     await input.page.waitForTimeout(Math.min(50, remainingUntil(input.deadlineAt)));
   }
+}
+
+function representationSelected(representation: ControlSelectionRepresentation): boolean {
+  return representation.controlRepresentsOption || representation.localExactRepresentationCount > 0;
 }

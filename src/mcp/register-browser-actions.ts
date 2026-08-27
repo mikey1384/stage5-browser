@@ -225,9 +225,9 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
   server.registerTool(
     TOOL.browserSelectOption,
     {
-      title: 'Select one exact form option',
+      title: 'Set one exact form option state',
       description:
-        'Select one option in a native select or associated custom popup. Declare its semantic intent so optional review mode can distinguish ordinary form editing from an account or financial change without interpreting labels. Use inspectionId plus optionId after browser_inspect_control, or pass an exact semantic control and option directly when the intended label is already known. Stage5 handles popup reveal, bounded option-surface scrolling, exact binding, one dispatch gate per physical input, and selected-or-popup-closed reconciliation. It never guesses among duplicate meanings or replays possible input.',
+        'Set one exact option selected or unselected in a native select or associated custom popup; selected defaults to true for compatibility. Declare its semantic intent so optional review mode can distinguish ordinary form editing from an account or financial change without interpreting labels. Use inspectionId plus optionId after browser_inspect_control, or pass an exact semantic control and option directly when the intended label is already known. Deselect requires authoritative selected=true evidence and independently toggleable multi-select semantics. Stage5 handles popup reveal, bounded option-surface scrolling, exact binding, one dispatch gate, and authoritative desired-state reconciliation. It never guesses among duplicate meanings, toggles unknown state, or replays possible input.',
       inputSchema: selectOptionInputSchema,
       annotations: {
         readOnlyHint: false,

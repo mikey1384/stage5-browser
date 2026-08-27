@@ -138,14 +138,87 @@ describe('BrowserController custom option state', () => {
     expect(await fixture.page.locator('#selection-marker').isChecked()).toBe(true);
   });
 
+  it('deselects one explicitly checked custom multi-select option exactly once', async () => {
+    const fixture = await inspectCheckboxBackedOption(true);
+
+    const deselected = await fixture.controller.selectOption({
+      inspectionId: fixture.inspectionId,
+      optionId: fixture.optionId,
+      control: null,
+      option: null,
+      selected: false,
+      frameId: null,
+      timeoutMs: 2_000,
+    });
+
+    expect(deselected).toMatchObject({
+      selected: false,
+      evidence: {
+        actionDispatched: true,
+        selectedState: false,
+        popupClosed: false,
+      },
+    });
+    expect(await fixture.page.locator('#opener-clicks').textContent()).toBe('1');
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('1');
+    expect(await fixture.page.locator('#selection-marker').isChecked()).toBe(false);
+  });
+
+  it('deselects one native multi-select option without disturbing its peers', async () => {
+    const fixture = await openFixture(`<!doctype html><html><body>
+      <label for="sources">Funding sources</label>
+      <select id="sources" multiple>
+        <option selected>Treasury funds</option>
+        <option selected>Operating revenue</option>
+        <option>Client funds</option>
+      </select>
+      <output id="events">0</output>
+      <script>
+        sources.addEventListener('change', () => { events.value = String(Number(events.value) + 1); });
+      </script>
+    </body></html>`);
+    const inspected = await fixture.controller.inspectControl({
+      control: { role: 'listbox', name: 'Funding sources', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const treasury = inspected.inspection.options.find(({ name }) => name === 'Treasury funds');
+    if (treasury === undefined) throw new Error('Native multi-select fixture exposed no selected option.');
+
+    const deselected = await fixture.controller.selectOption({
+      inspectionId: inspected.inspection.inspectionId,
+      optionId: treasury.optionId,
+      control: null,
+      option: null,
+      selected: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+
+    expect(deselected).toMatchObject({
+      selected: false,
+      evidence: {
+        actionDispatched: true,
+        selectionEffectObserved: true,
+        selectedState: false,
+      },
+    });
+    expect(await fixture.page.locator('#sources').inputValue()).toBe('Operating revenue');
+    expect(await fixture.page.locator('#events').textContent()).toBe('1');
+  });
+
   it('maps several existing field chips back to their exact options without input', async () => {
     const fixture = await openFixture(`<!doctype html><html><body>
       <section id="funding-field">
         <div id="selected-values">
-          <span>Treasury funds</span>
-          <span>Operating revenue</span>
-          <span>Investment proceeds</span>
+          <span id="treasury-chip">Treasury funds</span>
+          <span id="operating-chip">Operating revenue</span>
+          <span id="investment-chip">Investment proceeds</span>
           <span>Conflicting choice</span>
+          <span>Ambiguous funds</span>
+          <input type="text" aria-label="Funding source">
         </div>
         <button aria-haspopup="listbox" aria-controls="funding-options" aria-expanded="true">
           Funding source
@@ -156,21 +229,26 @@ describe('BrowserController custom option state', () => {
         <span>Unrelated exact text</span>
       </section>
       <div id="funding-options" role="listbox">
-        <div role="option">Treasury funds</div>
-        <div role="option">Operating revenue</div>
-        <div role="option">Investment proceeds</div>
-        <div role="option" aria-selected="false">Conflicting choice</div>
+        <div role="option">Treasury funds — company holdings</div>
+        <div role="option">Operating revenue — customer receipts</div>
+        <div role="option">Investment proceeds — asset sales</div>
+        <div role="option" aria-selected="false">Conflicting choice — contradictory state</div>
+        <div role="option">Ambiguous funds — first source</div>
+        <div role="option">Ambiguous funds — second source</div>
         <div role="option">Unselected choice</div>
         <div role="option">Unrelated exact text</div>
       </div>
       <output id="option-clicks">0</output>
       <script>
         const optionClicks = document.querySelector('#option-clicks');
-        for (const option of document.querySelectorAll('#funding-options [role=option]')) {
-          option.addEventListener('click', () => {
-            optionClicks.value = String(Number(optionClicks.value) + 1);
-          });
-        }
+        document.addEventListener('click', (event) => {
+          const option = event.target.closest('#funding-options [role=option]');
+          if (option === null) return;
+          optionClicks.value = String(Number(optionClicks.value) + 1);
+          if (option.textContent.startsWith('Treasury funds')) {
+            document.querySelector('#treasury-chip')?.remove();
+          }
+        });
       </script>
     </body></html>`);
 
@@ -184,10 +262,13 @@ describe('BrowserController custom option state', () => {
     const byName = new Map(inspected.inspection.options.map((option) => [option.name, option]));
 
     expect(inspected.inspection.multiple).toBe(true);
-    expect(byName.get('Treasury funds')?.selected).toBe(true);
-    expect(byName.get('Operating revenue')?.selected).toBe(true);
-    expect(byName.get('Investment proceeds')?.selected).toBe(true);
-    expect(byName.get('Conflicting choice')?.selected).toBeNull();
+    expect(byName.get('Treasury funds — company holdings')?.selected).toBe(true);
+    expect(byName.get('Operating revenue — customer receipts')?.selected).toBe(true);
+    expect(byName.get('Investment proceeds — asset sales')?.selected).toBe(true);
+    expect(byName.get('Conflicting choice — contradictory state')?.selected).toBeNull();
+    expect(inspected.inspection.options
+      .filter(({ name }) => name.startsWith('Ambiguous funds —'))
+      .every(({ selected }) => selected === null)).toBe(true);
     expect(byName.get('Unselected choice')?.selected).toBeNull();
     expect(byName.get('Unrelated exact text')?.selected).toBeNull();
     expect(inspected.inspection.reveal).toMatchObject({
@@ -195,7 +276,7 @@ describe('BrowserController custom option state', () => {
       preparationActionDispatched: false,
     });
 
-    const represented = byName.get('Treasury funds');
+    const represented = byName.get('Treasury funds — company holdings');
     if (represented === undefined) throw new Error('The represented option was not observed.');
     fixture.controller.drainActionPhaseTelemetry();
     const selected = await fixture.controller.selectOption({
@@ -221,17 +302,114 @@ describe('BrowserController custom option state', () => {
       }),
     ]);
 
-    const reinspected = await fixture.controller.inspectControl({
+    const reboundInspection = await fixture.controller.inspectControl({
       control: { role: 'button', name: 'Funding source', exact: true },
       frameId: null,
       revealOptions: false,
       maxOptions: 20,
       timeoutMs: 5_000,
     });
-    const conflicting = reinspected.inspection.options.find(({ name }) => name === 'Conflicting choice');
+    const reboundTreasury = reboundInspection.inspection.options.find(({ name }) =>
+      name === 'Treasury funds — company holdings');
+    if (reboundTreasury === undefined) throw new Error('The represented option was not observed before replacement.');
+    await fixture.page.evaluate(() => {
+      const opener = document.querySelector('#funding-field button');
+      const popup = document.querySelector('#funding-options');
+      opener?.replaceWith(opener.cloneNode(true));
+      popup?.replaceWith(popup.cloneNode(true));
+    });
+    const reboundSelected = await fixture.controller.selectOption({
+      inspectionId: reboundInspection.inspection.inspectionId,
+      optionId: reboundTreasury.optionId,
+      control: null,
+      option: null,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(reboundSelected.evidence).toMatchObject({
+      actionDispatched: false,
+      selectedRepresentationObserved: true,
+    });
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('0');
+
+    const deselectionInspection = await fixture.controller.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const selectedTreasury = deselectionInspection.inspection.options.find(({ name }) =>
+      name === 'Treasury funds — company holdings');
+    if (selectedTreasury === undefined) throw new Error('The selected treasury option was not observed.');
+    fixture.controller.drainActionPhaseTelemetry();
+    const deselected = await fixture.controller.selectOption({
+      inspectionId: deselectionInspection.inspection.inspectionId,
+      optionId: selectedTreasury.optionId,
+      control: null,
+      option: null,
+      selected: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(deselected).toMatchObject({
+      selected: false,
+      evidence: {
+        actionDispatched: true,
+        selectionEffectObserved: true,
+        selectedRepresentationObserved: false,
+        selectedState: null,
+        popupClosed: false,
+      },
+    });
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('1');
+    expect(await fixture.page.locator('#treasury-chip').count()).toBe(0);
+    expect(await fixture.page.locator('#operating-chip').count()).toBe(1);
+    expect(await fixture.page.locator('#investment-chip').count()).toBe(1);
+    expect(fixture.controller.drainActionPhaseTelemetry().actionPhases).toEqual([
+      expect.objectContaining({
+        action: 'select_option',
+        dispatchState: 'dispatched',
+        dispatchAttempts: 1,
+        terminalOutcome: 'succeeded',
+      }),
+    ]);
+
+    const unknownInspection = await fixture.controller.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const unknown = unknownInspection.inspection.options.find(({ name }) => name === 'Unselected choice');
+    if (unknown === undefined) throw new Error('The unknown-state option was not observed.');
+    await expect(fixture.controller.selectOption({
+      inspectionId: unknownInspection.inspection.inspectionId,
+      optionId: unknown.optionId,
+      control: null,
+      option: null,
+      selected: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      code: 'OPERATION_FAILED',
+      details: { reason: 'control_option_current_state_unknown', actionDispatched: false },
+    });
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('1');
+
+    const conflictInspection = await fixture.controller.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const conflicting = conflictInspection.inspection.options.find(({ name }) =>
+      name === 'Conflicting choice — contradictory state');
     if (conflicting === undefined) throw new Error('The conflicting option was not observed.');
     await expect(fixture.controller.selectOption({
-      inspectionId: reinspected.inspection.inspectionId,
+      inspectionId: conflictInspection.inspection.inspectionId,
       optionId: conflicting.optionId,
       control: null,
       option: null,
@@ -241,7 +419,7 @@ describe('BrowserController custom option state', () => {
       code: 'OPERATION_FAILED',
       details: { reason: 'control_option_state_conflict', actionDispatched: false },
     });
-    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('0');
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('1');
   });
 
   it('recognizes explicit framework state without trusting appearance-only classes', async () => {

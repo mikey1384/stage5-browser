@@ -38,6 +38,7 @@ export const controlSelectionOperations = {
     const page = await this.ensureActivePage(this.requireContext());
     const frame = this.resolveFrame(page, input.frameId);
     const deadlineAt = Date.now() + input.timeoutMs;
+    const desiredSelected = input.selected ?? true;
     let inspectionId = input.inspectionId;
     let optionId = input.optionId;
 
@@ -122,15 +123,26 @@ export const controlSelectionOperations = {
           },
         });
       }
+      if (!desiredSelected && option.observation.selected === null) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The exact option current state is unknown, so toggling it could select instead of deselect.', {
+          recoverable: true,
+          details: {
+            reason: 'control_option_current_state_unknown',
+            actionDispatched: false,
+            suggestedAction: 'Inspect fresh authoritative control state. Deselect only an option reported selected=true; Stage5 Browser will not guess at a toggle state.',
+          },
+        });
+      }
       const evidence = inspection.kind === 'native_select'
-        ? await this.selectNativeControlOption(inspection, option, deadlineAt)
-        : await this.selectCustomControlOption(page, frame, inspection, option, input.frameId, deadlineAt);
+        ? await this.selectNativeControlOption(inspection, option, deadlineAt, desiredSelected)
+        : await this.selectCustomControlOption(page, frame, inspection, option, input.frameId, deadlineAt, false, desiredSelected);
       return {
         page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
         frame: this.frameSummary(frame, page),
         inspectionId,
         optionId,
         selectedName: option.observation.name,
+        selected: desiredSelected,
         kind: inspection.kind,
         evidence,
       };
@@ -143,6 +155,7 @@ export const controlSelectionOperations = {
     inspection: ObservedControlInspection,
     option: ObservedControlOption,
     deadlineAt: number,
+    desiredSelected = true,
   ): Promise<ControlSelectionEvidence> {
     const phases = this.actionPhases.begin('select_option', Math.max(1, remainingUntil(deadlineAt)));
     const token = `__stage5_select_${randomUUID().replaceAll('-', '')}`;
@@ -165,7 +178,7 @@ export const controlSelectionOperations = {
         });
       }
       phases.enter('plan');
-      if (before.selected) {
+      if (before.selected === desiredSelected) {
         phases.enter('preflight');
         phases.enter('prepare');
         phases.beginFinalization();
@@ -176,9 +189,19 @@ export const controlSelectionOperations = {
           changeEventObserved: false,
           selectionEffectObserved: true,
           selectedRepresentationObserved: false,
-          selectedState: true,
+          selectedState: desiredSelected,
           popupClosed: null,
         };
+      }
+      if (!desiredSelected && !before.multiple) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The selected native option cannot be cleared without choosing a replacement.', {
+          recoverable: true,
+          details: {
+            reason: 'control_not_multiselect',
+            actionDispatched: false,
+            suggestedAction: 'Choose the intended replacement option for this single-select control.',
+          },
+        });
       }
       phases.enter('preflight');
       await inspection.controlHandle.evaluate((control, key) => {
@@ -190,9 +213,11 @@ export const controlSelectionOperations = {
         control.addEventListener('change', changeListener);
       }, token);
       phases.enter('prepare');
-      const indexes = before.multiple
-        ? [...new Set([...before.selectedIndexes, before.targetIndex])]
-        : [before.targetIndex];
+      const indexes = desiredSelected
+        ? before.multiple
+          ? [...new Set([...before.selectedIndexes, before.targetIndex])]
+          : [before.targetIndex]
+        : before.selectedIndexes.filter((index) => index !== before.targetIndex);
       phases.beginDispatch();
       let dispatchError: unknown = null;
       try {
@@ -219,20 +244,22 @@ export const controlSelectionOperations = {
           selected,
         };
       }, { key: token, targetIndex: before.targetIndex });
-      const actionDispatched = after.inputEventObserved || after.changeEventObserved || after.selected
+      const actionDispatched = after.inputEventObserved || after.changeEventObserved || after.selected !== before.selected
         ? true
         : dispatchError === null ? 'unknown' as const : false;
       phases.concludeDispatch({ actionDispatched });
       phases.enter('reconcile');
-      if (!after.selected) {
-        throw new Stage5BrowserError('POSTCONDITION_FAILED', 'Native option input did not produce the exact selected state.', {
+      if (after.selected !== desiredSelected) {
+        throw new Stage5BrowserError('POSTCONDITION_FAILED', `Native option input did not produce the exact ${desiredSelected ? 'selected' : 'unselected'} state.`, {
           recoverable: true,
           details: {
-            reason: 'native_option_selection_not_observed',
+            reason: desiredSelected
+              ? 'native_option_selection_not_observed'
+              : 'native_option_deselection_not_observed',
             actionDispatched,
             suggestedAction: actionDispatched === false
-              ? 'Inspect the control once more before deciding whether another selection is useful.'
-              : 'Inspect authoritative form state. Possible input occurred; do not replay the selection automatically.',
+              ? 'Inspect the control once more before deciding whether another state change is useful.'
+              : 'Inspect authoritative form state. Possible input occurred; do not replay the option input automatically.',
           },
           cause: dispatchError,
         });
@@ -245,7 +272,7 @@ export const controlSelectionOperations = {
         changeEventObserved: after.changeEventObserved,
         selectionEffectObserved: true,
         selectedRepresentationObserved: false,
-        selectedState: true,
+        selectedState: desiredSelected,
         popupClosed: null,
       };
     } catch (error) {
@@ -265,17 +292,17 @@ export const controlSelectionOperations = {
     frameId: string | null,
     deadlineAt: number,
     requireSelected = false,
+    desiredSelected = true,
   ): Promise<ControlSelectionEvidence> {
-    if (option.observation.selected === true && option.selectedRepresentationObserved !== true) {
-      return {
-        actionDispatched: false,
-        inputEventObserved: false,
-        changeEventObserved: false,
-        selectionEffectObserved: true,
-        selectedRepresentationObserved: false,
-        selectedState: true,
-        popupClosed: null,
-      };
+    if (!desiredSelected && !inspection.multiple && option.observation.selected === true) {
+      throw new Stage5BrowserError('OPERATION_FAILED', 'The selected custom option is not proven to support independent deselection.', {
+        recoverable: true,
+        details: {
+          reason: 'control_not_multiselect',
+          actionDispatched: false,
+          suggestedAction: 'Choose the intended replacement option, or inspect a control that exposes multi-select semantics.',
+        },
+      });
     }
     if (inspection.popupHandle === null) {
       throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The inspected popup capability is no longer available.', {
@@ -300,96 +327,115 @@ export const controlSelectionOperations = {
         });
         return observedBaseline;
       },
-      plan: (baseline) => ({
-        action: 'select_option',
-        page,
-        frame,
-        postcondition: null,
-        ...(baseline.capabilityRebound
-          ? { preDispatchRecoveryReason: 'target_changed_before_input' as const }
-          : {}),
-        ...(representedOptionStillObserved(baseline, option)
-          ? { satisfiedWithoutDispatch: {
-              postcondition: {
-                passed: true,
-                checks: [
-                  { kind: 'selection_representation' as const, passed: true, expected: true, observed: true },
-                  { kind: 'selected' as const, passed: false, expected: true, observed: null },
-                  { kind: 'popup_closed' as const, passed: false, expected: true, observed: null },
-                ],
-              },
-            } }
-          : {}),
-        prepare: async (
-          priorNativeActivation: SanitizedNativeWindowActivationEvidence | null,
-          activationAttemptCount: number,
-          actionStartedAt: string,
-          actionDeadlineAt: number,
-        ) => {
-          const pageActivation = await this.primeSelectedPageForTargetPreparation(
-            page,
-            actionDeadlineAt,
-            actionStartedAt,
-            'select_option',
-            activationAttemptCount,
-            priorNativeActivation ?? undefined,
-          );
-          let locator = option.locator;
-          let handle = option.handle;
-          const inside = await handle.evaluate((target, root) =>
-            target.isConnected && root.isConnected && root.contains(target), baseline.popupHandle).catch(() => false);
-          if (!inside) {
-            const resolved = await this.resolveUniqueSemanticReferenceInScope(
-              frame,
-              baseline.popupHandle,
-              { role: option.observation.role, name: option.observation.name, url: null },
+      plan: (baseline) => {
+        const represented = representedOptionStillObserved(baseline, option);
+        const selectedState = option.selectedRepresentationObserved === true
+          ? null
+          : option.observation.selected;
+        const alreadySatisfied = selectedState === desiredSelected ||
+          (option.selectedRepresentationObserved === true && represented === desiredSelected);
+        return {
+          action: 'select_option',
+          page,
+          frame,
+          postcondition: null,
+          ...(baseline.capabilityRebound
+            ? { preDispatchRecoveryReason: 'target_changed_before_input' as const }
+            : {}),
+          ...(alreadySatisfied
+            ? { satisfiedWithoutDispatch: {
+                postcondition: {
+                  passed: true,
+                  checks: [
+                    {
+                      kind: 'selection_representation' as const,
+                      passed: represented === desiredSelected,
+                      expected: desiredSelected,
+                      observed: represented,
+                    },
+                    {
+                      kind: 'selected' as const,
+                      passed: selectedState === desiredSelected,
+                      expected: desiredSelected,
+                      observed: selectedState,
+                    },
+                    { kind: 'popup_closed' as const, passed: false, expected: true, observed: null },
+                  ],
+                },
+              } }
+            : {}),
+          prepare: async (
+            priorNativeActivation: SanitizedNativeWindowActivationEvidence | null,
+            activationAttemptCount: number,
+            actionStartedAt: string,
+            actionDeadlineAt: number,
+          ) => {
+            const pageActivation = await this.primeSelectedPageForTargetPreparation(
+              page,
               actionDeadlineAt,
+              actionStartedAt,
+              'select_option',
+              activationAttemptCount,
+              priorNativeActivation ?? undefined,
             );
-            if (resolved.kind !== 'resolved') {
-              return this.failClickBeforeDispatch(
-                page,
-                actionStartedAt,
-                null,
-                resolved.kind === 'ambiguous' ? 'ambiguous_target' : 'target_missing',
-                `control_option_${resolved.kind}`,
-                'The exact observed option could not be uniquely rebound inside its inspected popup.',
-                'Inspect the control once more. Stage5 Browser confirmed that no selection input was dispatched.',
-                resolved.kind === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'TARGET_NOT_FOUND',
-                'select_option',
+            let locator = option.locator;
+            let handle = option.handle;
+            const inside = await handle.evaluate((target, root) =>
+              target.isConnected && root.isConnected && root.contains(target), baseline.popupHandle).catch(() => false);
+            if (!inside) {
+              const resolved = await this.resolveUniqueSemanticReferenceInScope(
+                frame,
+                baseline.popupHandle,
+                { role: option.observation.role, name: option.observation.name, url: null },
+                actionDeadlineAt,
               );
+              if (resolved.kind !== 'resolved') {
+                return this.failClickBeforeDispatch(
+                  page,
+                  actionStartedAt,
+                  null,
+                  resolved.kind === 'ambiguous' ? 'ambiguous_target' : 'target_missing',
+                  `control_option_${resolved.kind}`,
+                  'The exact observed option could not be uniquely rebound inside its inspected popup.',
+                  'Inspect the control once more. Stage5 Browser confirmed that no selection input was dispatched.',
+                  resolved.kind === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'TARGET_NOT_FOUND',
+                  'select_option',
+                );
+              }
+              locator = resolved.locator;
+              handle = resolved.handle as typeof handle;
             }
-            locator = resolved.locator;
-            handle = resolved.handle as typeof handle;
-          }
-          return this.prepareObservedClickTarget(
-            page,
-            frame,
-            locator,
-            actionStartedAt,
-            actionDeadlineAt,
-            null,
-            pageActivation,
-            handle,
-          );
-        },
-        reconciliationLocator: (prepared) => prepared.locator,
-        reconcile: async (prepared, remainingTimeoutMs) => {
-          const reconciliation = await reconcileCustomControlSelection({
-            before: baseline.representation,
-            control: baseline.controlHandle,
-            deadlineAt: Date.now() + Math.max(1, remainingTimeoutMs),
-            option: prepared.locator,
-            optionName: option.observation.name,
-            owner: baseline.representationScope,
-            page,
-            popup: baseline.popupHandle,
-            requireSelected: requireSelected || inspection.multiple,
-            selectedState: (locator) => this.controlOptionSelectedState(locator),
-          });
-          return reconciliation.postcondition;
-        },
-        discardCapabilities: () => undefined,
-      }),
+            return this.prepareObservedClickTarget(
+              page,
+              frame,
+              locator,
+              actionStartedAt,
+              actionDeadlineAt,
+              null,
+              pageActivation,
+              handle,
+            );
+          },
+          reconciliationLocator: (prepared) => prepared.locator,
+          reconcile: async (prepared, remainingTimeoutMs) => {
+            const reconciliation = await reconcileCustomControlSelection({
+              before: baseline.representation,
+              control: baseline.controlHandle,
+              deadlineAt: Date.now() + Math.max(1, remainingTimeoutMs),
+              option: prepared.locator,
+              optionName: option.observation.name,
+              owner: baseline.representationScope,
+              page,
+              popup: baseline.popupHandle,
+              desiredSelected,
+              requireSelected: requireSelected || inspection.multiple,
+              selectedState: (locator) => this.controlOptionSelectedState(locator),
+            });
+            return reconciliation.postcondition;
+          },
+          discardCapabilities: () => undefined,
+        };
+      },
       preflight: async () => {
         const baseline = observedBaseline;
         const connected = baseline === null
@@ -412,7 +458,7 @@ export const controlSelectionOperations = {
       inputEventObserved: false,
       changeEventObserved: false,
       selectionEffectObserved: true,
-      selectedRepresentationObserved: representationCheck?.passed === true,
+      selectedRepresentationObserved: representationCheck?.observed === true,
       selectedState: typeof selectedCheck?.observed === 'boolean' ? selectedCheck.observed : null,
       popupClosed: typeof popupCheck?.observed === 'boolean'
         ? popupCheck.observed

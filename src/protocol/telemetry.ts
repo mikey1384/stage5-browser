@@ -64,6 +64,8 @@ export interface ExecutionTraceConclusion {
     passed: boolean;
     observed: boolean | null | 'redacted_string';
   }>;
+  selectionDesiredState: boolean | null;
+  selectionObservedState: boolean | null;
   selectionEffectObserved: boolean | null;
   selectedRepresentationObserved: boolean | null;
   popupClosed: boolean | null;
