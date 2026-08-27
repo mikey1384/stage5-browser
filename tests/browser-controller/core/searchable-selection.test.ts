@@ -143,6 +143,57 @@ describe('BrowserController atomic searchable selection', () => {
     expect(await page.locator('#counts').textContent()).toContain('inputs:1 enters:1 submits:0 selected:1');
   });
 
+  it('routes an inspected searchable option through the atomic control commit in auto mode', async () => {
+    await openSearchableCountry(true);
+    await controller?.fillByRole({
+      role: 'combobox',
+      name: 'Country',
+      exact: true,
+      frameId: null,
+      value: 'United',
+      timeoutMs: 5_000,
+    });
+    const inspected = await controller?.inspectControl({
+      control: { role: 'combobox', name: 'Country', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const option = inspected?.inspection.options.find(({ name }) => name === 'United States');
+    if (inspected === undefined || option === undefined) throw new Error('Exact option fixture was not inspected.');
+
+    const result = await controller?.selectOption({
+      inspectionId: inspected.inspection.inspectionId,
+      optionId: option.optionId,
+      control: null,
+      option: null,
+      selected: true,
+      interaction: 'auto',
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toMatchObject({
+      inspectionId: inspected.inspection.inspectionId,
+      optionId: option.optionId,
+      interactionUsed: 'searchable_keyboard',
+      selectionSucceeded: true,
+      evidence: {
+        searchableCommit: {
+          activeOptionProof: 'aria_activedescendant',
+          queryActionDispatched: true,
+          commitActionDispatched: true,
+          selectionProof: 'value_and_popup_closed',
+        },
+      },
+    });
+    const page = (controller as unknown as { activePage: { locator: (selector: string) => {
+      textContent: () => Promise<string | null>;
+    } } }).activePage;
+    expect(await page.locator('#counts').textContent()).toContain('inputs:2 enters:1 submits:0 selected:1');
+  });
+
   it('returns an already-selected exact value without typing or pressing Enter', async () => {
     await openSearchableCountry(true, true);
 

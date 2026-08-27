@@ -24,6 +24,7 @@ import {
 } from './execution-telemetry/lifecycle-conclusions.js';
 import { normalizeTrace, privacyContract, summarizeTrace, type ExecutionTraceFilters } from './execution-telemetry/query.js';
 import {
+  activationTransportConclusion,
   controlRevealInteractionConclusion,
   formFieldRebindingConclusion,
   searchableSelectionConclusion,
@@ -66,6 +67,14 @@ const POPUP_OWNER_DECISION_STATES = new Set<NonNullable<ExecutionTraceConclusion
   'structural_conflict',
   'tie_or_near',
   'unbounded',
+]);
+type PopupOwnerTargetFirstMiss = NonNullable<NonNullable<ExecutionTraceConclusion['popupOwnership']>['targetFirstMiss']>;
+const POPUP_OWNER_TARGET_FIRST_MISSES = new Set<PopupOwnerTargetFirstMiss>([
+  'competing_structural_owner',
+  'insufficient_focus_or_expansion',
+  'not_spatial',
+  'relation_unavailable',
+  'target_unavailable',
 ]);
 const VIEWPORT_EVIDENCE = new Set<NonNullable<ExecutionTraceConclusion['targetState']>['viewportEvidence']>([
   'clipped_geometry',
@@ -263,6 +272,7 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
   return {
     actionDispatched: explicitActionDispatched ?? phaseDispatchConclusion(workerTelemetry),
     clickDispatched: dispatchConclusion(valuesForKey(combined, 'clickDispatched')),
+    activationTransport: activationTransportConclusion(combined),
     postconditionPassed: postconditionPassed(combined),
     checks,
     selectionDesiredState: directBoolean(result, 'selected'),
@@ -388,6 +398,10 @@ function popupOwnershipConclusion(value: unknown): ExecutionTraceConclusion['pop
     const exteriorCandidateCount = boundedNullableInteger(candidate.exteriorCandidateCount, 100);
     const overlappingCandidateCount = boundedNullableInteger(candidate.overlappingCandidateCount, 100);
     const surfaceCoveredCandidateCount = boundedNullableInteger(candidate.surfaceCoveredCandidateCount, 100);
+    const targetFirstMiss = typeof candidate.targetFirstMiss === 'string' &&
+      POPUP_OWNER_TARGET_FIRST_MISSES.has(candidate.targetFirstMiss as PopupOwnerTargetFirstMiss)
+      ? candidate.targetFirstMiss as PopupOwnerTargetFirstMiss
+      : null;
     if (
       candidateCount === undefined ||
       exteriorCandidateCount === undefined ||
@@ -403,6 +417,7 @@ function popupOwnershipConclusion(value: unknown): ExecutionTraceConclusion['pop
         overlappingCandidateCount,
         surfaceCoveredCandidateCount,
         decision: decision as NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision'],
+        ...(targetFirstMiss === null ? {} : { targetFirstMiss }),
       },
     ];
   });

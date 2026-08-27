@@ -58,7 +58,6 @@ export interface PopupOwnerCandidateObservation {
 interface OwnerCandidate {
   handle: ElementHandle<HTMLElement>;
   requestedControl: boolean;
-  exactlyFocused: boolean;
   role: string;
   name: string;
   expanded: boolean;
@@ -71,6 +70,8 @@ interface OwnerCandidate {
 }
 
 type OwnerRelation = Omit<OwnerCandidate, 'handle' | 'requestedControl'>;
+type TargetFirstMiss = NonNullable<ControlPopupOwnershipEvidence['targetFirstMiss']>;
+type ResolvedPopupOwner = Extract<PopupOwnerResolution, { kind: 'resolved' }>;
 
 function inspectPopupOwnerRelation(
   control: HTMLElement,
@@ -148,7 +149,6 @@ function inspectPopupOwnerRelation(
   return {
     structural: (surface.id.length > 0 && ids.includes(surface.id)) || control.contains(surface) ||
       (control.id.length > 0 && surfaceLabelledBy.includes(control.id)),
-    exactlyFocused: activeElement === control,
     focused: activeElement === control || control.contains(activeElement),
     expanded: control.getAttribute('aria-expanded') === 'true',
     spatial,
@@ -206,7 +206,12 @@ function positionalOwner(
     : { selected: null, decision: 'tie_or_near' };
 }
 
-function ownerDiagnostics(proofTier: PopupOwnerProofTier, candidates: OwnerCandidate[], decision: PopupOwnerDecision): ControlPopupOwnershipEvidence {
+function ownerDiagnostics(
+  proofTier: PopupOwnerProofTier,
+  candidates: OwnerCandidate[],
+  decision: PopupOwnerDecision,
+  targetFirstMiss: TargetFirstMiss | null = null,
+): ControlPopupOwnershipEvidence {
   return {
     proofTier,
     candidateCount: candidates.length,
@@ -214,6 +219,7 @@ function ownerDiagnostics(proofTier: PopupOwnerProofTier, candidates: OwnerCandi
     overlappingCandidateCount: candidates.filter((candidate) => candidate.overlapsSurface).length,
     surfaceCoveredCandidateCount: candidates.filter((candidate) => candidate.surfaceCoversControl).length,
     decision,
+    ...(targetFirstMiss === null ? {} : { targetFirstMiss }),
   };
 }
 
@@ -221,20 +227,28 @@ async function resolveExactTargetFirst(
   popup: ElementHandle<HTMLElement>,
   target: ElementHandle<HTMLElement> | null,
   deadlineAt: number,
-): Promise<Extract<PopupOwnerResolution, { kind: 'resolved' }> | null> {
-  if (target === null) return null;
+): Promise<{ resolution: ResolvedPopupOwner | null; miss: TargetFirstMiss | null }> {
+  if (target === null) return { resolution: null, miss: null };
   const relation = await boundedValue(
     target.evaluate(inspectPopupOwnerRelation, popup),
     Math.max(1, remainingUntil(deadlineAt)),
     null,
   );
-  if (relation === null) return null;
-  const proof: Extract<PopupOwnerResolution, { kind: 'resolved' }>['proof'] | null = relation.structural
+  if (relation === null) return { resolution: null, miss: 'relation_unavailable' };
+  const proof: ResolvedPopupOwner['proof'] | null = relation.structural
     ? 'structural'
-    : relation.exactlyFocused && relation.spatial ? 'focused' :
+    : relation.focused && relation.spatial ? 'focused' :
       relation.expanded && relation.spatial ? 'expanded' : null;
-  if (proof === null) return null;
-  if (proof === 'structural') return retainedTargetOwner(target, relation, proof, deadlineAt);
+  if (proof === null) {
+    return {
+      resolution: null,
+      miss: relation.focused || relation.expanded ? 'not_spatial' : 'insufficient_focus_or_expansion',
+    };
+  }
+  if (proof === 'structural') {
+    const resolution = await retainedTargetOwner(target, relation, proof, deadlineAt);
+    return { resolution, miss: resolution === null ? 'target_unavailable' : null };
+  }
   const competingStructuralOwner = await boundedValue(
     popup.evaluate((surface, intended) => {
       const ownerSelector = [
@@ -262,16 +276,17 @@ async function resolveExactTargetFirst(
     Math.max(1, remainingUntil(deadlineAt)),
     true,
   );
-  if (competingStructuralOwner) return null;
-  return retainedTargetOwner(target, relation, proof, deadlineAt);
+  if (competingStructuralOwner) return { resolution: null, miss: 'competing_structural_owner' };
+  const resolution = await retainedTargetOwner(target, relation, proof, deadlineAt);
+  return { resolution, miss: resolution === null ? 'target_unavailable' : null };
 }
 
 async function retainedTargetOwner(
   target: ElementHandle<HTMLElement>,
   relation: OwnerRelation,
-  proof: Extract<PopupOwnerResolution, { kind: 'resolved' }>['proof'],
+  proof: ResolvedPopupOwner['proof'],
   deadlineAt: number,
-): Promise<Extract<PopupOwnerResolution, { kind: 'resolved' }> | null> {
+): Promise<ResolvedPopupOwner | null> {
   const ownerReference = await boundedValue(
     target.evaluateHandle((element) => element),
     Math.max(1, remainingUntil(deadlineAt)),
@@ -299,8 +314,8 @@ export async function resolveControlPopupOwner(
   target: ElementHandle<HTMLElement> | null,
   deadlineAt: number,
 ): Promise<PopupOwnerResolution> {
-  const exactTarget = await resolveExactTargetFirst(popup, target, deadlineAt);
-  if (exactTarget !== null) return exactTarget;
+  const targetFirst = await resolveExactTargetFirst(popup, target, deadlineAt);
+  if (targetFirst.resolution !== null) return targetFirst.resolution;
   const owners = frame.locator(POPUP_OWNER_SELECTOR);
   const count = await boundedValue(owners.count(), Math.max(1, remainingUntil(deadlineAt)), -1);
   if (count < 0 || count > MAX_POPUP_OWNERS) {
@@ -314,6 +329,7 @@ export async function resolveControlPopupOwner(
         overlappingCandidateCount: null,
         surfaceCoveredCandidateCount: null,
         decision: kind,
+        ...(targetFirst.miss === null ? {} : { targetFirstMiss: targetFirst.miss }),
       },
     };
   }
@@ -362,7 +378,12 @@ export async function resolveControlPopupOwner(
             selected: pool.length === 1 ? pool[0]! : null,
             decision: pool.length === 1 ? ('single_candidate' as const) : pool.length > 1 ? ('structural_conflict' as const) : ('missing' as const),
           };
-    const diagnostics = ownerDiagnostics(proofTier, pool, positional.decision);
+    const diagnostics = ownerDiagnostics(
+      proofTier,
+      pool,
+      positional.decision,
+      positional.selected?.requestedControl === true ? null : targetFirst.miss,
+    );
     const selected = positional.selected;
     const targetCandidate = pool.some(({ requestedControl }) => requestedControl);
     const semanticDecisionRequired = pool.length > 1 && (target === null || (selected !== null && !selected.requestedControl && targetCandidate));
@@ -403,6 +424,7 @@ export async function resolveControlPopupOwner(
         overlappingCandidateCount: null,
         surfaceCoveredCandidateCount: null,
         decision: 'missing',
+        ...(targetFirst.miss === null ? {} : { targetFirstMiss: targetFirst.miss }),
       },
     };
   } finally {

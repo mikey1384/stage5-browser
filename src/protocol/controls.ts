@@ -98,6 +98,7 @@ export interface ControlPopupOwnershipEvidence {
   overlappingCandidateCount: number | null;
   surfaceCoveredCandidateCount: number | null;
   decision: 'covered_siblings_excluded' | 'decisive_distance' | 'missing' | 'single_candidate' | 'structural_conflict' | 'tie_or_near' | 'unbounded';
+  targetFirstMiss?: 'competing_structural_owner' | 'insufficient_focus_or_expansion' | 'not_spatial' | 'relation_unavailable' | 'target_unavailable';
 }
 
 export interface ControlRecoveryEvidence {

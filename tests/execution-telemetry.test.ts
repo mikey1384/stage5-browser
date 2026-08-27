@@ -296,6 +296,7 @@ describe('privacy-safe execution telemetry', () => {
     expect(trace.conclusion).toEqual({
       actionDispatched: true,
       clickDispatched: false,
+      activationTransport: null,
       postconditionPassed: null,
       checks: [
         { kind: 'selection_representation', passed: false, observed: false },
@@ -625,7 +626,21 @@ describe('privacy-safe execution telemetry', () => {
           reason: 'control_popup_not_observed',
           actionDispatched: true,
           clickDispatched: false,
+          dispatchEvidence: {
+            keyDownOnTarget: true,
+            keyUpOnTarget: true,
+            pointerDownOnTarget: false,
+          },
           revealInteraction: 'keyboard',
+          popupOwnership: {
+            proofTier: 'none',
+            candidateCount: null,
+            exteriorCandidateCount: null,
+            overlappingCandidateCount: null,
+            surfaceCoveredCandidateCount: null,
+            decision: 'unbounded',
+            targetFirstMiss: 'not_spatial',
+          },
           privateLabel: 'Never retain this field label',
         },
       },
@@ -637,7 +652,9 @@ describe('privacy-safe execution telemetry', () => {
     expect(trace.conclusion).toMatchObject({
       actionDispatched: true,
       clickDispatched: false,
+      activationTransport: 'keyboard',
       controlRevealInteraction: 'keyboard',
+      popupOwnership: { decision: 'unbounded', targetFirstMiss: 'not_spatial' },
     });
     expect(JSON.stringify(trace)).not.toContain('Never retain this field label');
   });

@@ -1,7 +1,18 @@
 import { type BrowserCommandInput, type BrowserCommandOutput, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
-import type { ObservedSnapshot } from '../model.js';
+import { type ObservedSnapshot, POPUP_OPTION_ROLES } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import type { ClickActivationPolicy } from '../action/click-plan.js';
+
+function exactClickActivationPolicy(
+  postcondition: unknown,
+  semanticRole: string | null,
+): ClickActivationPolicy {
+  if (
+    postcondition === null ||
+    (semanticRole !== null && POPUP_OPTION_ROLES.has(semanticRole.toLocaleLowerCase()))
+  ) return 'pointer_only';
+  return 'postconditioned_native_keyboard';
+}
 
 export const inputActionsOperations = {
   async clickByRole(
@@ -21,9 +32,7 @@ export const inputActionsOperations = {
         });
         return {
           action: 'click_by_role',
-          activationPolicy: input.postcondition === null
-            ? 'pointer_only'
-            : 'postconditioned_native_keyboard',
+          activationPolicy: exactClickActivationPolicy(input.postcondition, input.role),
           page,
           frame,
           postcondition: input.postcondition,
@@ -66,9 +75,10 @@ export const inputActionsOperations = {
       },
       plan: ({ page, frame, observed }) => ({
         action: 'click_by_ref',
-        activationPolicy: input.postcondition === null
-          ? 'pointer_only'
-          : 'postconditioned_native_keyboard',
+        activationPolicy: exactClickActivationPolicy(
+          input.postcondition,
+          observed?.refSemantics.get(input.ref)?.role ?? null,
+        ),
         page,
         frame,
         postcondition: input.postcondition,

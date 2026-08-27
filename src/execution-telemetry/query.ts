@@ -25,6 +25,7 @@ export function normalizeTrace(trace: Partial<BrowserExecutionTrace>): BrowserEx
     },
     conclusion: {
       ...conclusion,
+      activationTransport: typeof conclusion.activationTransport === 'string' ? conclusion.activationTransport : null,
       controlRecovery: isRecord(conclusion.controlRecovery) ? conclusion.controlRecovery : null,
       controlRevealInteraction: typeof conclusion.controlRevealInteraction === 'string'
         ? conclusion.controlRevealInteraction

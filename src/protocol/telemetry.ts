@@ -71,6 +71,7 @@ export interface ExecutionActionTrace {
 export interface ExecutionTraceConclusion {
   actionDispatched: boolean | 'unknown' | null;
   clickDispatched: boolean | 'unknown' | null;
+  activationTransport: 'keyboard' | 'mixed' | 'pointer' | null;
   postconditionPassed: boolean | null;
   checks: Array<{
     kind: PostconditionCheck['kind'];

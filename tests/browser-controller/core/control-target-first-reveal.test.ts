@@ -87,6 +87,102 @@ describe('BrowserController target-first popup reveal', () => {
     await expect(page.locator('#clicks').textContent()).resolves.toBe('1');
   });
 
+  it('treats focus inside the exact composite searchbox as target-first evidence', async () => {
+    const unrelated = Array.from({ length: 120 }, (_, index) =>
+      `<button type="button">Unrelated ${index}</button>`).join('');
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; }
+      #country, #options { position: absolute; left: 20px; width: 240px; box-sizing: border-box; }
+      #country { top: 20px; height: 40px; border: 1px solid black; }
+      #editor { position: absolute; inset: 0; }
+      #options { top: 60px; height: 80px; border: 1px solid black; }
+      #noise { position: absolute; top: 180px; }
+    </style></head><body>
+      <div id="country" role="searchbox" aria-label="Country of Issuance">
+        <span id="editor" tabindex="0" aria-hidden="true"></span>
+      </div>
+      <div id="options" role="listbox" hidden><div role="option">United States</div></div>
+      <div id="noise">${unrelated}</div>
+      <output id="focus-state">outside</output>
+      <script>
+        country.addEventListener('click', () => {
+          options.hidden = false;
+          editor.focus();
+          document.querySelector('#focus-state').value = country.contains(document.activeElement)
+            ? 'inside-target'
+            : 'outside';
+        });
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'searchbox', name: 'Country of Issuance', exact: true },
+      frameId: null,
+      revealOptions: true,
+      revealInteraction: 'pointer',
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+
+    expect(inspected?.inspection).toMatchObject({
+      options: [{ name: 'United States' }],
+      reveal: {
+        associationProof: 'focused',
+        popupOpened: true,
+        popupOwnership: {
+          proofTier: 'focused',
+          candidateCount: 1,
+        },
+      },
+    });
+    await expect(page.locator('#focus-state').textContent()).resolves.toBe('inside-target');
+  });
+
+  it('does not let contained focus override a different structural popup owner', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; }
+      #country, #options { position: absolute; left: 20px; width: 240px; box-sizing: border-box; }
+      #country { top: 20px; height: 40px; border: 1px solid black; }
+      #editor { position: absolute; inset: 0; }
+      #options { top: 60px; height: 80px; border: 1px solid black; }
+      #actual-owner { position: absolute; top: 180px; left: 20px; }
+    </style></head><body>
+      <div id="country" role="searchbox" aria-label="Country of Issuance">
+        <span id="editor" tabindex="0" aria-hidden="true"></span>
+      </div>
+      <button id="actual-owner" type="button" aria-controls="options">Different field</button>
+      <div id="options" role="listbox" hidden><div role="option">United States</div></div>
+      <output id="opens">0</output>
+      <script>
+        country.addEventListener('click', () => {
+          opens.value = String(Number(opens.value) + 1);
+          options.hidden = false;
+          editor.focus();
+        });
+      </script>
+    </body></html>`);
+
+    await expect(controller?.inspectControl({
+      control: { role: 'searchbox', name: 'Country of Issuance', exact: true },
+      frameId: null,
+      revealOptions: true,
+      revealInteraction: 'pointer',
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      code: 'POSTCONDITION_FAILED',
+      details: {
+        reason: 'control_popup_not_observed',
+        actionDispatched: true,
+        popupOwnership: {
+          proofTier: 'structural',
+          targetFirstMiss: 'competing_structural_owner',
+        },
+      },
+    });
+    await expect(page.locator('#opens').textContent()).resolves.toBe('1');
+  });
+
   it('lets the agent choose keyboard reveal before dispatch when pointerDown would detach', async () => {
     const page = await openFixture(`<!doctype html><html><body>
       <button id="role-control" type="button" aria-haspopup="listbox">Role</button>

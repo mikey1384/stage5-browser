@@ -174,6 +174,76 @@ describe("BrowserController popup dispatch evidence and no replay", () => {
     });
   });
 
+  it("keeps an exact popup-option click on pointer transport even with a postcondition", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><html><body>
+        <button id="choice" type="button" role="menuitem">Korea, Republic of</button>
+        <div id="selected" role="status" aria-label="Country selected" hidden>selected</div>
+        <output id="counters">keydowns:0 pointerdowns:0 clicks:0</output>
+        <script>
+          const state = { keydowns: 0, pointerdowns: 0, clicks: 0 };
+          const render = () => {
+            counters.value = 'keydowns:' + state.keydowns +
+              ' pointerdowns:' + state.pointerdowns + ' clicks:' + state.clicks;
+          };
+          choice.addEventListener('keydown', () => { state.keydowns += 1; render(); });
+          choice.addEventListener('pointerdown', () => { state.pointerdowns += 1; render(); });
+          choice.addEventListener('click', () => {
+            state.clicks += 1;
+            selected.hidden = false;
+            render();
+          });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "stage5-browser-popup-option-pointer-"));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/popup`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    await expect(controller.clickByRole({
+      role: "menuitem",
+      name: "Korea, Republic of",
+      exact: true,
+      frameId: null,
+      postcondition: {
+        expectedUrl: null,
+        expectedSelected: null,
+        expectedVisible: {
+          role: "status",
+          name: "Country selected",
+          exact: true,
+          frameId: null,
+        },
+        timeoutMs: 1_000,
+      },
+      timeoutMs: 3_000,
+    })).resolves.toMatchObject({
+      dispatch: {
+        actionDispatched: true,
+        clickDispatched: true,
+      },
+      postcondition: { passed: true },
+    });
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(page.locator("#counters").textContent()).resolves.toBe(
+      "keydowns:0 pointerdowns:1 clicks:1",
+    );
+    expect((await controller.diagnostics()).page?.lastAction).toMatchObject({
+      dispatchEvidence: {
+        keyDownOnTarget: false,
+        pointerDownOnTarget: true,
+        clickOnTarget: true,
+      },
+    });
+  });
+
   it("does not fall back when a selection-intent Space keydown detaches without opening options", async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });

@@ -20,6 +20,19 @@ const SELECTION_PROOFS = new Set<NonNullable<NonNullable<ExecutionTraceConclusio
   'value_and_popup_closed',
 ]);
 
+export function activationTransportConclusion(
+  value: unknown,
+): ExecutionTraceConclusion['activationTransport'] {
+  const keyboard = [...valuesForKey(value, 'keyDownOnTarget'), ...valuesForKey(value, 'keyUpOnTarget')].includes(true);
+  const pointer = [
+    ...valuesForKey(value, 'pointerDownOnTarget'),
+    ...valuesForKey(value, 'mouseDownOnTarget'),
+    ...valuesForKey(value, 'pointerUpOnTarget'),
+    ...valuesForKey(value, 'mouseUpOnTarget'),
+  ].includes(true);
+  return keyboard && pointer ? 'mixed' : keyboard ? 'keyboard' : pointer ? 'pointer' : null;
+}
+
 export function controlRevealInteractionConclusion(
   value: unknown,
 ): ExecutionTraceConclusion['controlRevealInteraction'] {

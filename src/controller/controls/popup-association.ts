@@ -366,7 +366,9 @@ export const controlPopupAssociationOperations = {
       }
       if (
         selected.size === 0 &&
-        policy.allowUniqueRenderedAfterDispatch === true
+        policy.allowUniqueRenderedAfterDispatch === true &&
+        surfaceSetOwnership?.targetFirstMiss !== 'competing_structural_owner' &&
+        !ownershipDiagnostics.some(({ targetFirstMiss }) => targetFirstMiss === 'competing_structural_owner')
       ) {
         if (oneLogicalSurfaceSet) {
           for (const candidate of renderedRoots) selected.add(candidate);

@@ -120,6 +120,33 @@ export const controlSelectionOperations = {
           },
         });
       }
+      if (
+        desiredSelected &&
+        inspection.kind === 'custom_popup' &&
+        inspection.controlExact &&
+        (inspection.controlRole === 'combobox' || inspection.controlRole === 'searchbox') &&
+        input.interaction !== 'observed_option'
+      ) {
+        const editor = await this.inspectFillTarget(
+          inspection.controlHandle,
+          Math.max(1, remainingUntil(deadlineAt)),
+        );
+        if (editor !== null && editor.enabled) {
+          const searchable = await this.selectSearchableOptionIfEligible({
+            ...input,
+            inspectionId: null,
+            optionId: null,
+            control: {
+              role: inspection.controlRole,
+              name: inspection.controlName,
+              exact: true,
+            },
+            option: { name: option.observation.name, exact: true },
+            selected: true,
+          }, page, frame, deadlineAt);
+          if (searchable !== null) return { ...searchable, inspectionId, optionId };
+        }
+      }
       if (!desiredSelected && option.observation.selected === null) {
         throw new Stage5BrowserError('OPERATION_FAILED', 'The exact option current state is unknown, so toggling it could select instead of deselect.', {
           recoverable: true,
