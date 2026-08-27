@@ -1,6 +1,6 @@
 import { type ElementHandle, type Locator, type Page, type PostconditionResult, Stage5BrowserError } from '../dependencies.js';
 import { boundedValue, remainingUntil } from '../model.js';
-import { popupRendered } from './rendering.js';
+import { popupRenderedState } from './rendering.js';
 
 export interface ControlSelectionRepresentation {
   controlRepresentsOption: boolean;
@@ -16,21 +16,78 @@ export interface ControlSelectionReconciliation {
 
 interface ControlRepresentationEvaluator {
   evaluate<Result>(
-    pageFunction: (element: HTMLElement, requestedName: string) => Result,
-    requestedName: string,
+    pageFunction: (
+      control: HTMLElement,
+      input: { owner: HTMLElement; popup: HTMLElement | null; requestedName: string },
+    ) => Result,
+    input: {
+      owner: ElementHandle<HTMLElement>;
+      popup: ElementHandle<HTMLElement> | null;
+      requestedName: string;
+    },
   ): Promise<Result>;
 }
 
+export async function resolveControlSelectionRepresentationScope(
+  control: ElementHandle<HTMLElement>,
+  popup: ElementHandle<HTMLElement> | null,
+  deadlineAt: number,
+): Promise<ElementHandle<HTMLElement> | null> {
+  const pendingScope = control.evaluateHandle((element, input) => {
+    const fieldSelector = [
+      'input:not([type="hidden"])',
+      'textarea',
+      'select',
+      '[contenteditable="true"]',
+      '[role="checkbox"]',
+      '[role="combobox"]',
+      '[role="listbox"]',
+      '[role="radio"]',
+      '[role="spinbutton"]',
+      '[role="switch"]',
+      '[aria-haspopup]',
+    ].join(',');
+    const popupContains = (candidate: Element): boolean =>
+      input !== null && (candidate === input || input.contains(candidate));
+    const hasCompetingField = (candidate: HTMLElement): boolean =>
+      Array.from(candidate.querySelectorAll(fieldSelector)).some((field) =>
+        field !== element && !element.contains(field) && !popupContains(field));
+
+    let owner = element;
+    let candidate = element.parentElement;
+    while (candidate !== null) {
+      if (candidate === element.ownerDocument.body || candidate === element.ownerDocument.documentElement) break;
+      if (hasCompetingField(candidate)) break;
+      owner = candidate;
+      candidate = candidate.parentElement;
+    }
+    return owner;
+  }, popup).then((handle) => handle.asElement() as ElementHandle<HTMLElement> | null);
+  const scope = await boundedValue(
+    pendingScope,
+    Math.max(1, remainingUntil(deadlineAt)),
+    null,
+  );
+  if (scope === null) {
+    void pendingScope.then((lateScope) => lateScope?.dispose()).catch(() => undefined);
+  }
+  return scope;
+}
+
 export async function observeControlSelectionRepresentation(
-  control: Locator | ElementHandle<HTMLElement>,
+  control: ElementHandle<HTMLElement>,
+  owner: ElementHandle<HTMLElement>,
+  popup: ElementHandle<HTMLElement> | null,
   optionName: string,
   deadlineAt: number,
 ): Promise<ControlSelectionRepresentation | null> {
   const evaluator = control as unknown as ControlRepresentationEvaluator;
   return boundedValue(
-    evaluator.evaluate((element, requestedName) => {
+    evaluator.evaluate((element, input) => {
       const normalize = (value: string | null | undefined): string =>
         (value ?? '').replaceAll(/\s+/gu, ' ').trim().toLocaleLowerCase();
+      const { owner: scope, popup: popupElement, requestedName } = input;
+      if (!scope.isConnected || !element.isConnected || (scope !== element && !scope.contains(element))) return null;
       const requested = normalize(requestedName);
       if (requested.length === 0) return null;
       const sources = [
@@ -49,6 +106,7 @@ export async function observeControlSelectionRepresentation(
           style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
       };
       const outsidePopup = (candidate: Element): boolean =>
+        (popupElement === null || (candidate !== popupElement && !popupElement.contains(candidate))) &&
         candidate.closest('[role="listbox"], [role="menu"], [role="tree"]') === null;
       const exactRenderedLeaf = (candidate: Element): boolean => {
         if (!rendered(candidate) || !outsidePopup(candidate)) return false;
@@ -62,18 +120,7 @@ export async function observeControlSelectionRepresentation(
         normalize(element.textContent) === requested ||
         controlExactRepresentationCount > 0;
 
-      const semanticScope = element.closest('fieldset, [role="group"], label') ?? element.parentElement;
-      if (
-        semanticScope === null ||
-        semanticScope === element.ownerDocument.body ||
-        semanticScope === element.ownerDocument.documentElement
-      ) {
-        return { controlRepresentsOption, localExactRepresentationCount: 0 };
-      }
-      const descendants = Array.from(semanticScope.querySelectorAll('*'));
-      if (descendants.length > 200) {
-        return { controlRepresentsOption, localExactRepresentationCount: 0 };
-      }
+      const descendants = Array.from(scope.querySelectorAll('*'));
       const exactLeaf = (candidate: Element): boolean => {
         if (candidate === element || element.contains(candidate)) return false;
         return exactRenderedLeaf(candidate);
@@ -82,7 +129,7 @@ export async function observeControlSelectionRepresentation(
         controlRepresentsOption,
         localExactRepresentationCount: descendants.filter(exactLeaf).length,
       };
-    }, optionName),
+    }, { owner, popup, requestedName: optionName }),
     Math.max(1, remainingUntil(deadlineAt)),
     null,
   );
@@ -90,10 +137,11 @@ export async function observeControlSelectionRepresentation(
 
 export async function reconcileCustomControlSelection(input: {
   before: ControlSelectionRepresentation;
-  control: Locator;
+  control: ElementHandle<HTMLElement>;
   deadlineAt: number;
   option: Locator;
   optionName: string;
+  owner: ElementHandle<HTMLElement>;
   page: Page;
   popup: ElementHandle<HTMLElement>;
   requireSelected: boolean;
@@ -103,10 +151,16 @@ export async function reconcileCustomControlSelection(input: {
   let popupClosed = false;
   let selectedRepresentationObserved = false;
   while (true) {
-    selectedState = await input.selectedState(input.option);
-    popupClosed = !await popupRendered(input.popup, input.deadlineAt);
+    selectedState = await boundedValue(
+      input.selectedState(input.option),
+      Math.max(1, remainingUntil(input.deadlineAt)),
+      null,
+    );
+    if (await popupRenderedState(input.popup, input.deadlineAt) === false) popupClosed = true;
     const represented = await observeControlSelectionRepresentation(
       input.control,
+      input.owner,
+      input.popup,
       input.optionName,
       input.deadlineAt,
     );

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { type BrowserCommandInput, type BrowserCommandOutput, type ControlOptionObservation, type ControlSelectionEvidence, type Frame, type Page, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedControlInspection, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
-import { observeControlSelectionRepresentation, reconcileCustomControlSelection } from './selection-evidence.js';
+import { observeControlSelectionRepresentation, reconcileCustomControlSelection, resolveControlSelectionRepresentationScope } from './selection-evidence.js';
 
 interface NativeSelectEventRecord {
   inputEventObserved: boolean;
@@ -270,8 +270,27 @@ export const controlSelectionOperations = {
       1,
       Math.min(CONTROL_SELECTION_BASELINE_OBSERVATION_MS, remainingUntil(deadlineAt)),
     );
+    const representationScope = inspection.representationScopeHandle ??
+      await resolveControlSelectionRepresentationScope(inspection.controlHandle, popupHandle, baselineDeadlineAt);
+    if (representationScope === null) {
+      throw new Stage5BrowserError(
+        'OPERATION_FAILED',
+        'The exact inspected field scope could not be retained before the selection dispatch gate.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'control_selection_scope_unavailable',
+            actionDispatched: false,
+            suggestedAction: 'Inspect the control once more before deciding whether a new selection is safe.',
+          },
+        },
+      );
+    }
+    inspection.representationScopeHandle = representationScope;
     const beforeRepresentation = await observeControlSelectionRepresentation(
       inspection.controlHandle,
+      representationScope,
+      popupHandle,
       option.observation.name,
       baselineDeadlineAt,
     );
@@ -366,13 +385,14 @@ export const controlSelectionOperations = {
         reconcile: async (prepared, remainingTimeoutMs) => {
           const reconciliation = await reconcileCustomControlSelection({
             before: baselineRepresentation,
-            control: inspection.controlLocator,
+            control: inspection.controlHandle,
             deadlineAt: Date.now() + Math.max(1, remainingTimeoutMs),
             option: prepared.locator,
             optionName: option.observation.name,
+            owner: representationScope,
             page,
             popup: popupHandle,
-            requireSelected,
+            requireSelected: requireSelected || inspection.multiple,
             selectedState: (locator) => this.selectedState(locator),
           });
           return reconciliation.postcondition;

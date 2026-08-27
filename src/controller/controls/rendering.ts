@@ -5,6 +5,13 @@ export async function popupRendered(
   handle: ElementHandle<HTMLElement> | null,
   deadlineAt: number,
 ): Promise<boolean> {
+  return await popupRenderedState(handle, deadlineAt) === true;
+}
+
+export async function popupRenderedState(
+  handle: ElementHandle<HTMLElement> | null,
+  deadlineAt: number,
+): Promise<boolean | null> {
   if (handle === null) return false;
   return boundedValue(
     handle.evaluate((surface) => {
@@ -17,6 +24,6 @@ export async function popupRendered(
         && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     }),
     Math.max(1, remainingUntil(deadlineAt)),
-    false,
+    null,
   );
 }

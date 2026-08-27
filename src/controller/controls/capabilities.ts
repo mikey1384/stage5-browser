@@ -55,6 +55,7 @@ export const controlCapabilityOperations = {
   async disposeControlInspection(inspection: ObservedControlInspection): Promise<void> {
     await Promise.allSettled([
       inspection.controlHandle.dispose(),
+      inspection.representationScopeHandle?.dispose() ?? Promise.resolve(),
       inspection.popupHandle?.dispose() ?? Promise.resolve(),
       ...[...inspection.options.values()].map(({ handle }) => handle.dispose()),
     ]);

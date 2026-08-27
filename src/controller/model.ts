@@ -68,6 +68,7 @@ export interface ObservedControlInspection {
   controlExact: boolean;
   controlLocator: Locator;
   controlHandle: ElementHandle<HTMLElement>;
+  representationScopeHandle?: ElementHandle<HTMLElement>;
   popupLocator: Locator | null;
   popupHandle: ElementHandle<HTMLElement> | null;
   multiple: boolean;
