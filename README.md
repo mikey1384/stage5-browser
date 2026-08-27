@@ -186,7 +186,8 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-available-moves-and-agent-judgment.md` — current-move planning, bounded semantic judgment, explicit startup, telemetry, and Finance tie recovery in 0.18.0
 - `docs/dogfooding-2026-08-27-observed-popup-owner-candidates.md` — one-use agent-selected popup-owner candidates for composite controls in 0.19.0
 - `docs/dogfooding-2026-08-27-covered-popup-reveal-activation.md` — manager-owned native keyboard fallback for covered popup openers in compatible 0.19.1
-- `docs/dogfooding-2026-08-27-causal-popup-surface-set.md` — causal composition and passive agent-owned recovery for one logical popup's sibling semantic groups and disappearing composite nodes in compatible 0.19.2–0.19.4
+- `docs/dogfooding-2026-08-27-causal-popup-surface-set.md` — causal composition, complete agent-visible owner pools, disappearing composite-node recovery, and host-owned privacy-safe recovery telemetry in 0.19.2–0.19.5
+- `docs/dogfooding-2026-08-27-mcp-copy-budget.md` — actual agent-overload feedback, the measured 94.2% default-prose reduction, and outcome-first selection results in 0.19.5
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15
@@ -237,6 +238,7 @@ Key implementation files:
 
 ## Reliability contract
 
+- Default MCP guidance is a compact control surface, not a repeated handbook. Server instructions plus tool titles/descriptions are regression-bounded to at most 10% of the 5,846-word legacy baseline. Enforced safety stays in code; diagnostics remain available on demand. Successful option results lead with outcome, dispatch, current selection/popup state, and a short next-action enum before detailed evidence.
 - Every agent-visible operation receives an operation ID and terminal result.
 - Browser operations are serialized; two agents cannot race the same active tab.
 - Playwright deadlines are backed by a supervisor-owned hard deadline.

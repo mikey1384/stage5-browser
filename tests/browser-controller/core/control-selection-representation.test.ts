@@ -90,6 +90,13 @@ describe('BrowserController custom selection representation', () => {
       timeoutMs: 5_000,
     });
 
+    expect(selected).toMatchObject({
+      outcome: 'succeeded',
+      selectionSucceeded: true,
+      actionDispatched: true,
+      currentState: { requestedSelected: true, popupOpen: true, multiple: true },
+      nextAction: 'select_more_or_dismiss_popup',
+    });
     expect(selected?.evidence).toMatchObject({
       actionDispatched: true,
       selectionEffectObserved: true,

@@ -89,15 +89,7 @@ describe('BrowserController causal popup surface sets', () => {
         renderedPopupCount: 7,
       },
     });
-    expect(inspected.inspection.options.map(({ name }) => name)).toEqual([
-      'Choice 1',
-      'Choice 2',
-      'Choice 3',
-      'Choice 4',
-      'Choice 5',
-      'Choice 6',
-      'Choice 7',
-    ]);
+    expect(inspected.inspection.options.map(({ name }) => name)).toEqual(['Choice 1', 'Choice 2', 'Choice 3', 'Choice 4', 'Choice 5', 'Choice 6', 'Choice 7']);
     await expect(page.locator('#opens').textContent()).resolves.toBe('1');
   });
 
@@ -158,11 +150,18 @@ describe('BrowserController causal popup surface sets', () => {
         agentJudgmentAvailable: true,
       },
     });
-    const ownerCandidates = (failure as {
-      details: { ownerCandidates: Array<{ role: string; name: string; ownerCandidateId?: string }> };
-    }).details.ownerCandidates;
-    const owner = ownerCandidates.find(({ role, name }) =>
-      role === 'button' && name === 'Ordinary field');
+    const ownerCandidates = (
+      failure as {
+        details: {
+          ownerCandidates: Array<{
+            role: string;
+            name: string;
+            ownerCandidateId?: string;
+          }>;
+        };
+      }
+    ).details.ownerCandidates;
+    const owner = ownerCandidates.find(({ role, name }) => role === 'button' && name === 'Ordinary field');
     expect(owner?.ownerCandidateId).toMatch(/^popup-owner-candidate-[0-9a-f-]{36}$/u);
 
     const inspected = await activeController.inspectControl({
@@ -186,29 +185,28 @@ describe('BrowserController causal popup surface sets', () => {
         renderedPopupCount: 7,
       },
     });
-    expect(inspected.inspection.options.map(({ name }) => name)).toEqual([
-      'Choice 1',
-      'Choice 2',
-      'Choice 3',
-      'Choice 4',
-      'Choice 5',
-      'Choice 6',
-      'Choice 7',
-    ]);
+    expect(inspected.inspection.options.map(({ name }) => name)).toEqual(['Choice 1', 'Choice 2', 'Choice 3', 'Choice 4', 'Choice 5', 'Choice 6', 'Choice 7']);
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });
 
   it('recovers an already-open logical popup when its requested composite node disappeared', async () => {
     const { controller: activeController, page } = await openFixture(`<!doctype html><html><head><style>
       body { margin: 0; min-height: 600px; position: relative; }
-      button { position: absolute; top: 20px; height: 40px; box-sizing: border-box; }
-      #owner { left: 200px; width: 40px; }
-      #competitor { left: 240px; width: 40px; }
-      #portal { position: absolute; left: 20px; top: 60px; width: 260px; padding: 8px; }
-      [role=listbox] { height: 44px; }
+      button, #portal { position: absolute; left: 20px; width: 240px; box-sizing: border-box; }
+      button { height: 40px; }
+      #exterior-before { top: 0; }
+      #owner { top: 80px; }
+      #covered-competitor { top: 120px; }
+      #uncovered-competitor { top: 160px; z-index: 3; }
+      #exterior-after { top: 380px; }
+      #portal { top: 60px; height: 300px; z-index: 2; border: 1px solid black; }
+      [role=listbox] { height: 40px; }
     </style></head><body tabindex="-1">
-      <button id="owner" type="button" aria-label="Ordinary field" aria-expanded="true">Open</button>
-      <button id="competitor" type="button">Other field</button>
+      <button id="exterior-before" type="button">Earlier field</button>
+      <button id="owner" type="button" aria-label="Ordinary field">Open</button>
+      <button id="covered-competitor" type="button">Covered field</button>
+      <button id="uncovered-competitor" type="button">Different field</button>
+      <button id="exterior-after" type="button">Later field</button>
       <div id="portal">
         <div role="listbox"><div role="option">Choice 1</div></div>
         <div role="listbox"><div role="option">Choice 2</div></div>
@@ -257,13 +255,41 @@ describe('BrowserController causal popup surface sets', () => {
         renderedPopupCount: 7,
         requestedControlIsCandidate: false,
         agentJudgmentAvailable: true,
+        ownerCandidatesTruncated: false,
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 5,
+          exteriorCandidateCount: 2,
+          overlappingCandidateCount: 3,
+          surfaceCoveredCandidateCount: 2,
+          decision: 'covered_siblings_excluded',
+        },
+        controlRecovery: {
+          requestedControlResolution: 'missing',
+          popupOwnerDecision: 'required',
+          activeCandidateCount: 5,
+          exposedCandidateCount: 5,
+          issuedCapabilityCount: 5,
+          candidatesTruncated: false,
+          requestedControlIsCandidate: false,
+          agentJudgmentAvailable: true,
+        },
       },
     });
-    const ownerCandidates = (failure as {
-      details: { ownerCandidates: Array<{ role: string; name: string; ownerCandidateId?: string }> };
-    }).details.ownerCandidates;
-    const owner = ownerCandidates.find(({ role, name }) =>
-      role === 'button' && name === 'Ordinary field');
+    const ownerCandidates = (
+      failure as {
+        details: {
+          ownerCandidates: Array<{
+            role: string;
+            name: string;
+            ownerCandidateId?: string;
+          }>;
+        };
+      }
+    ).details.ownerCandidates;
+    expect(ownerCandidates).toHaveLength(5);
+    expect(ownerCandidates.every(({ ownerCandidateId }) => typeof ownerCandidateId === 'string')).toBe(true);
+    const owner = ownerCandidates.find(({ role, name }) => role === 'button' && name === 'Ordinary field');
     expect(owner?.ownerCandidateId).toMatch(/^popup-owner-candidate-[0-9a-f-]{36}$/u);
 
     const inspected = await activeController.inspectControl({
@@ -284,17 +310,27 @@ describe('BrowserController causal popup surface sets', () => {
         openerActionDispatched: false,
         associationProof: 'agent_declared',
         renderedPopupCount: 7,
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 5,
+          exteriorCandidateCount: 2,
+          overlappingCandidateCount: 3,
+          surfaceCoveredCandidateCount: 2,
+          decision: 'covered_siblings_excluded',
+        },
+        controlRecovery: {
+          requestedControlResolution: 'recovered_observed_owner',
+          popupOwnerDecision: 'consumed',
+          activeCandidateCount: 5,
+          exposedCandidateCount: null,
+          issuedCapabilityCount: null,
+          candidatesTruncated: null,
+          requestedControlIsCandidate: false,
+          agentJudgmentAvailable: true,
+        },
       },
     });
-    expect(inspected.inspection.options.map(({ name }) => name)).toEqual([
-      'Choice 1',
-      'Choice 2',
-      'Choice 3',
-      'Choice 4',
-      'Choice 5',
-      'Choice 6',
-      'Choice 7',
-    ]);
+    expect(inspected.inspection.options.map(({ name }) => name)).toEqual(['Choice 1', 'Choice 2', 'Choice 3', 'Choice 4', 'Choice 5', 'Choice 6', 'Choice 7']);
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });
 
@@ -314,7 +350,11 @@ describe('BrowserController causal popup surface sets', () => {
         });
       </script>
     </body></html>`);
-    const control = { role: 'textbox' as const, name: 'Ordinary field', exact: true };
+    const control = {
+      role: 'textbox' as const,
+      name: 'Ordinary field',
+      exact: true,
+    };
     let failure: unknown;
     try {
       await activeController.inspectControl({
@@ -327,26 +367,37 @@ describe('BrowserController causal popup surface sets', () => {
     } catch (error) {
       failure = error;
     }
-    const ownerCandidates = (failure as {
-      details: { ownerCandidates: Array<{ role: string; name: string; ownerCandidateId?: string }> };
-    }).details.ownerCandidates;
-    const ownerCandidateId = ownerCandidates.find(({ role, name }) =>
-      role === 'button' && name === control.name)?.ownerCandidateId;
+    const ownerCandidates = (
+      failure as {
+        details: {
+          ownerCandidates: Array<{
+            role: string;
+            name: string;
+            ownerCandidateId?: string;
+          }>;
+        };
+      }
+    ).details.ownerCandidates;
+    const ownerCandidateId = ownerCandidates.find(({ role, name }) => role === 'button' && name === control.name)?.ownerCandidateId;
     expect(ownerCandidateId).toBeDefined();
-    await page.locator('#portal').evaluate((portal) => { portal.hidden = true; });
+    await page.locator('#portal').evaluate((portal) => {
+      portal.hidden = true;
+    });
 
-    await expect(activeController.inspectControl({
-      control,
-      popupAssociation: {
-        owner: 'observed_candidate',
-        ownerCandidateId: ownerCandidateId!,
-        basis: 'agent_semantic_judgment',
-      },
-      frameId: null,
-      revealOptions: true,
-      maxOptions: 20,
-      timeoutMs: 5_000,
-    })).rejects.toMatchObject({
+    await expect(
+      activeController.inspectControl({
+        control,
+        popupAssociation: {
+          owner: 'observed_candidate',
+          ownerCandidateId: ownerCandidateId!,
+          basis: 'agent_semantic_judgment',
+        },
+        frameId: null,
+        revealOptions: true,
+        maxOptions: 20,
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toMatchObject({
       code: 'TARGET_NOT_FOUND',
       details: {
         reason: 'popup_owner_candidate_surface_changed',
@@ -386,13 +437,15 @@ describe('BrowserController causal popup surface sets', () => {
       </script>
     </body></html>`);
 
-    await expect(activeController.inspectControl({
-      control: { role: 'button', name: 'Ordinary field', exact: true },
-      frameId: null,
-      revealOptions: true,
-      maxOptions: 20,
-      timeoutMs: 5_000,
-    })).rejects.toMatchObject({
+    await expect(
+      activeController.inspectControl({
+        control: { role: 'button', name: 'Ordinary field', exact: true },
+        frameId: null,
+        revealOptions: true,
+        maxOptions: 20,
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toMatchObject({
       details: {
         actionDispatched: true,
         renderedPopupCount: 2,

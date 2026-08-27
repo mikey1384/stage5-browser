@@ -7,6 +7,25 @@ import { MAX_MCP_RESULT_BYTES } from '../src/mcp/result-shaping.js';
 import { SupervisedOperationError } from '../src/supervisor/model.js';
 
 describe('bounded MCP result shaping', () => {
+  it('puts a concise action outcome and current state before implementation evidence', () => {
+    const result = textResult({
+      result: {
+        page: { index: 0 },
+        evidence: { popupClosed: false, selectionEffectObserved: true },
+        nextAction: 'select_more_or_dismiss_popup',
+        currentState: { requestedSelected: true, popupOpen: true, multiple: true },
+        actionDispatched: true,
+        selectionSucceeded: true,
+        outcome: 'succeeded',
+      },
+    });
+    const text = result.content[0]?.text ?? '';
+    expect(text.indexOf('"outcome"')).toBeLessThan(text.indexOf('"evidence"'));
+    expect(text.indexOf('"selectionSucceeded"')).toBeLessThan(text.indexOf('"evidence"'));
+    expect(text.indexOf('"currentState"')).toBeLessThan(text.indexOf('"evidence"'));
+    expect(text.indexOf('"nextAction"')).toBeLessThan(text.indexOf('"evidence"'));
+  });
+
   it('keeps action conclusions first and preserves both ends of oversized observations', () => {
     const title = `title-head-${'x'.repeat(50_000)}-title-tail`;
     const result = textResult({

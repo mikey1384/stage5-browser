@@ -11,6 +11,7 @@ import {
 import { type ObservedControlInspection, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import { controlOptionMatches } from './selection.js';
+import { completedSelectionSummary } from './selection-summary.js';
 
 interface RequestedSelection {
   requestedOptionId: string;
@@ -62,6 +63,7 @@ export const controlMultiSelectionOperations = {
         ? await this.selectNativeRequestedOptions(inspection, requested, deadlineAt)
         : await this.selectCustomRequestedOptions(page, frame, inspection, requested, input.frameId, deadlineAt);
       return {
+        ...completedSelectionSummary(selections.map(({ evidence }) => evidence), inspection.multiple, true),
         page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
         frame: this.frameSummary(frame, page),
         inspectionId,

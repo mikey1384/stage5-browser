@@ -2,7 +2,7 @@
 
 Date: 2026-08-27
 
-Compatible worker: Stage5 Browser 0.19.4, worker protocol 15, MCP host behavior 7, tool catalog 17, 56 tools.
+Release candidate: Stage5 Browser 0.19.5, worker protocol 15, MCP host behavior 8, tool catalog 17, 56 tools.
 
 This privacy-safe acceptance record contains no live URL, account identity, control or option meaning, form value, credential, payment or tax data, private address, document, selector, coordinates, or page content.
 
@@ -23,6 +23,8 @@ After 0.19.2 loaded, the reporting agent correctly did not dismiss or replay the
 
 The 0.19.3 actual-use gate exposed the next lifecycle boundary before the broad suite. Operation `d95d8d5f-9f42-4699-9877-1026a5f7e0a9` failed in 210 ms as `control_not_found`, with `actionDispatched:false`, no actions, and no popup association phase. From only its existing tool transcript, the reporter confirmed that the exact textbox/name/exact tuple was byte-for-byte identical to the successful-resolution 0.19.2 call and that no popup association had been supplied. The page remained frozen. This proved that the composite widget had removed its requested textbox node while leaving the logical popup and a surviving owner control present. That real result drove 0.19.4.
 
+The 0.19.4 actual-use gate then returned one semantically wrong owner candidate with zero input. Operation `78cad255-376b-4103-b4fc-14abfbb1e107` recorded five candidates in the active spatial tier, but coverage ranking exposed only one and the old trace could not independently report exposed or issued-capability counts. The reporting agent correctly refused the candidate and kept the page frozen. This proved that physical ranking had crossed into an agent-owned meaning decision and drove 0.19.5.
+
 ## Generic phase-owned correction
 
 The existing causal gate remains the source of truth: popup reveal must have proven zero rendered surfaces before preparation, and the exact opener must then have possibly received one input. Under only that gate, association first collapses nested roots. More than one outermost root is accepted as one causal surface set only when:
@@ -37,16 +39,19 @@ The last condition prevents a broad overlay from merging independent positioned 
 
 0.19.4 removes the assumption that the originally requested composite DOM node must survive that decision. When exact control resolution proves zero matches or a pre-inspection detach with no input, Stage5 performs only a bounded read of already-rendered popup surfaces. It offers current owner candidates only when those surfaces form one logical root or one proven common popup envelope; independent positioned panels still produce no recovery capability. The agent—not a role mapping, label heuristic, regex, or score—may identify a semantically equivalent surviving owner. Stage5 consumes the one-use decision, re-resolves that exact current owner, binds the whole logical surface set, and retains the surviving owner as the canonical control for later revalidation. If the owner or popup disappeared, changed, became ambiguous, or would need to be opened again, the passive continuation fails with `actionDispatched:false`. It never replays or substitutes browser input.
 
+0.19.5 keeps physical proof tiers as the bound but stops using distance or coverage to suppress viable semantics when the requested meaning is unresolved. The complete bounded active tier is exposed for agent judgment. Trace schema 2 self-identifies the loaded host and records only requested-control resolution, active/exposed/issued counts, truncation, judgment availability, and decision consumption alongside existing categorical proof and dispatch facts. Candidate semantics and IDs remain excluded.
+
 ## Regression and rollout boundary
 
-`tests/browser-controller/core/control-popup-causal-surface-set.test.ts` proves five directions:
+`tests/browser-controller/core/control-popup-causal-surface-set.test.ts` proves six directions:
 
 - one positioned portal containing seven sibling semantic groups yields one `post_dispatch_unique` capability, all seven options, and exactly one opener input;
 - the same already-open seven-group set yields one-use bounded owner candidates and then a zero-input `agent_declared` capability;
 - when the requested textbox has disappeared, the surviving owner can be chosen through a one-use decision and all seven groups remain available with zero input;
 - if that popup vanishes before the decision is consumed, Stage5 refuses with zero input even when reveal was requested;
+- a five-candidate active spatial tier exposes all five one-use choices rather than one ranking-selected semantic guess;
 - two independently positioned panels inside one fixed overlay remain a post-dispatch failure after exactly one opener input.
 
-The adjacent popup-owner, composition, reveal, selection-rebinding, representation, and timeout gate passed 36 tests across eight files. It includes stale one-use decisions, changed owners, different-owner panels, popup replacement, partial-input no-replay, representation isolation, and deadline behavior. A separate available-moves, tool-contract, and privacy-safe telemetry gate passed 15 tests across four files. The complete headless suite remains intentionally after a fresh 0.19.4 reporter operation and its privacy-safe trace because actual use is the next decisive evidence. Historical operations are never replayed.
+Focused 0.19.5 regressions currently prove the complete five-candidate pool, privacy-safe schema-2 trace parsing, concise result ordering, and an intentional open multi-select popup. Fresh-host integration, reporter acceptance, and the complete headless suite remain release gates. Historical operations are never replayed.
 
-0.19.4 changes no host, protocol, catalog, or tool contract. An adopted 0.19.0 host loads the compatible worker at a safe boundary without reconnecting. Require worker/current 0.19.4 with `restartRequired:false`, discard the failed inspection and every derived ref, and perform a new passive inspection only if the reporting agent's direct controlling thread already authorizes it. The release and Lounge grant no observation, navigation, selection, correction, continuation, submission, private entry, funding, trading, or other account authority.
+0.19.5 changes host behavior and requires one MCP reconnect. Require MCP/worker/current 0.19.5 with host behavior 8, protocol 15, catalog 17, 56 tools, and `restartRequired:false`; discard the failed inspection and every derived ref. Perform a new passive inspection only if the reporting agent's direct controlling thread already authorizes it. The release and Lounge grant no observation, navigation, selection, correction, continuation, submission, private entry, funding, trading, or other account authority.

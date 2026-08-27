@@ -5,7 +5,7 @@ import type { RuntimeProcessInfo } from '../runtime-info.js';
 import type { SanitizedPageActivationEvidence } from '../page-diagnostics.js';
 import type { AuthenticationStatus } from './authentication.js';
 import type { AvailableBrowsers, BrowserStatus, BrowserTabSummary, FrameSummary, PageSummary } from './browser-state.js';
-import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlPopupAgentAssociation, ControlSelectionEvidence, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
+import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlPopupAgentAssociation, ControlSelectionEvidence, ControlSelectionSummary, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
 import type { ScrollContainerObservation, ScrollDirection, ScrollEndState, ScrollPosition, ScrollWaitCondition, ScrollWaitResult } from './scroll.js';
 import type { BrowserMotionInput, BrowserMotionOutput } from './motions.js';
 import type { CloseTabOutput, NavigateHistoryInput, NavigateHistoryOutput } from './navigation.js';
@@ -309,7 +309,7 @@ export interface BrowserCommandMap {
       intent?: BrowserActionIntent;
       dialogResponse?: BrowserDialogExpectation | null;
     };
-    output: {
+    output: ControlSelectionSummary & {
       page: PageSummary;
       frame: FrameSummary;
       inspectionId: string;
@@ -332,7 +332,7 @@ export interface BrowserCommandMap {
       intent?: BrowserActionIntent;
       dialogResponse?: BrowserDialogExpectation | null;
     };
-    output: {
+    output: ControlSelectionSummary & {
       page: PageSummary;
       frame: FrameSummary;
       inspectionId: string;

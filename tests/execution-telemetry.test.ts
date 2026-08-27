@@ -26,14 +26,24 @@ describe('privacy-safe execution telemetry', () => {
       outcome: 'succeeded',
       error: null,
       result: {
-        page: { url: 'https://private.example/secret?token=never-store', title: 'Private account title' },
+        page: {
+          url: 'https://private.example/secret?token=never-store',
+          title: 'Private account title',
+        },
         selectedName: 'Private choice name',
         selected: false,
         suppliedValue: 'Never persist this form value',
         dispatch: { actionDispatched: true, clickDispatched: true },
         postcondition: {
           passed: true,
-          checks: [{ kind: 'url', passed: true, expected: 'private URL', observed: 'private URL' }],
+          checks: [
+            {
+              kind: 'url',
+              passed: true,
+              expected: 'private URL',
+              observed: 'private URL',
+            },
+          ],
         },
         evidence: {
           selectionEffectObserved: true,
@@ -44,26 +54,68 @@ describe('privacy-safe execution telemetry', () => {
       },
       workerRuntime: null,
       workerTelemetry: {
-        actionPhases: [{
+        actionPhases: [
+          {
+            action: 'select_option',
+            startedAtMs,
+            deadlineAtMs: startedAtMs + 5_000,
+            transitions: [
+              { phase: 'observe', enteredAtMs: startedAtMs, attempt: 1 },
+              { phase: 'plan', enteredAtMs: startedAtMs + 10, attempt: 1 },
+              { phase: 'preflight', enteredAtMs: startedAtMs + 20, attempt: 1 },
+              { phase: 'prepare', enteredAtMs: startedAtMs + 30, attempt: 1 },
+              { phase: 'dispatch', enteredAtMs: startedAtMs + 40, attempt: 1 },
+              { phase: 'reconcile', enteredAtMs: startedAtMs + 50, attempt: 1 },
+              { phase: 'finalize', enteredAtMs: startedAtMs + 90, attempt: 1 },
+            ],
+            dispatchState: 'dispatched',
+            dispatchAttempts: 1,
+            recovery: {
+              reason: 'target_changed_before_input',
+              authorizedAtMs: startedAtMs + 15,
+              completedDispatchAttempts: 0,
+            },
+            viewportPreparation: {
+              attempts: 2,
+              movements: 2,
+              horizontalMovement: true,
+              verticalMovement: false,
+              nestedSurfaceMovement: true,
+              documentMovement: false,
+              composedBoundaryTraversed: true,
+              pointerContactRecovery: false,
+              completedInViewport: true,
+              reachStrategy: 'pointer_viewport',
+            },
+            terminalOutcome: 'succeeded',
+            completedAtMs: startedAtMs + 100,
+          },
+        ],
+      },
+    });
+    const journal = new ExecutionTelemetryJournal(temporaryRoot);
+    await journal.append(trace);
+
+    const listed = await journal.list('operation-telemetry-fixture', 10);
+    expect(listed.traces[0]).toMatchObject({
+      schemaVersion: 2,
+      host: {
+        version: expect.any(String),
+        behaviorVersion: expect.any(Number),
+        toolCatalogVersion: expect.any(Number),
+        toolCount: expect.any(Number),
+      },
+      manager: 'form_manager',
+      agentId: 'youtube-agent',
+      phaseSystem: 'action_phases',
+      dispatchBoundary: 'element_input',
+      replayPolicy: 'never_after_possible_dispatch',
+      actions: [
+        {
           action: 'select_option',
-          startedAtMs,
-          deadlineAtMs: startedAtMs + 5_000,
-          transitions: [
-            { phase: 'observe', enteredAtMs: startedAtMs, attempt: 1 },
-            { phase: 'plan', enteredAtMs: startedAtMs + 10, attempt: 1 },
-            { phase: 'preflight', enteredAtMs: startedAtMs + 20, attempt: 1 },
-            { phase: 'prepare', enteredAtMs: startedAtMs + 30, attempt: 1 },
-            { phase: 'dispatch', enteredAtMs: startedAtMs + 40, attempt: 1 },
-            { phase: 'reconcile', enteredAtMs: startedAtMs + 50, attempt: 1 },
-            { phase: 'finalize', enteredAtMs: startedAtMs + 90, attempt: 1 },
-          ],
           dispatchState: 'dispatched',
           dispatchAttempts: 1,
-          recovery: {
-            reason: 'target_changed_before_input',
-            authorizedAtMs: startedAtMs + 15,
-            completedDispatchAttempts: 0,
-          },
+          recoveryReason: 'target_changed_before_input',
           viewportPreparation: {
             attempts: 2,
             movements: 2,
@@ -76,39 +128,8 @@ describe('privacy-safe execution telemetry', () => {
             completedInViewport: true,
             reachStrategy: 'pointer_viewport',
           },
-          terminalOutcome: 'succeeded',
-          completedAtMs: startedAtMs + 100,
-        }],
-      },
-    });
-    const journal = new ExecutionTelemetryJournal(temporaryRoot);
-    await journal.append(trace);
-
-    const listed = await journal.list('operation-telemetry-fixture', 10);
-    expect(listed.traces[0]).toMatchObject({
-      manager: 'form_manager',
-      agentId: 'youtube-agent',
-      phaseSystem: 'action_phases',
-      dispatchBoundary: 'element_input',
-      replayPolicy: 'never_after_possible_dispatch',
-      actions: [{
-        action: 'select_option',
-        dispatchState: 'dispatched',
-        dispatchAttempts: 1,
-        recoveryReason: 'target_changed_before_input',
-        viewportPreparation: {
-          attempts: 2,
-          movements: 2,
-          horizontalMovement: true,
-          verticalMovement: false,
-          nestedSurfaceMovement: true,
-          documentMovement: false,
-          composedBoundaryTraversed: true,
-          pointerContactRecovery: false,
-          completedInViewport: true,
-          reachStrategy: 'pointer_viewport',
         },
-      }],
+      ],
       conclusion: {
         actionDispatched: true,
         clickDispatched: true,
@@ -120,10 +141,22 @@ describe('privacy-safe execution telemetry', () => {
         selectedRepresentationObserved: false,
         popupClosed: false,
       },
-      privacy: { urls: 'omitted', selectors: 'omitted', names: 'omitted', values: 'omitted', pageContent: 'omitted' },
+      privacy: {
+        urls: 'omitted',
+        selectors: 'omitted',
+        names: 'omitted',
+        values: 'omitted',
+        pageContent: 'omitted',
+      },
     });
     expect(listed.traces[0]?.actions[0]?.phases.map(({ phase }) => phase)).toEqual([
-      'observe', 'plan', 'preflight', 'prepare', 'dispatch', 'reconcile', 'finalize',
+      'observe',
+      'plan',
+      'preflight',
+      'prepare',
+      'dispatch',
+      'reconcile',
+      'finalize',
     ]);
     const persisted = await readFile(path.join(temporaryRoot, 'execution-telemetry.jsonl'), 'utf8');
     expect(persisted).not.toContain('private.example');
@@ -151,9 +184,19 @@ describe('privacy-safe execution telemetry', () => {
           actionDispatched: true,
           clickDispatched: false,
           checks: [
-            { kind: 'selection_representation', passed: false, expected: true, observed: false },
+            {
+              kind: 'selection_representation',
+              passed: false,
+              expected: true,
+              observed: false,
+            },
             { kind: 'selected', passed: false, expected: true, observed: null },
-            { kind: 'popup_closed', passed: true, expected: true, observed: true },
+            {
+              kind: 'popup_closed',
+              passed: true,
+              expected: true,
+              observed: true,
+            },
           ],
         },
       },
@@ -180,6 +223,7 @@ describe('privacy-safe execution telemetry', () => {
       popupSurfaceProof: null,
       renderedPopupCount: null,
       popupOwnership: null,
+      controlRecovery: null,
       targetState: null,
     });
   });
@@ -203,11 +247,44 @@ describe('privacy-safe execution telemetry', () => {
           renderedPopupCount: 1,
           popupOwnership: {
             proofTier: 'spatial',
-            candidateCount: 2,
+            candidateCount: 5,
             exteriorCandidateCount: 2,
-            overlappingCandidateCount: 0,
-            surfaceCoveredCandidateCount: 0,
-            decision: 'tie_or_near',
+            overlappingCandidateCount: 3,
+            surfaceCoveredCandidateCount: 2,
+            decision: 'covered_siblings_excluded',
+          },
+          ownerCandidates: [
+            {
+              role: 'button',
+              name: 'Private correct field',
+              ownerCandidateId: 'private-capability-a',
+            },
+            {
+              role: 'button',
+              name: 'Private competing field',
+              ownerCandidateId: 'private-capability-b',
+            },
+            { role: 'button', name: 'Private unavailable field' },
+            {
+              role: 'button',
+              name: 'Private fourth field',
+              ownerCandidateId: 'private-capability-c',
+            },
+            {
+              role: 'button',
+              name: 'Private fifth field',
+              ownerCandidateId: 'private-capability-d',
+            },
+          ],
+          controlRecovery: {
+            requestedControlResolution: 'missing',
+            popupOwnerDecision: 'required',
+            activeCandidateCount: 5,
+            exposedCandidateCount: 5,
+            issuedCapabilityCount: 4,
+            candidatesTruncated: false,
+            requestedControlIsCandidate: false,
+            agentJudgmentAvailable: true,
           },
         },
       },
@@ -223,15 +300,27 @@ describe('privacy-safe execution telemetry', () => {
       renderedPopupCount: 1,
       popupOwnership: {
         proofTier: 'spatial',
-        candidateCount: 2,
+        candidateCount: 5,
         exteriorCandidateCount: 2,
-        overlappingCandidateCount: 0,
-        surfaceCoveredCandidateCount: 0,
-        decision: 'tie_or_near',
+        overlappingCandidateCount: 3,
+        surfaceCoveredCandidateCount: 2,
+        decision: 'covered_siblings_excluded',
+      },
+      controlRecovery: {
+        requestedControlResolution: 'missing',
+        popupOwnerDecision: 'required',
+        activeCandidateCount: 5,
+        exposedCandidateCount: 5,
+        issuedCapabilityCount: 4,
+        candidatesTruncated: false,
+        requestedControlIsCandidate: false,
+        agentJudgmentAvailable: true,
       },
     });
-    expect(JSON.stringify(trace)).not.toContain('controlName');
-    expect(JSON.stringify(trace)).not.toContain('optionName');
+    const serialized = JSON.stringify(trace);
+    expect(serialized).not.toContain('Private correct field');
+    expect(serialized).not.toContain('Private competing field');
+    expect(serialized).not.toContain('private-capability');
   });
 
   it('records an agent judgment gate categorically while omitting candidate semantics', () => {
@@ -257,6 +346,16 @@ describe('privacy-safe execution telemetry', () => {
               surfaceCoveredCandidateCount: 2,
               decision: 'tie_or_near',
             },
+            controlRecovery: {
+              requestedControlResolution: 'recovered_observed_owner',
+              popupOwnerDecision: 'consumed',
+              activeCandidateCount: 5,
+              exposedCandidateCount: null,
+              issuedCapabilityCount: null,
+              candidatesTruncated: null,
+              requestedControlIsCandidate: false,
+              agentJudgmentAvailable: true,
+            },
           },
           ownerCandidates: [{ name: 'Private candidate text', role: 'button' }],
         },
@@ -269,9 +368,22 @@ describe('privacy-safe execution telemetry', () => {
       popupAssociationProof: 'agent_declared',
       renderedPopupCount: 1,
       popupOwnership: { candidateCount: 5, decision: 'tie_or_near' },
+      controlRecovery: {
+        requestedControlResolution: 'recovered_observed_owner',
+        popupOwnerDecision: 'consumed',
+        activeCandidateCount: 5,
+        exposedCandidateCount: null,
+        issuedCapabilityCount: null,
+        candidatesTruncated: null,
+        requestedControlIsCandidate: false,
+        agentJudgmentAvailable: true,
+      },
     });
     expect(JSON.stringify(trace)).not.toContain('Private candidate text');
-    expect(trace.privacy).toMatchObject({ names: 'omitted', pageContent: 'omitted' });
+    expect(trace.privacy).toMatchObject({
+      names: 'omitted',
+      pageContent: 'omitted',
+    });
   });
 
   it('records categorical exact-target viewport evidence without geometry or semantics', () => {

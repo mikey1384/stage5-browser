@@ -1,6 +1,12 @@
 import type { BrowserCommandName } from './commands.js';
 import type { BrowserActionManager, BrowserCommandContract, BrowserPhaseSystem } from './command-contracts.js';
-import type { ControlPopupAssociationProof, ControlPopupOwnershipEvidence, ControlPopupSurfaceProof, PostconditionCheck } from './controls.js';
+import type {
+  ControlPopupAssociationProof,
+  ControlPopupOwnershipEvidence,
+  ControlPopupSurfaceProof,
+  ControlRecoveryEvidence,
+  PostconditionCheck,
+} from './controls.js';
 
 export interface ViewportPreparationTelemetry {
   attempts: number;
@@ -74,6 +80,7 @@ export interface ExecutionTraceConclusion {
   popupSurfaceProof: ControlPopupSurfaceProof | null;
   renderedPopupCount: number | null;
   popupOwnership: ControlPopupOwnershipEvidence | null;
+  controlRecovery: ControlRecoveryEvidence | null;
   targetState: {
     visible: boolean | null;
     enabled: boolean | null;
@@ -85,7 +92,7 @@ export interface ExecutionTraceConclusion {
 }
 
 export interface BrowserExecutionTrace {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   traceId: string;
   recordedAtMs: number;
   operationId: string;
@@ -95,6 +102,12 @@ export interface BrowserExecutionTrace {
   phaseSystem: BrowserPhaseSystem;
   dispatchBoundary: BrowserCommandContract['dispatch'];
   replayPolicy: BrowserCommandContract['replay'];
+  host: {
+    version: string | null;
+    behaviorVersion: number | null;
+    toolCatalogVersion: number | null;
+    toolCount: number | null;
+  };
   worker: { version: string | null; protocolVersion: number | null };
   startedAt: string;
   completedAt: string;

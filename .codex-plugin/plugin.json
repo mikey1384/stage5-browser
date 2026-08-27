@@ -1,17 +1,12 @@
 {
   "name": "stage5-browser",
-  "version": "0.19.4",
+  "version": "0.19.5",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
   },
   "license": "UNLICENSED",
-  "keywords": [
-    "browser",
-    "automation",
-    "mcp",
-    "reliability"
-  ],
+  "keywords": ["browser", "automation", "mcp", "reliability"],
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Stage5 Browser",
@@ -56,6 +51,7 @@
       "Uniquely nearest popup-anchor ownership",
       "Surface-occlusion-aware popup ownership",
       "Durable categorical popup-owner telemetry",
+      "Privacy-safe control-recovery telemetry",
       "Generic positioned popup-surface discovery",
       "Positioned portal option partitioning",
       "Exact hit-tested viewport proof",

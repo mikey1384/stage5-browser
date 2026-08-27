@@ -7,6 +7,7 @@ import type { ClickActivationPolicy } from '../action/click-plan.js';
 import { elementWithinPopupSurfaces, inspectPopupSurfaceSetRendering, resolveUniqueSemanticReferenceInPopupSurfaces } from './popup-set.js';
 import { observeCustomControlSelectionBaseline, type CustomControlSelectionBaseline } from './selection-baseline.js';
 import { reconcileCustomControlSelection } from './selection-evidence.js';
+import { completedSelectionSummary } from './selection-summary.js';
 
 interface NativeSelectEventRecord {
   inputEventObserved: boolean;
@@ -139,6 +140,7 @@ export const controlSelectionOperations = {
         ? await this.selectNativeControlOption(inspection, option, deadlineAt, desiredSelected)
         : await this.selectCustomControlOption(page, frame, inspection, option, input.frameId, deadlineAt, false, desiredSelected);
       return {
+        ...completedSelectionSummary([evidence], inspection.multiple, desiredSelected),
         page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
         frame: this.frameSummary(frame, page),
         inspectionId,

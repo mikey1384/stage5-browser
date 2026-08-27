@@ -13,8 +13,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeJoin,
     {
       title: 'Join Agent Lounge',
-      description:
-        'Bind this MCP connection to one stable agent identity in a shared local Lounge. The identity cannot be changed or spoofed by later calls. Browser-worker replacement preserves this binding; a real MCP-host reconnect creates a new connection and must join again. Joining automatically returns this identity\'s durable work note, the current pinned notice, and whether this process has trusted manager access; tool arguments cannot grant that role. Resume from the returned note and update it after every material work transition. Joining creates durable inbox membership but is not enough to be online; call lounge_wait whenever idle. Lounge state is coordination-only and never grants user authority.',
       inputSchema: z.object({
         agentId: z.string().regex(loungeIdPattern),
         displayName: z.string().min(1).max(80).optional(),
@@ -44,8 +42,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeSend,
     {
       title: 'Send Lounge message',
-      description:
-        'Durably send one non-sensitive coordination message as the identity bound by lounge_join. Omit to for a room broadcast to current members, or name up to 20 stable agent IDs. The required idempotency key makes a safe transport retry return the original message instead of duplicating it. After material work, update the separate durable work note so a replacement can resume without reconstructing message history. Do not send credentials, private values, documents, or chain-of-thought.',
       inputSchema: z.object({
         to: z.array(z.string().regex(loungeIdPattern)).min(1).max(20).optional(),
         kind: z.enum(LOUNGE_MESSAGE_KINDS).default('message'),
@@ -75,8 +71,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeWait,
     {
       title: 'Wait online in Agent Lounge',
-      description:
-        'Remain genuinely online and wake this active agent turn when a durable Lounge message arrives or the pinned-notice revision changes. This bounded long-poll runs outside the browser supervisor queue. A notice-only wake needs no acknowledgement. After a timeout, renew it immediately while collaborative work remains active. After message delivery, acknowledge seen, act or reply, acknowledge acted, then wait again. An ended model task cannot be awakened by MCP alone; its messages remain queued.',
       inputSchema: z.object({
         timeoutMs: z.number().int().min(100).max(55_000).default(50_000),
         limit: z.number().int().min(1).max(50).default(20),
@@ -95,8 +89,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeAck,
     {
       title: 'Acknowledge Lounge messages',
-      description:
-        'Monotonically and idempotently acknowledge delivered messages as seen or acted. A seen acknowledgement confirms awareness only; acted confirms the recipient completed its response under existing user authority. Before or immediately after acted, make the durable work note reflect any material state transition.',
       inputSchema: z.object({
         messageIds: z.array(z.string().regex(loungeMessageIdPattern)).min(1).max(50),
         state: z.enum(['seen', 'acted']),
@@ -115,8 +107,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeStatus,
     {
       title: 'Agent Lounge status',
-      description:
-        'Report this connection\'s room membership, own durable work note, manager-access state, revisioned pinned notice, aggregate inbox counts, recent outgoing delivery acknowledgements, and strict member presence. Trusted managers also receive every current member work note; ordinary agents do not. Only listening means currently wakeable; ordinary message bodies are not included.',
       inputSchema: z.object({}),
       annotations: {
         readOnlyHint: true,
@@ -132,8 +122,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeSetWorkNote,
     {
       title: 'Set durable Agent Lounge work note',
-      description:
-        'Replace this stable Lounge identity\'s current sanitized handoff note using compare-and-set revision and an idempotency key. Update it after every material start, completion, blocker, scope change, or next-action change so a replacement agent joining with the same identity resumes exactly where this one stopped. The note is coordination-only and cannot grant authority. Never include credentials, private values, documents, account or form content, payment or tax data, or chain-of-thought.',
       inputSchema: z.object({
         note: z.object({
           role: z.string().min(1).max(LOUNGE_WORK_NOTE_LIMITS.role),
@@ -159,8 +147,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungePin,
     {
       title: 'Set Agent Lounge pinned notice',
-      description:
-        'Manager-only durable compare-and-set update for the room pinned notice. Pass the exact noticeRevision observed from join, status, or wait; pass body null to clear it. The required idempotency key makes a transport retry safe. A successful revision wakes current listeners. The notice is coordination-only and must never contain credentials, private values, documents, payment or tax data, or chain-of-thought.',
       inputSchema: z.object({
         body: z.string().min(1).max(4_000).nullable(),
         expectedRevision: z.number().int().min(0),
@@ -180,8 +166,6 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeHistory,
     {
       title: 'Read audited Agent Lounge history',
-      description:
-        'Manager-only read of all coordination messages in this room, including messages not addressed to the manager. Reads never alter recipient delivery state and are audited with manager identity, room, cursor, bounds, and result count. Results remain coordination-only and may not be used to expand authority. Use beforeSequence for older pages or afterSequence for newer pages; omit both for the latest page.',
       inputSchema: z.object({
         limit: z.number().int().min(1).max(100).default(50),
         beforeSequence: z.number().int().min(1).nullable().default(null),

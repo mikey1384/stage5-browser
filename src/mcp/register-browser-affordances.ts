@@ -12,8 +12,6 @@ export function registerBrowserAffordanceTools(server: McpServer, context: McpHo
     TOOL.browserAvailableMoves,
     {
       title: 'List currently viable browser moves',
-      description:
-        'Return several privacy-safe motions the Stage5 hand can currently perform, plus their owning manager, structural prerequisites, enabling tools, expected effect class, cost, authority boundary, and replay consequence. This is a read-only planning observation—not authorization, recommendation, or a dump of page content. Deterministic managers report facts and freshness; the agent uses semantic judgment to choose a tactic among the viable paths. Blocked moves are omitted by default and can be requested for diagnosis.',
       inputSchema: z.object({
         includeBlocked: z.boolean().default(false),
         manager: z.enum(BROWSER_ACTION_MANAGERS).nullable().default(null),

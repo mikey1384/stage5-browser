@@ -75,14 +75,7 @@ export interface ClickPostcondition {
 }
 
 export interface PostconditionCheck {
-  kind:
-    | 'download'
-    | 'new_page_url'
-    | 'popup_closed'
-    | 'selected'
-    | 'selection_representation'
-    | 'url'
-    | 'visible';
+  kind: 'download' | 'new_page_url' | 'popup_closed' | 'selected' | 'selection_representation' | 'url' | 'visible';
   passed: boolean;
   expected: string | boolean;
   observed: string | boolean | null;
@@ -94,14 +87,7 @@ export interface PostconditionResult {
 }
 
 export type ControlKind = 'custom_popup' | 'native_select';
-export type ControlPopupAssociationProof =
-  | 'explicit'
-  | 'structural'
-  | 'focused'
-  | 'expanded'
-  | 'spatial'
-  | 'agent_declared'
-  | 'post_dispatch_unique';
+export type ControlPopupAssociationProof = 'explicit' | 'structural' | 'focused' | 'expanded' | 'spatial' | 'agent_declared' | 'post_dispatch_unique';
 export type ControlPopupSurfaceProof = 'semantic_role' | 'positioned_option_group';
 export interface ControlPopupOwnershipEvidence {
   proofTier: 'expanded' | 'focused' | 'spatial' | 'structural' | 'none';
@@ -109,14 +95,18 @@ export interface ControlPopupOwnershipEvidence {
   exteriorCandidateCount: number | null;
   overlappingCandidateCount: number | null;
   surfaceCoveredCandidateCount: number | null;
-  decision:
-    | 'covered_siblings_excluded'
-    | 'decisive_distance'
-    | 'missing'
-    | 'single_candidate'
-    | 'structural_conflict'
-    | 'tie_or_near'
-    | 'unbounded';
+  decision: 'covered_siblings_excluded' | 'decisive_distance' | 'missing' | 'single_candidate' | 'structural_conflict' | 'tie_or_near' | 'unbounded';
+}
+
+export interface ControlRecoveryEvidence {
+  requestedControlResolution: 'resolved' | 'missing' | 'recovered_observed_owner';
+  popupOwnerDecision: 'not_required' | 'required' | 'unavailable' | 'consumed';
+  activeCandidateCount: number | null;
+  exposedCandidateCount: number | null;
+  issuedCapabilityCount: number | null;
+  candidatesTruncated: boolean | null;
+  requestedControlIsCandidate: boolean | null;
+  agentJudgmentAvailable: boolean | null;
 }
 
 export interface ControlTarget {
@@ -169,6 +159,7 @@ export interface ControlOptionsInspection {
     surfaceProof: ControlPopupSurfaceProof | null;
     renderedPopupCount: number | null;
     popupOwnership: ControlPopupOwnershipEvidence | null;
+    controlRecovery: ControlRecoveryEvidence;
   };
   choice: {
     responsibility: 'agent';
@@ -185,6 +176,18 @@ export interface ControlSelectionEvidence {
   selectedRepresentationObserved: boolean;
   selectedState: boolean | null;
   popupClosed: boolean | null;
+}
+
+export interface ControlSelectionSummary {
+  outcome: 'succeeded';
+  selectionSucceeded: true;
+  actionDispatched: boolean | 'unknown';
+  currentState: {
+    requestedSelected: boolean;
+    popupOpen: boolean | null;
+    multiple: boolean;
+  };
+  nextAction: 'continue' | 'dismiss_popup' | 'select_more_or_dismiss_popup';
 }
 
 export interface ControlMultiSelectionResult {
@@ -204,12 +207,7 @@ export interface FillRefEvidence {
 }
 
 export type NavigationWarningCode =
-  | 'dom_readiness_timeout'
-  | 'http_authentication_required'
-  | 'http_client_error'
-  | 'http_forbidden'
-  | 'http_rate_limited'
-  | 'http_server_error';
+  'dom_readiness_timeout' | 'http_authentication_required' | 'http_client_error' | 'http_forbidden' | 'http_rate_limited' | 'http_server_error';
 
 export interface NavigationWarning {
   code: NavigationWarningCode;

@@ -2,20 +2,26 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { browserCommandContract, type BrowserCommandName, type BrowserExecutionTrace, type ExecutionTraceConclusion, type ExecutionTraceList, type PostconditionCheck, type RuntimeProcessInfo, type SerializedStage5BrowserError, type WorkerCommandTelemetry } from './execution-telemetry-dependencies.js';
+import {
+  browserCommandContract,
+  MCP_HOST_BEHAVIOR_VERSION,
+  MCP_TOOL_COUNT,
+  STAGE5_BROWSER_VERSION,
+  TOOL_CATALOG_VERSION,
+  type BrowserCommandName,
+  type BrowserExecutionTrace,
+  type ExecutionTraceConclusion,
+  type ExecutionTraceList,
+  type PostconditionCheck,
+  type RuntimeProcessInfo,
+  type SerializedStage5BrowserError,
+  type WorkerCommandTelemetry,
+} from './execution-telemetry-dependencies.js';
 
 const MAX_TELEMETRY_BYTES = 4 * 1_024 * 1_024;
 const RETAINED_TELEMETRY_BYTES = 2 * 1_024 * 1_024;
 const SAFE_REASON = /^[a-z][a-z0-9_]{0,99}$/u;
-const CHECK_KINDS = new Set<PostconditionCheck['kind']>([
-  'download',
-  'new_page_url',
-  'popup_closed',
-  'selected',
-  'selection_representation',
-  'url',
-  'visible',
-]);
+const CHECK_KINDS = new Set<PostconditionCheck['kind']>(['download', 'new_page_url', 'popup_closed', 'selected', 'selection_representation', 'url', 'visible']);
 const POPUP_ASSOCIATION_PROOFS = new Set<ExecutionTraceConclusion['popupAssociationProof']>([
   'explicit',
   'structural',
@@ -25,16 +31,15 @@ const POPUP_ASSOCIATION_PROOFS = new Set<ExecutionTraceConclusion['popupAssociat
   'agent_declared',
   'post_dispatch_unique',
 ]);
-const POPUP_SURFACE_PROOFS = new Set<ExecutionTraceConclusion['popupSurfaceProof']>([
-  'semantic_role',
-  'positioned_option_group',
+const POPUP_SURFACE_PROOFS = new Set<ExecutionTraceConclusion['popupSurfaceProof']>(['semantic_role', 'positioned_option_group']);
+const POPUP_OWNER_PROOF_TIERS = new Set<NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier']>([
+  'expanded',
+  'focused',
+  'spatial',
+  'structural',
+  'none',
 ]);
-const POPUP_OWNER_PROOF_TIERS = new Set<
-  NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier']
->(['expanded', 'focused', 'spatial', 'structural', 'none']);
-const POPUP_OWNER_DECISIONS = new Set<
-  NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision']
->([
+const POPUP_OWNER_DECISION_STATES = new Set<NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision']>([
   'covered_siblings_excluded',
   'decisive_distance',
   'missing',
@@ -43,12 +48,23 @@ const POPUP_OWNER_DECISIONS = new Set<
   'tie_or_near',
   'unbounded',
 ]);
-const VIEWPORT_EVIDENCE = new Set<
-  NonNullable<ExecutionTraceConclusion['targetState']>['viewportEvidence']
->(['clipped_geometry', 'exact_hit_test_override', 'none']);
-const POINTER_HIT_POINTS = new Set<
-  NonNullable<ExecutionTraceConclusion['targetState']>['pointerHitPoint']
->(['center', 'alternate']);
+const VIEWPORT_EVIDENCE = new Set<NonNullable<ExecutionTraceConclusion['targetState']>['viewportEvidence']>([
+  'clipped_geometry',
+  'exact_hit_test_override',
+  'none',
+]);
+const POINTER_HIT_POINTS = new Set<NonNullable<ExecutionTraceConclusion['targetState']>['pointerHitPoint']>(['center', 'alternate']);
+const REQUESTED_CONTROL_RESOLUTIONS = new Set<NonNullable<ExecutionTraceConclusion['controlRecovery']>['requestedControlResolution']>([
+  'resolved',
+  'missing',
+  'recovered_observed_owner',
+]);
+const POPUP_OWNER_DECISIONS = new Set<NonNullable<ExecutionTraceConclusion['controlRecovery']>['popupOwnerDecision']>([
+  'not_required',
+  'required',
+  'unavailable',
+  'consumed',
+]);
 
 export interface BuildExecutionTraceInput {
   operationId: string;
@@ -74,11 +90,17 @@ export class ExecutionTelemetryJournal {
 
   async append(trace: BrowserExecutionTrace): Promise<void> {
     if (!this.initialized) {
-      await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
+      await mkdir(path.dirname(this.filePath), {
+        recursive: true,
+        mode: 0o700,
+      });
       this.initialized = true;
     }
     await this.compactIfNeeded();
-    await appendFile(this.filePath, `${JSON.stringify(trace)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await appendFile(this.filePath, `${JSON.stringify(trace)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
     await chmod(this.filePath, 0o600);
   }
 
@@ -92,17 +114,24 @@ export class ExecutionTelemetryJournal {
       }
       throw error;
     }
-    const traces = contents.trimEnd().split('\n').flatMap((line) => {
-      try {
-        const trace = JSON.parse(line) as Partial<BrowserExecutionTrace>;
-        return trace.schemaVersion === 1 && typeof trace.operationId === 'string'
-          ? [trace as BrowserExecutionTrace]
-          : [];
-      } catch {
-        return [];
-      }
-    }).filter((trace) => operationId === null || trace.operationId === operationId);
-    return { traces: traces.slice(-limit), limit, operationId, privacy: privacyContract() };
+    const traces = contents
+      .trimEnd()
+      .split('\n')
+      .flatMap((line) => {
+        try {
+          const trace = JSON.parse(line) as Partial<BrowserExecutionTrace>;
+          return (trace.schemaVersion === 1 || trace.schemaVersion === 2) && typeof trace.operationId === 'string' ? [normalizeTrace(trace)] : [];
+        } catch {
+          return [];
+        }
+      })
+      .filter((trace) => operationId === null || trace.operationId === operationId);
+    return {
+      traces: traces.slice(-limit),
+      limit,
+      operationId,
+      privacy: privacyContract(),
+    };
   }
 
   private async compactIfNeeded(): Promise<void> {
@@ -126,16 +155,17 @@ export class ExecutionTelemetryJournal {
 }
 
 export function buildExecutionTrace(input: BuildExecutionTraceInput): BrowserExecutionTrace {
-  const contract = input.command === 'recover'
-    ? {
-      manager: 'recovery_manager' as const,
-      phaseSystem: 'supervisor_recovery' as const,
-      dispatch: 'lifecycle_transition' as const,
-      replay: 'supervisor_only' as const,
-    }
-    : browserCommandContract(input.command);
+  const contract =
+    input.command === 'recover'
+      ? {
+          manager: 'recovery_manager' as const,
+          phaseSystem: 'supervisor_recovery' as const,
+          dispatch: 'lifecycle_transition' as const,
+          replay: 'supervisor_only' as const,
+        }
+      : browserCommandContract(input.command);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     traceId: randomUUID(),
     recordedAtMs: Date.now(),
     operationId: input.operationId,
@@ -145,6 +175,12 @@ export function buildExecutionTrace(input: BuildExecutionTraceInput): BrowserExe
     phaseSystem: contract.phaseSystem,
     dispatchBoundary: contract.dispatch,
     replayPolicy: contract.replay,
+    host: {
+      version: STAGE5_BROWSER_VERSION,
+      behaviorVersion: MCP_HOST_BEHAVIOR_VERSION,
+      toolCatalogVersion: TOOL_CATALOG_VERSION,
+      toolCount: MCP_TOOL_COUNT,
+    },
     worker: {
       version: input.workerRuntime?.version ?? null,
       protocolVersion: input.workerRuntime?.protocolVersion ?? null,
@@ -175,11 +211,7 @@ export function buildExecutionTrace(input: BuildExecutionTraceInput): BrowserExe
   };
 }
 
-function conclusionFrom(
-  result: unknown,
-  error: SerializedStage5BrowserError | null,
-  workerTelemetry: WorkerCommandTelemetry | null,
-): ExecutionTraceConclusion {
+function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | null, workerTelemetry: WorkerCommandTelemetry | null): ExecutionTraceConclusion {
   const combined = { result, error };
   const checks = checkSummaries(combined);
   const explicitActionDispatched = dispatchConclusion(valuesForKey(combined, 'actionDispatched'));
@@ -193,13 +225,11 @@ function conclusionFrom(
     selectionEffectObserved: booleanConclusion(valuesForKey(combined, 'selectionEffectObserved')),
     selectedRepresentationObserved: booleanConclusion(valuesForKey(combined, 'selectedRepresentationObserved')),
     popupClosed: booleanConclusion(valuesForKey(combined, 'popupClosed')),
-    popupAssociationProof: enumConclusion(
-      valuesForKey(combined, 'associationProof'),
-      POPUP_ASSOCIATION_PROOFS,
-    ),
+    popupAssociationProof: enumConclusion(valuesForKey(combined, 'associationProof'), POPUP_ASSOCIATION_PROOFS),
     popupSurfaceProof: enumConclusion(valuesForKey(combined, 'surfaceProof'), POPUP_SURFACE_PROOFS),
     renderedPopupCount: boundedIntegerConclusion(valuesForKey(combined, 'renderedPopupCount'), 50),
     popupOwnership: popupOwnershipConclusion(combined),
+    controlRecovery: controlRecoveryConclusion(combined),
     targetState: targetStateConclusion(combined),
   };
 }
@@ -209,9 +239,7 @@ function directBoolean(value: unknown, key: string): boolean | null {
   return typeof value[key] === 'boolean' ? value[key] : null;
 }
 
-function phaseDispatchConclusion(
-  telemetry: WorkerCommandTelemetry | null,
-): true | 'unknown' | null {
+function phaseDispatchConclusion(telemetry: WorkerCommandTelemetry | null): true | 'unknown' | null {
   const states = telemetry?.actionPhases.map((phase) => phase.dispatchState) ?? [];
   if (states.includes('dispatched')) return true;
   if (states.includes('possibly_dispatched')) return 'unknown';
@@ -219,16 +247,22 @@ function phaseDispatchConclusion(
 }
 
 function checkSummaries(value: unknown): ExecutionTraceConclusion['checks'] {
-  const candidates = valuesForKey(value, 'checks').flatMap((candidate) =>
-    Array.isArray(candidate) ? candidate : []);
+  const candidates = valuesForKey(value, 'checks').flatMap((candidate) => (Array.isArray(candidate) ? candidate : []));
   return candidates.slice(0, 20).flatMap((candidate) => {
     if (!isRecord(candidate) || !CHECK_KINDS.has(candidate.kind as PostconditionCheck['kind']) || typeof candidate.passed !== 'boolean') return [];
-    const observed = typeof candidate.observed === 'string'
-      ? 'redacted_string' as const
-      : typeof candidate.observed === 'boolean' || candidate.observed === null
-        ? candidate.observed
-        : null;
-    return [{ kind: candidate.kind as PostconditionCheck['kind'], passed: candidate.passed, observed }];
+    const observed =
+      typeof candidate.observed === 'string'
+        ? ('redacted_string' as const)
+        : typeof candidate.observed === 'boolean' || candidate.observed === null
+          ? candidate.observed
+          : null;
+    return [
+      {
+        kind: candidate.kind as PostconditionCheck['kind'],
+        passed: candidate.passed,
+        observed,
+      },
+    ];
   });
 }
 
@@ -251,14 +285,12 @@ function booleanConclusion(values: unknown[]): boolean | null {
 }
 
 function enumConclusion<T extends string>(values: unknown[], allowed: Set<T | null>): T | null {
-  const observed = new Set(values.filter((value): value is T =>
-    typeof value === 'string' && allowed.has(value as T)));
+  const observed = new Set(values.filter((value): value is T => typeof value === 'string' && allowed.has(value as T)));
   return observed.size === 1 ? [...observed][0]! : null;
 }
 
 function boundedIntegerConclusion(values: unknown[], maximum: number): number | null {
-  const observed = new Set(values.filter((value): value is number =>
-    Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum));
+  const observed = new Set(values.filter((value): value is number => Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum));
   return observed.size === 1 ? [...observed][0]! : null;
 }
 
@@ -269,14 +301,11 @@ function popupOwnershipConclusion(value: unknown): ExecutionTraceConclusion['pop
     const decision = candidate.decision;
     if (
       typeof proofTier !== 'string' ||
-      !POPUP_OWNER_PROOF_TIERS.has(
-        proofTier as NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier'],
-      ) ||
+      !POPUP_OWNER_PROOF_TIERS.has(proofTier as NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier']) ||
       typeof decision !== 'string' ||
-      !POPUP_OWNER_DECISIONS.has(
-        decision as NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision'],
-      )
-    ) return [];
+      !POPUP_OWNER_DECISION_STATES.has(decision as NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision'])
+    )
+      return [];
     const candidateCount = boundedNullableInteger(candidate.candidateCount, 100);
     const exteriorCandidateCount = boundedNullableInteger(candidate.exteriorCandidateCount, 100);
     const overlappingCandidateCount = boundedNullableInteger(candidate.overlappingCandidateCount, 100);
@@ -286,15 +315,64 @@ function popupOwnershipConclusion(value: unknown): ExecutionTraceConclusion['pop
       exteriorCandidateCount === undefined ||
       overlappingCandidateCount === undefined ||
       surfaceCoveredCandidateCount === undefined
-    ) return [];
-    return [{
-      proofTier: proofTier as NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier'],
-      candidateCount,
-      exteriorCandidateCount,
-      overlappingCandidateCount,
-      surfaceCoveredCandidateCount,
-      decision: decision as NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision'],
-    }];
+    )
+      return [];
+    return [
+      {
+        proofTier: proofTier as NonNullable<ExecutionTraceConclusion['popupOwnership']>['proofTier'],
+        candidateCount,
+        exteriorCandidateCount,
+        overlappingCandidateCount,
+        surfaceCoveredCandidateCount,
+        decision: decision as NonNullable<ExecutionTraceConclusion['popupOwnership']>['decision'],
+      },
+    ];
+  });
+  const unique = new Map(observed.map((candidate) => [JSON.stringify(candidate), candidate]));
+  return unique.size === 1 ? [...unique.values()][0]! : null;
+}
+
+function controlRecoveryConclusion(value: unknown): ExecutionTraceConclusion['controlRecovery'] {
+  const observed = valuesForKey(value, 'controlRecovery').flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const requestedControlResolution = candidate.requestedControlResolution;
+    const popupOwnerDecision = candidate.popupOwnerDecision;
+    if (
+      typeof requestedControlResolution !== 'string' ||
+      !REQUESTED_CONTROL_RESOLUTIONS.has(
+        requestedControlResolution as NonNullable<ExecutionTraceConclusion['controlRecovery']>['requestedControlResolution'],
+      ) ||
+      typeof popupOwnerDecision !== 'string' ||
+      !POPUP_OWNER_DECISIONS.has(popupOwnerDecision as NonNullable<ExecutionTraceConclusion['controlRecovery']>['popupOwnerDecision'])
+    )
+      return [];
+    const activeCandidateCount = boundedNullableInteger(candidate.activeCandidateCount, 100);
+    const exposedCandidateCount = boundedNullableInteger(candidate.exposedCandidateCount, 12);
+    const issuedCapabilityCount = boundedNullableInteger(candidate.issuedCapabilityCount, 12);
+    const candidatesTruncated = nullableBoolean(candidate.candidatesTruncated);
+    const requestedControlIsCandidate = nullableBoolean(candidate.requestedControlIsCandidate);
+    const agentJudgmentAvailable = nullableBoolean(candidate.agentJudgmentAvailable);
+    if (
+      activeCandidateCount === undefined ||
+      exposedCandidateCount === undefined ||
+      issuedCapabilityCount === undefined ||
+      candidatesTruncated === undefined ||
+      requestedControlIsCandidate === undefined ||
+      agentJudgmentAvailable === undefined
+    )
+      return [];
+    return [
+      {
+        requestedControlResolution: requestedControlResolution as NonNullable<ExecutionTraceConclusion['controlRecovery']>['requestedControlResolution'],
+        popupOwnerDecision: popupOwnerDecision as NonNullable<ExecutionTraceConclusion['controlRecovery']>['popupOwnerDecision'],
+        activeCandidateCount,
+        exposedCandidateCount,
+        issuedCapabilityCount,
+        candidatesTruncated,
+        requestedControlIsCandidate,
+        agentJudgmentAvailable,
+      },
+    ];
   });
   const unique = new Map(observed.map((candidate) => [JSON.stringify(candidate), candidate]));
   return unique.size === 1 ? [...unique.values()][0]! : null;
@@ -302,9 +380,11 @@ function popupOwnershipConclusion(value: unknown): ExecutionTraceConclusion['pop
 
 function boundedNullableInteger(value: unknown, maximum: number): number | null | undefined {
   if (value === null) return null;
-  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum
-    ? Number(value)
-    : undefined;
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum ? Number(value) : undefined;
+}
+
+function nullableBoolean(value: unknown): boolean | null | undefined {
+  return value === null || typeof value === 'boolean' ? value : undefined;
 }
 
 function targetStateConclusion(value: unknown): ExecutionTraceConclusion['targetState'] {
@@ -319,7 +399,10 @@ function targetStateConclusion(value: unknown): ExecutionTraceConclusion['target
       VIEWPORT_EVIDENCE,
     ),
     receivesPointerEvents: booleanConclusion(states.map((state) => state.receivesPointerEvents)),
-    pointerHitPoint: enumConclusion(states.map((state) => state.pointerHitPoint), POINTER_HIT_POINTS),
+    pointerHitPoint: enumConclusion(
+      states.map((state) => state.pointerHitPoint),
+      POINTER_HIT_POINTS,
+    ),
   };
 }
 
@@ -351,6 +434,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function normalizeTrace(trace: Partial<BrowserExecutionTrace>): BrowserExecutionTrace {
+  const conclusion: Record<string, unknown> = isRecord(trace.conclusion) ? trace.conclusion : {};
+  const host: Record<string, unknown> = isRecord(trace.host) ? trace.host : {};
+  return {
+    ...trace,
+    host: {
+      version: typeof host.version === 'string' ? host.version : null,
+      behaviorVersion: typeof host.behaviorVersion === 'number' ? host.behaviorVersion : null,
+      toolCatalogVersion: typeof host.toolCatalogVersion === 'number' ? host.toolCatalogVersion : null,
+      toolCount: typeof host.toolCount === 'number' ? host.toolCount : null,
+    },
+    conclusion: {
+      ...conclusion,
+      controlRecovery: isRecord(conclusion.controlRecovery) ? conclusion.controlRecovery : null,
+    },
+  } as BrowserExecutionTrace;
+}
+
 function privacyContract(): BrowserExecutionTrace['privacy'] {
-  return { urls: 'omitted', selectors: 'omitted', names: 'omitted', values: 'omitted', pageContent: 'omitted' };
+  return {
+    urls: 'omitted',
+    selectors: 'omitted',
+    names: 'omitted',
+    values: 'omitted',
+    pageContent: 'omitted',
+  };
 }

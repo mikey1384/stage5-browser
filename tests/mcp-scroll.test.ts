@@ -7,7 +7,14 @@ import { Client } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { STAGE5_BROWSER_VERSION } from '../src/runtime-info.js';
+import { MCP_HOST_BEHAVIOR_VERSION, STAGE5_BROWSER_VERSION } from '../src/runtime-info.js';
+import { MCP_SERVER_INSTRUCTIONS } from '../src/mcp/server.js';
+
+const LEGACY_DEFAULT_MCP_PROSE_WORDS = 5_846;
+
+function wordCount(value: string): number {
+  return value.match(/[\p{L}\p{N}]+(?:['’_-][\p{L}\p{N}]+)*/gu)?.length ?? 0;
+}
 
 let server: Server | undefined;
 let client: Client | undefined;
@@ -94,7 +101,10 @@ describe('MCP nested scrolling', () => {
     const port = await listen(server);
     temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-mcp-scroll-'));
 
-    client = new Client({ name: 'stage5-browser-scroll-test', version: STAGE5_BROWSER_VERSION });
+    client = new Client({
+      name: 'stage5-browser-scroll-test',
+      version: STAGE5_BROWSER_VERSION,
+    });
     const projectRoot = path.resolve('.');
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -126,6 +136,12 @@ describe('MCP nested scrolling', () => {
     expect(joined.isError).not.toBe(true);
 
     const tools = await client.listTools();
+    const currentDefaultProse = [
+      MCP_SERVER_INSTRUCTIONS,
+      ...tools.tools.flatMap(({ title, description }) => [title, description].filter((value): value is string => typeof value === 'string')),
+    ].join(' ');
+    expect(wordCount(currentDefaultProse)).toBeLessThanOrEqual(Math.floor(LEGACY_DEFAULT_MCP_PROSE_WORDS * 0.1));
+    expect(tools.tools.every(({ description }) => description === undefined)).toBe(true);
     const scrollTool = tools.tools.find((tool) => tool.name === 'browser_scroll');
     expect(scrollTool?.inputSchema).toMatchObject({
       properties: {
@@ -133,11 +149,13 @@ describe('MCP nested scrolling', () => {
         waitFor: expect.any(Object),
       },
     });
-    expect(tools.tools.find((tool) => tool.name === 'browser_execution_traces')?.inputSchema)
-      .toMatchObject({ properties: { operationId: expect.any(Object), limit: expect.any(Object) } });
-    const inspectControlSchema = JSON.stringify(
-      tools.tools.find((tool) => tool.name === 'browser_inspect_control')?.inputSchema,
-    );
+    expect(tools.tools.find((tool) => tool.name === 'browser_execution_traces')?.inputSchema).toMatchObject({
+      properties: {
+        operationId: expect.any(Object),
+        limit: expect.any(Object),
+      },
+    });
+    const inspectControlSchema = JSON.stringify(tools.tools.find((tool) => tool.name === 'browser_inspect_control')?.inputSchema);
     expect(inspectControlSchema).toContain('"observed_candidate"');
     expect(inspectControlSchema).toContain('"ownerCandidateId"');
     for (const name of ['browser_click_by_role', 'browser_click_ref']) {
@@ -146,7 +164,10 @@ describe('MCP nested scrolling', () => {
       expect(JSON.stringify(clickTool?.inputSchema)).toContain('"expectedHidden"');
     }
 
-    const started = await client.callTool({ name: 'browser_start', arguments: { browser: 'chromium' } });
+    const started = await client.callTool({
+      name: 'browser_start',
+      arguments: { browser: 'chromium' },
+    });
     expect(started.isError).not.toBe(true);
 
     const opened = await client.callTool({
@@ -182,6 +203,10 @@ describe('MCP nested scrolling', () => {
               proofTier: 'spatial',
               decision: 'covered_siblings_excluded',
             },
+            controlRecovery: {
+              requestedControlResolution: 'resolved',
+              popupOwnerDecision: 'not_required',
+            },
           },
         },
       },
@@ -194,28 +219,115 @@ describe('MCP nested scrolling', () => {
       arguments: { operationId: inspectOperationId, limit: 10 },
     });
     expect(inspectTelemetry.structuredContent).toMatchObject({
-      traces: [{
-        command: 'inspectControl',
-        actions: [],
-        conclusion: {
-          popupAssociationProof: 'spatial',
-          popupSurfaceProof: 'positioned_option_group',
-          renderedPopupCount: 1,
-          popupOwnership: {
-            proofTier: 'spatial',
-            decision: 'covered_siblings_excluded',
+      traces: [
+        {
+          command: 'inspectControl',
+          schemaVersion: 2,
+          host: {
+            version: STAGE5_BROWSER_VERSION,
+            behaviorVersion: MCP_HOST_BEHAVIOR_VERSION,
+            toolCatalogVersion: expect.any(Number),
+            toolCount: expect.any(Number),
+          },
+          actions: [],
+          conclusion: {
+            popupAssociationProof: 'spatial',
+            popupSurfaceProof: 'positioned_option_group',
+            renderedPopupCount: 1,
+            popupOwnership: {
+              proofTier: 'spatial',
+              decision: 'covered_siblings_excluded',
+            },
+            controlRecovery: {
+              requestedControlResolution: 'resolved',
+              popupOwnerDecision: 'not_required',
+            },
           },
         },
-      }],
+      ],
+    });
+    const missingControl = await client.callTool({
+      name: 'browser_inspect_control',
+      arguments: {
+        control: { role: 'textbox', name: 'Funding source', exact: true },
+        frameId: null,
+        revealOptions: false,
+        maxOptions: 20,
+        timeoutMs: 10_000,
+      },
+    });
+    expect(missingControl.isError).toBe(true);
+    expect(missingControl.structuredContent).toMatchObject({
+      error: {
+        code: 'AMBIGUOUS_TARGET',
+        details: {
+          reason: 'control_missing_with_open_popup',
+          actionDispatched: false,
+          controlRecovery: {
+            requestedControlResolution: 'missing',
+            popupOwnerDecision: 'required',
+            activeCandidateCount: 2,
+            exposedCandidateCount: 2,
+            issuedCapabilityCount: 2,
+            candidatesTruncated: false,
+            requestedControlIsCandidate: false,
+            agentJudgmentAvailable: true,
+          },
+        },
+      },
+    });
+    const missingOperationId = (missingControl.structuredContent as { operationId?: unknown }).operationId;
+    if (typeof missingOperationId !== 'string') throw new Error('Failed control inspection omitted its operationId.');
+    const missingTelemetry = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: { operationId: missingOperationId, limit: 10 },
+    });
+    expect(missingTelemetry.structuredContent).toMatchObject({
+      traces: [
+        {
+          schemaVersion: 2,
+          operationId: missingOperationId,
+          host: {
+            version: STAGE5_BROWSER_VERSION,
+            behaviorVersion: MCP_HOST_BEHAVIOR_VERSION,
+          },
+          conclusion: {
+            actionDispatched: false,
+            controlRecovery: {
+              requestedControlResolution: 'missing',
+              popupOwnerDecision: 'required',
+              activeCandidateCount: 2,
+              exposedCandidateCount: 2,
+              issuedCapabilityCount: 2,
+              candidatesTruncated: false,
+              requestedControlIsCandidate: false,
+              agentJudgmentAvailable: true,
+            },
+          },
+          privacy: {
+            urls: 'omitted',
+            selectors: 'omitted',
+            names: 'omitted',
+            values: 'omitted',
+          },
+        },
+      ],
     });
     const snapshot = await client.callTool({
       name: 'browser_snapshot',
       arguments: { depth: 8, boxes: false, frameId: null, timeoutMs: 10_000 },
     });
     expect(snapshot.isError).not.toBe(true);
-    const result = (snapshot.structuredContent as {
-      result?: { snapshotId?: unknown; scrollContainers?: Array<{ ref?: unknown }> };
-    } | undefined)?.result;
+    const result = (
+      snapshot.structuredContent as
+        | {
+            result?: {
+              snapshotId?: unknown;
+              scrollContainers?: Array<{ ref?: unknown }>;
+            };
+          }
+        | undefined
+    )?.result;
     const snapshotId = result?.snapshotId;
     const ref = result?.scrollContainers?.[0]?.ref;
     expect(typeof snapshotId).toBe('string');
@@ -260,26 +372,42 @@ describe('MCP nested scrolling', () => {
     expect(telemetry.isError).not.toBe(true);
     expect(telemetry.structuredContent).toMatchObject({
       operationId,
-      traces: [{
-        operationId,
-        agentId: 'mcp-scroll-test',
-        command: 'scroll',
-        manager: 'interaction_manager',
-        phaseSystem: 'bounded_reversible_loop',
-        dispatchBoundary: 'reversible_view_state',
-        privacy: { urls: 'omitted', selectors: 'omitted', names: 'omitted', values: 'omitted', pageContent: 'omitted' },
-      }],
+      traces: [
+        {
+          operationId,
+          agentId: 'mcp-scroll-test',
+          command: 'scroll',
+          manager: 'interaction_manager',
+          phaseSystem: 'bounded_reversible_loop',
+          dispatchBoundary: 'reversible_view_state',
+          privacy: {
+            urls: 'omitted',
+            selectors: 'omitted',
+            names: 'omitted',
+            values: 'omitted',
+            pageContent: 'omitted',
+          },
+        },
+      ],
     });
     expect(JSON.stringify(telemetry.structuredContent)).not.toContain(`127.0.0.1:${port}`);
 
     const clicked = await client.callTool({
       name: 'browser_click_by_role',
       arguments: {
-        role: 'button', name: 'Enable mode', exact: true, frameId: null,
+        role: 'button',
+        name: 'Enable mode',
+        exact: true,
+        frameId: null,
         postcondition: {
-          expectedUrl: null, expectedNewPageUrl: null, expectedDownload: false,
-          expectedSelected: true, expectedVisible: null, expectedHidden: null,
-          satisfaction: 'all', timeoutMs: 2_000,
+          expectedUrl: null,
+          expectedNewPageUrl: null,
+          expectedDownload: false,
+          expectedSelected: true,
+          expectedVisible: null,
+          expectedHidden: null,
+          satisfaction: 'all',
+          timeoutMs: 2_000,
         },
         timeoutMs: 10_000,
       },
@@ -292,20 +420,28 @@ describe('MCP nested scrolling', () => {
       arguments: { operationId: clickOperationId, limit: 10 },
     });
     expect(clickTelemetry.structuredContent).toMatchObject({
-      traces: [{
-        agentId: 'mcp-scroll-test',
-        command: 'clickByRole',
-        actions: [{
-          action: 'click_by_role',
-          dispatchState: 'dispatched',
-          phases: expect.arrayContaining([
-            expect.objectContaining({ phase: 'observe' }),
-            expect.objectContaining({ phase: 'dispatch' }),
-            expect.objectContaining({ phase: 'reconcile' }),
-          ]),
-        }],
-        conclusion: { actionDispatched: true, clickDispatched: true, postconditionPassed: true },
-      }],
+      traces: [
+        {
+          agentId: 'mcp-scroll-test',
+          command: 'clickByRole',
+          actions: [
+            {
+              action: 'click_by_role',
+              dispatchState: 'dispatched',
+              phases: expect.arrayContaining([
+                expect.objectContaining({ phase: 'observe' }),
+                expect.objectContaining({ phase: 'dispatch' }),
+                expect.objectContaining({ phase: 'reconcile' }),
+              ]),
+            },
+          ],
+          conclusion: {
+            actionDispatched: true,
+            clickDispatched: true,
+            postconditionPassed: true,
+          },
+        },
+      ],
     });
   });
 });
