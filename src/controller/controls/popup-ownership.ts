@@ -23,6 +23,7 @@ export type PopupOwnerResolution =
   | {
       kind: 'resolved';
       owner: ElementHandle<HTMLElement>;
+      candidate: PopupOwnerCandidateObservation;
       targetMatch: boolean;
       proof: 'expanded' | 'focused' | 'spatial' | 'structural';
       diagnostics: ControlPopupOwnershipEvidence;
@@ -63,6 +64,22 @@ interface OwnerCandidate {
   spatialDistance: number;
   overlapsSurface: boolean;
   surfaceCoversControl: boolean;
+}
+
+function candidateObservation(candidate: OwnerCandidate): PopupOwnerCandidateObservation {
+  return {
+    role: candidate.role,
+    name: candidate.name,
+    requestedControl: candidate.requestedControl,
+    evidence: {
+      expanded: candidate.expanded,
+      focused: candidate.focused,
+      structural: candidate.structural,
+      spatial: candidate.spatial,
+      overlapsSurface: candidate.overlapsSurface,
+      surfaceCoversControl: candidate.surfaceCoversControl,
+    },
+  };
 }
 
 function positionalOwner(
@@ -118,7 +135,7 @@ function ownerDiagnostics(
 export async function resolveControlPopupOwner(
   frame: Frame,
   popup: ElementHandle<HTMLElement>,
-  target: ElementHandle<HTMLElement>,
+  target: ElementHandle<HTMLElement> | null,
   deadlineAt: number,
 ): Promise<PopupOwnerResolution> {
   const owners = frame.locator(POPUP_OWNER_SELECTOR);
@@ -255,11 +272,13 @@ export async function resolveControlPopupOwner(
         Math.max(1, remainingUntil(deadlineAt)),
         null,
       );
-      const requestedControl = await boundedValue(
-        handle.evaluate((owner, intended) => owner === intended, target),
-        Math.max(1, remainingUntil(deadlineAt)),
-        null,
-      );
+      const requestedControl = target === null
+        ? false
+        : await boundedValue(
+            handle.evaluate((owner, intended) => owner === intended, target),
+            Math.max(1, remainingUntil(deadlineAt)),
+            null,
+          );
       if (
         relation === null ||
         requestedControl === null ||
@@ -312,19 +331,7 @@ export async function resolveControlPopupOwner(
         kind: 'ambiguous',
         diagnostics,
         targetCandidate: pool.some(({ requestedControl }) => requestedControl),
-        candidates: pool.slice(0, MAX_EXPOSED_POPUP_OWNER_CANDIDATES).map((candidate) => ({
-          role: candidate.role,
-          name: candidate.name,
-          requestedControl: candidate.requestedControl,
-          evidence: {
-            expanded: candidate.expanded,
-            focused: candidate.focused,
-            structural: candidate.structural,
-            spatial: candidate.spatial,
-            overlapsSurface: candidate.overlapsSurface,
-            surfaceCoversControl: candidate.surfaceCoversControl,
-          },
-        })),
+        candidates: pool.slice(0, MAX_EXPOSED_POPUP_OWNER_CANDIDATES).map(candidateObservation),
         candidatesTruncated: pool.length > MAX_EXPOSED_POPUP_OWNER_CANDIDATES,
       };
     }
@@ -336,7 +343,14 @@ export async function resolveControlPopupOwner(
           ? 'expanded' as const
           : 'spatial' as const;
     returnedOwner = selected.handle;
-    return { kind: 'resolved', owner: selected.handle, targetMatch: selected.requestedControl, proof, diagnostics };
+    return {
+      kind: 'resolved',
+      owner: selected.handle,
+      candidate: candidateObservation(selected),
+      targetMatch: selected.requestedControl,
+      proof,
+      diagnostics,
+    };
   } catch {
     returnedOwner = null;
     return {

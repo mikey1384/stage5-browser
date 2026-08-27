@@ -1,6 +1,7 @@
 import { type BrowserCommandInput, type ControlPopupAgentAssociation, type Frame, randomUUID, Stage5BrowserError } from '../dependencies.js';
 import type { AgentDeclaredPopupOwner, ObservedControlInspection, ObservedPopupOwnerDecision } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { SUPPORTED_ARIA_ROLES, type SupportedAriaRole } from '../../protocol/controls.js';
 import type { PopupOwnerCandidateObservation } from './popup-ownership.js';
 import { disposePopupSurfaces } from './popup-set.js';
 
@@ -28,7 +29,11 @@ export const controlCapabilityOperations = {
     let issued = 0;
     const boundedCandidates = candidates.map((candidate) => {
       const key = popupOwnerSemanticKey(candidate.role, candidate.name);
-      if (candidate.name.length === 0 || semanticCounts.get(key) !== 1) return candidate;
+      if (
+        candidate.name.length === 0 ||
+        semanticCounts.get(key) !== 1 ||
+        !isSupportedControlRole(candidate.role)
+      ) return candidate;
       const ownerCandidateId = `popup-owner-candidate-${randomUUID()}`;
       const decision: ObservedPopupOwnerDecision = {
         frame,
@@ -153,6 +158,12 @@ export const controlCapabilityOperations = {
 
 function popupOwnerSemanticKey(role: string, name: string): string {
   return JSON.stringify([role, name]);
+}
+
+const supportedControlRoles = new Set<string>(SUPPORTED_ARIA_ROLES);
+
+function isSupportedControlRole(role: string): role is SupportedAriaRole {
+  return supportedControlRoles.has(role);
 }
 
 export type ControlCapabilityOperations = typeof controlCapabilityOperations;

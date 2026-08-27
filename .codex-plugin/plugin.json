@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.19.3",
+  "version": "0.19.4",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"

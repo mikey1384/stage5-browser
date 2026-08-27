@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 import { type BrowserCommandInput, type BrowserCommandOutput, type ElementHandle, type Frame, Stage5BrowserError } from '../dependencies.js';
-import { type AgentDeclaredPopupOwner, type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
+import { type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { popupAssociationFailure, resolveInspectionTarget } from './inspection-target.js';
 import type { ControlPopupAssociation } from './popup-association.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering, popupSurfaceSetMultiple } from './popup-set.js';
 import { resolveUniqueControl } from './resolution.js';
@@ -16,11 +17,19 @@ export const controlInspectionOperations = {
     const frame = this.resolveFrame(page, input.frameId);
     const deadlineAt = Date.now() + input.timeoutMs;
     const documentVersion = this.documentVersion(frame);
-    let { locator: controlLocator, handle: controlHandle } = await resolveUniqueControl(
-      input.control,
+    const target = await resolveInspectionTarget(
+      this,
+      input,
       frame,
+      documentVersion,
       deadlineAt,
     );
+    const {
+      agentDeclaredPopupOwner,
+      control: resolvedControl,
+      recoveredMissingRequestedControl,
+    } = target;
+    let { locator: controlLocator, handle: controlHandle } = target;
     let popupSurfaces: ObservedControlPopupSurface[] = [];
     let representationScopeHandle: ElementHandle<HTMLElement> | null = null;
     let popupAssociationProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['associationProof'] = null;
@@ -36,7 +45,6 @@ export const controlInspectionOperations = {
     let scrollSteps = 0;
     let boundaryReached = false;
     let optionsComplete = false;
-    let agentDeclaredPopupOwner: AgentDeclaredPopupOwner | null = null;
 
     const ambiguousPopupFailure = (
       association: Extract<ControlPopupAssociation, { kind: 'ambiguous' }>,
@@ -89,12 +97,6 @@ export const controlInspectionOperations = {
         optionsComplete = native.complete;
         boundaryReached = native.complete;
       } else {
-        agentDeclaredPopupOwner = this.consumeAgentDeclaredPopupOwner(
-          frame,
-          documentVersion,
-          input.control,
-          input.popupAssociation,
-        );
         let associated = await this.associatedControlPopup(frame, controlHandle, deadlineAt, {
           agentDeclaredOwner: agentDeclaredPopupOwner,
         });
@@ -105,11 +107,29 @@ export const controlInspectionOperations = {
         }
         if (associated.kind === 'resolved') {
           popupSurfaces = associated.surfaces;
-          popupAssociationProof = associated.proof;
+          popupAssociationProof = recoveredMissingRequestedControl
+            ? 'agent_declared'
+            : associated.proof;
           popupSurfaceProof = associated.surfaceProof;
         }
         let rendered = (await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.anyRendered === true;
-        if (!rendered && input.revealOptions) {
+        if (input.popupAssociation != null && !rendered) {
+          throw new Stage5BrowserError(
+            'TARGET_NOT_FOUND',
+            'The observed popup-owner decision no longer identifies one rendered popup.',
+            {
+              recoverable: true,
+              details: {
+                reason: 'popup_owner_candidate_surface_changed',
+                actionDispatched: false,
+                renderedPopupCount,
+                popupOwnership,
+                suggestedAction: 'Passively inspect the current control state again. No control input was dispatched.',
+              },
+            },
+          );
+        }
+        if (!rendered && input.revealOptions && input.popupAssociation == null) {
           const preparation = await this.dismissCompetingControlPopup(
             page,
             frame,
@@ -305,9 +325,9 @@ export const controlInspectionOperations = {
         frame,
         documentVersion,
         kind: descriptor.kind,
-        controlRole: input.control.role,
-        controlName: input.control.name,
-        controlExact: input.control.exact,
+        controlRole: resolvedControl.role,
+        controlName: resolvedControl.name,
+        controlExact: resolvedControl.exact,
         controlLocator,
         controlHandle,
         popupSurfaces,
@@ -412,34 +432,6 @@ function throwControlDocumentChanged(
 }
 
 export type ControlInspectionOperations = typeof controlInspectionOperations;
-
-function popupAssociationFailure(
-  association: Extract<ControlPopupAssociation, { kind: 'ambiguous' }>,
-  actionDispatched: boolean | 'unknown',
-  reason = 'ambiguous_control_popup_after_reveal',
-): Stage5BrowserError {
-  return new Stage5BrowserError(
-    'AMBIGUOUS_TARGET',
-    'The current popup owner remains ambiguous among bounded observed controls.',
-    {
-      recoverable: true,
-      details: {
-        reason,
-        actionDispatched,
-        renderedPopupCount: association.renderedSurfaceCount,
-        popupOwnership: association.popupOwnership,
-        ownerCandidates: association.ownerCandidates,
-        ownerCandidatesTruncated: association.ownerCandidatesTruncated,
-        requestedControlIsCandidate: association.requestedControlIsCandidate,
-        agentJudgmentAvailable: association.agentJudgmentAvailable,
-        decision: { kind: 'decision_required', responsible: 'agent' },
-        suggestedAction: actionDispatched === false && association.agentJudgmentAvailable
-          ? 'Choose exactly one current ownerCandidates ownerCandidateId using page semantics, then repeat one passive inspection with popupAssociation={owner:observed_candidate,ownerCandidateId,basis:agent_semantic_judgment}. The capability is document-bound and one-use; association dispatches no input.'
-          : 'Inspect authoritative control state. Possible opener input is never replayed; use an agent-declared owner only in a separately authorized fresh passive inspection.',
-      },
-    },
-  );
-}
 
 function representedOptionCount(
   options: ObservedControlInspection['options'],

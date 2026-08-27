@@ -1,4 +1,4 @@
-import { type BrowserCommandOutput, type BrowserLaunchIdentity, type BrowserLaunchTarget, type ControlKind, type ControlOptionObservation, type ControlPopupAssociationProof, type ControlPopupSurfaceProof, type ElementHandle, type FileInputObservation, type FormFieldObservation, type FormFieldState, type Frame, type HumanBrowserSession, type JSHandle, type Locator, type ObservedScrollContainer, type OwnedProcessObservation, type Page, type PrivateFieldValueType, type ProfileShutdownDecision, type ProfileShutdownInspection, type ProfileStorageInspection, type SafeTargetState, type SanitizedClickDispatchEvidence, type SanitizedNativeWindowActivationEvidence, type SanitizedPageActivationEvidence, type ScrollContentObservation } from './dependencies.js';
+import { type BrowserCommandOutput, type BrowserLaunchIdentity, type BrowserLaunchTarget, type ControlKind, type ControlOptionObservation, type ControlPopupAssociationProof, type ControlPopupSurfaceProof, type ElementHandle, type FileInputObservation, type FormFieldObservation, type FormFieldState, type Frame, type HumanBrowserSession, type JSHandle, type Locator, type ObservedScrollContainer, type OwnedProcessObservation, type Page, type PrivateFieldValueType, type ProfileShutdownDecision, type ProfileShutdownInspection, type ProfileStorageInspection, type SafeTargetState, type SanitizedClickDispatchEvidence, type SanitizedNativeWindowActivationEvidence, type SanitizedPageActivationEvidence, type ScrollContentObservation, type SupportedAriaRole } from './dependencies.js';
 import type { ViewportPreparationTelemetry } from '../protocol/telemetry.js';
 
 export async function boundedValue<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
@@ -68,7 +68,7 @@ export interface ObservedControlPopupSurface {
 
 export type AgentDeclaredPopupOwner =
   | { kind: 'requested_control' }
-  | { kind: 'observed_candidate'; role: string; name: string };
+  | { kind: 'observed_candidate'; role: SupportedAriaRole; name: string };
 
 export interface ObservedPopupOwnerDecision {
   frame: Frame;
@@ -76,7 +76,7 @@ export interface ObservedPopupOwnerDecision {
   controlRole: string;
   controlName: string;
   controlExact: boolean;
-  ownerRole: string;
+  ownerRole: SupportedAriaRole;
   ownerName: string;
 }
 

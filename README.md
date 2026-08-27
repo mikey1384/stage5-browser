@@ -98,7 +98,7 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_form_summary` | Inspect a bounded redacted form schema, required/valid state, and value presence without exposing values |
 | `browser_apply_form_plan` | Apply a staged sequence of exact authorized field operations, stopping at the first unconfirmed effect without replay |
 | `browser_set_checked` | Reconcile one exact checkbox/switch/radio to its requested state without blindly toggling |
-| `browser_inspect_control` | Inspect one exact select/autocomplete/custom control and its bounded options; an agent may explicitly resolve a current semantic owner tie only inside Stage5's structural gate |
+| `browser_inspect_control` | Inspect one exact select/autocomplete/custom control and its bounded options; an agent may explicitly resolve a current semantic owner tie, including a surviving composite owner when the requested node disappeared, only inside Stage5's structural gate |
 | `browser_select_option` | Set one exact native or custom option selected or unselected and prove the requested state |
 | `browser_select_options` | Select several exact multi-select options, refreshing capabilities between physical inputs and preserving completed evidence |
 | `browser_navigate_history` | Perform bounded back, forward, or reload navigation with document-capability invalidation |
@@ -186,7 +186,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-available-moves-and-agent-judgment.md` — current-move planning, bounded semantic judgment, explicit startup, telemetry, and Finance tie recovery in 0.18.0
 - `docs/dogfooding-2026-08-27-observed-popup-owner-candidates.md` — one-use agent-selected popup-owner candidates for composite controls in 0.19.0
 - `docs/dogfooding-2026-08-27-covered-popup-reveal-activation.md` — manager-owned native keyboard fallback for covered popup openers in compatible 0.19.1
-- `docs/dogfooding-2026-08-27-causal-popup-surface-set.md` — causal composition and passive agent-owned recovery for one logical popup's sibling semantic groups in compatible 0.19.2–0.19.3
+- `docs/dogfooding-2026-08-27-causal-popup-surface-set.md` — causal composition and passive agent-owned recovery for one logical popup's sibling semantic groups and disappearing composite nodes in compatible 0.19.2–0.19.4
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15

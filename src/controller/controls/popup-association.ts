@@ -18,6 +18,7 @@ import {
   type PopupOwnerCandidateObservation,
 } from './popup-ownership.js';
 import { resolvePositionedPopupSurfaceEnvelope } from './popup-causal-set.js';
+import { popupRenderedState } from './rendering.js';
 import { discoverControlPopupSurfaces } from './popup-surfaces.js';
 
 interface PopupCandidate {
@@ -92,6 +93,73 @@ async function outermostPopupCandidates(
     }
   }
   return candidates.filter((candidate) => !nested.has(candidate));
+}
+
+export async function observeOpenPopupOwnerCandidates(
+  frame: Frame,
+  deadlineAt: number,
+): Promise<Extract<ControlPopupAssociation, { kind: 'ambiguous' }> | null> {
+  const discovery = await discoverControlPopupSurfaces(frame, deadlineAt);
+  if (discovery.kind === 'unbounded') return null;
+  let positionedEnvelope: ElementHandle<HTMLElement> | null = null;
+  let returnedOwner: ElementHandle<HTMLElement> | null = null;
+  try {
+    const rendered: PopupCandidate[] = [];
+    for (const surface of discovery.surfaces) {
+      const isRendered = await popupRenderedState(surface.handle, deadlineAt);
+      if (isRendered === null) return null;
+      if (isRendered) {
+        rendered.push({
+          ...surface,
+          explicit: false,
+          structurallyRelated: false,
+          rendered: true,
+        });
+      }
+    }
+    const renderedRoots = await outermostPopupCandidates(rendered, deadlineAt);
+    if (renderedRoots.length === 0) return null;
+    positionedEnvelope = renderedRoots.length > 1
+      ? await resolvePositionedPopupSurfaceEnvelope(
+          renderedRoots.map(({ handle }) => handle),
+          deadlineAt,
+        )
+      : null;
+    if (renderedRoots.length > 1 && positionedEnvelope === null) return null;
+
+    const ownership = await resolveControlPopupOwner(
+      frame,
+      positionedEnvelope ?? renderedRoots[0]!.handle,
+      null,
+      deadlineAt,
+    );
+    const ownerCandidates = ownership.kind === 'resolved'
+      ? [ownership.candidate]
+      : ownership.kind === 'ambiguous'
+        ? ownership.candidates
+        : [];
+    const ownerCandidatesTruncated = ownership.kind === 'ambiguous'
+      ? ownership.candidatesTruncated
+      : false;
+    if (ownership.kind === 'resolved') returnedOwner = ownership.owner;
+    return {
+      kind: 'ambiguous',
+      renderedSurfaceCount: rendered.length,
+      popupOwnership: ownership.diagnostics,
+      ownerCandidates,
+      ownerCandidatesTruncated,
+      requestedControlIsCandidate: false,
+      agentJudgmentAvailable: ownerCandidates.length > 0 &&
+        !ownerCandidatesTruncated &&
+        hasUniquelyNamedCandidate(ownerCandidates),
+    };
+  } finally {
+    await Promise.allSettled([
+      returnedOwner?.dispose() ?? Promise.resolve(),
+      positionedEnvelope?.dispose() ?? Promise.resolve(),
+      ...discovery.surfaces.map(({ handle }) => handle.dispose()),
+    ]);
+  }
 }
 
 export const controlPopupAssociationOperations = {
@@ -189,7 +257,7 @@ export const controlPopupAssociationOperations = {
 
       let ownershipAmbiguous = false;
       let requestedControlIsAmbiguousCandidate = false;
-      let agentDeclaredOwnerIsAmbiguousCandidate = false;
+      let agentDeclaredOwnerIsCurrentCandidate = false;
       let ownerCandidates: PopupOwnerCandidateObservation[] = [];
       let ownerCandidatesTruncated = false;
       let candidateSetCanBindLogicalSet = false;
@@ -214,7 +282,7 @@ export const controlPopupAssociationOperations = {
           ownershipAmbiguous = true;
           if (ownership.kind === 'ambiguous') {
             requestedControlIsAmbiguousCandidate ||= ownership.targetCandidate;
-            agentDeclaredOwnerIsAmbiguousCandidate ||= declaredOwnerMatches(
+            agentDeclaredOwnerIsCurrentCandidate ||= declaredOwnerMatches(
               policy.agentDeclaredOwner,
               ownership.targetCandidate,
               ownership.candidates,
@@ -226,10 +294,12 @@ export const controlPopupAssociationOperations = {
         }
       }
 
-      // Preserve stronger per-partition ownership first. Only when no exact
-      // target partition was resolved may one proven common envelope provide
-      // a bounded semantic-owner decision for the whole logical set.
-      if (ownerMatched.length === 0 && positionedEnvelope !== null) {
+      // Preserve stronger per-partition ownership unless the agent is
+      // deliberately binding one current owner to the proven logical set.
+      if (
+        positionedEnvelope !== null &&
+        (ownerMatched.length === 0 || policy.agentDeclaredOwner != null)
+      ) {
         const ownership = await resolveControlPopupOwner(
           frame,
           positionedEnvelope,
@@ -243,11 +313,17 @@ export const controlPopupAssociationOperations = {
               ownerMatched.push({ candidate, proof: ownership.proof });
             }
           }
+          agentDeclaredOwnerIsCurrentCandidate = declaredOwnerMatches(
+            policy.agentDeclaredOwner,
+            ownership.targetMatch,
+            [ownership.candidate],
+          );
+          candidateSetCanBindLogicalSet = policy.agentDeclaredOwner != null;
           await ownership.owner.dispose().catch(() => undefined);
         } else if (ownership.kind === 'ambiguous') {
           ownershipAmbiguous = true;
           requestedControlIsAmbiguousCandidate = ownership.targetCandidate;
-          agentDeclaredOwnerIsAmbiguousCandidate = declaredOwnerMatches(
+          agentDeclaredOwnerIsCurrentCandidate = declaredOwnerMatches(
             policy.agentDeclaredOwner,
             ownership.targetCandidate,
             ownership.candidates,
@@ -258,20 +334,20 @@ export const controlPopupAssociationOperations = {
         }
       }
 
+      if (
+        selected.size === 0 &&
+        policy.agentDeclaredOwner != null &&
+        candidateSetCanBindLogicalSet &&
+        agentDeclaredOwnerIsCurrentCandidate
+      ) {
+        for (const candidate of renderedRoots) selected.add(candidate);
+        selectedProof = 'agent_declared';
+      }
       if (selected.size === 0) {
         for (const { candidate } of ownerMatched) selected.add(candidate);
       }
       if (selectedProof === null && selected.size > 0 && ownerMatched.length > 0) {
         selectedProof = weakestAssociationProof(ownerMatched.map(({ proof }) => proof));
-      }
-      if (
-        selected.size === 0 &&
-        policy.agentDeclaredOwner != null &&
-        candidateSetCanBindLogicalSet &&
-        agentDeclaredOwnerIsAmbiguousCandidate
-      ) {
-        for (const candidate of renderedRoots) selected.add(candidate);
-        selectedProof = 'agent_declared';
       }
       if (
         selected.size === 0 &&
