@@ -271,7 +271,9 @@ export const controlSelectionOperations = {
       observe: async () => {
         observedBaseline = await observeCustomControlSelectionBaseline({
           associatePopup: (controlHandle, associationDeadlineAt) =>
-            this.associatedControlPopup(frame, controlHandle, associationDeadlineAt),
+            this.associatedControlPopup(frame, controlHandle, associationDeadlineAt, {
+              requireRendered: true,
+            }),
           deadlineAt,
           frame,
           inspection,

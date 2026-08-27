@@ -24,6 +24,11 @@ interface PopupCandidate {
   rendered: boolean;
 }
 
+export interface ControlPopupAssociationPolicy {
+  allowUniqueRenderedAfterDispatch?: boolean;
+  requireRendered?: boolean;
+}
+
 export type ControlPopupAssociation =
   | {
       kind: 'resolved';
@@ -72,7 +77,7 @@ export const controlOptionOperations = {
     frame: Frame,
     controlHandle: ElementHandle<HTMLElement>,
     deadlineAt: number,
-    allowUniqueRenderedAfterDispatch = false,
+    policy: ControlPopupAssociationPolicy = {},
   ): Promise<ControlPopupAssociation> {
     const connected = await boundedValue(
       controlHandle.evaluate((control) => control.isConnected),
@@ -119,7 +124,8 @@ export const controlOptionOperations = {
         candidates.push({ locator, handle, surfaceProof, ...state });
       }
 
-      const explicit = candidates.filter((candidate) => candidate.explicit);
+      const explicit = candidates.filter((candidate) =>
+        candidate.explicit && (!policy.requireRendered || candidate.rendered));
       const structural = candidates.filter((candidate) => candidate.structurallyRelated && candidate.rendered);
       const rendered = candidates.filter((candidate) => candidate.rendered);
       let selected = explicit.length === 1
@@ -157,12 +163,12 @@ export const controlOptionOperations = {
         selected = ownerMatched.length === 1
           ? ownerMatched[0]!.candidate
           : ownerMatched.length === 0 && !ownershipAmbiguous &&
-              allowUniqueRenderedAfterDispatch && rendered.length === 1
+              policy.allowUniqueRenderedAfterDispatch === true && rendered.length === 1
             ? rendered[0]
             : null;
         selectedProof = ownerMatched.length === 1
           ? ownerMatched[0]!.proof
-          : selected !== null && allowUniqueRenderedAfterDispatch && rendered.length === 1
+          : selected !== null && policy.allowUniqueRenderedAfterDispatch === true && rendered.length === 1
             ? 'post_dispatch_unique'
             : null;
         ownershipAmbiguous ||= ownerMatched.length > 1;

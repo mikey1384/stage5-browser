@@ -81,6 +81,7 @@ async function inspectFundingControl(): Promise<{
 
 async function selectFunding(
   fixture: Awaited<ReturnType<typeof inspectFundingControl>>,
+  timeoutMs = 5_000,
 ) {
   return fixture.controller.selectOption({
     inspectionId: fixture.inspectionId,
@@ -88,7 +89,7 @@ async function selectFunding(
     control: null,
     option: null,
     frameId: null,
-    timeoutMs: 5_000,
+    timeoutMs,
   });
 }
 
@@ -139,6 +140,60 @@ describe('BrowserController custom selection capability rebinding', () => {
     expect(await fixture.page.locator('#option-clicks').textContent()).toBe('1');
   });
 
+  it('waits through a bounded framework replacement gap without replaying the opener', async () => {
+    const fixture = await inspectFundingControl();
+    await fixture.page.evaluate(() => {
+      const original = document.querySelector('#funding-options');
+      if (original === null) throw new Error('Missing disposable popup.');
+      const replacement = original.cloneNode(true);
+      original.remove();
+      setTimeout(() => document.body.append(replacement), 250);
+    });
+
+    const selected = await selectFunding(fixture);
+
+    expect(selected.evidence).toMatchObject({
+      actionDispatched: true,
+      selectedRepresentationObserved: true,
+      popupClosed: false,
+    });
+    expect(fixture.controller.drainActionPhaseTelemetry().actionPhases).toEqual([
+      expect.objectContaining({
+        recovery: expect.objectContaining({ reason: 'target_changed_before_input' }),
+      }),
+    ]);
+    expect(await fixture.page.locator('#opener-clicks').textContent()).toBe('1');
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('1');
+  });
+
+  it('prefers one uniquely owned rendered replacement over a retained hidden popup', async () => {
+    const fixture = await inspectFundingControl();
+    await fixture.page.evaluate(() => {
+      const retained = document.querySelector<HTMLElement>('#funding-options');
+      if (retained === null) throw new Error('Missing disposable popup.');
+      const replacement = retained.cloneNode(true) as HTMLElement;
+      replacement.id = 'replacement-funding-options';
+      retained.hidden = true;
+      replacement.hidden = false;
+      retained.after(replacement);
+    });
+
+    const selected = await selectFunding(fixture);
+
+    expect(selected.evidence).toMatchObject({
+      actionDispatched: true,
+      selectedRepresentationObserved: true,
+      popupClosed: false,
+    });
+    expect(fixture.controller.drainActionPhaseTelemetry().actionPhases).toEqual([
+      expect.objectContaining({
+        recovery: expect.objectContaining({ reason: 'target_changed_before_input' }),
+      }),
+    ]);
+    expect(await fixture.page.locator('#opener-clicks').textContent()).toBe('1');
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('1');
+  });
+
   it('does not replay the opener when a retained popup merely closed', async () => {
     const fixture = await inspectFundingControl();
     await fixture.page.evaluate(() => {
@@ -149,9 +204,8 @@ describe('BrowserController custom selection capability rebinding', () => {
       control.setAttribute('aria-expanded', 'false');
     });
 
-    await expect(selectFunding(fixture)).rejects.toMatchObject({
-      code: 'TARGET_NOT_FOUND',
-      details: { reason: 'control_popup_changed', actionDispatched: false },
+    await expect(selectFunding(fixture, 1_000)).rejects.toMatchObject({
+      details: { actionDispatched: false },
     });
     expect(await fixture.page.locator('#opener-clicks').textContent()).toBe('1');
     expect(await fixture.page.locator('#option-clicks').textContent()).toBe('0');

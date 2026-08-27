@@ -140,7 +140,10 @@ export const controlInspectionOperations = {
             frame,
             controlHandle,
             deadlineAt,
-            openerActionDispatched !== false,
+            {
+              allowUniqueRenderedAfterDispatch: openerActionDispatched !== false,
+              requireRendered: true,
+            },
           );
           renderedPopupCount = associated.renderedSurfaceCount;
           popupOwnership = associated.popupOwnership;

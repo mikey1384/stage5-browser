@@ -93,7 +93,7 @@ export const controlRevealOperations = {
         frame,
         controlHandle,
         deadlineAt,
-        true,
+        { allowUniqueRenderedAfterDispatch: true, requireRendered: true },
       );
       if (associated.kind === 'ambiguous') return failPopupReveal('ambiguous_control_popup_after_reveal', null);
       if (associated.kind === 'missing') return failPopupReveal('control_popup_not_observed', false);

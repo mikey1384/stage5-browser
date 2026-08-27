@@ -7,6 +7,7 @@ import { observeControlSelectionRepresentation, type ControlSelectionRepresentat
 
 const RETAINED_CONTROL_PROBE_MS = 500;
 const SELECTION_BASELINE_OBSERVATION_MS = 2_000;
+const POPUP_REBIND_POLL_MS = 50;
 
 export interface CustomControlSelectionBaseline {
   capabilityRebound: boolean;
@@ -74,13 +75,15 @@ export async function observeCustomControlSelectionBaseline(
       : await popupRenderedState(popupHandle, observationDeadlineAt);
     if (popupState === null) throwBaselineUnavailable();
     if (popupState !== true) {
-      const associated = await input.associatePopup(controlHandle, observationDeadlineAt);
-      if (associated.kind !== 'resolved') throwPopupChanged(associated.kind);
+      const associated = await waitForRenderedReplacementPopup(
+        input,
+        controlHandle,
+        observationDeadlineAt,
+      );
       popupLocator = associated.locator;
       popupHandle = associated.handle;
       freshPopup = associated.handle;
       popupRebound = true;
-      if (await popupRenderedState(popupHandle, observationDeadlineAt) !== true) throwPopupChanged();
     }
     if (popupHandle === null) throwPopupChanged();
 
@@ -190,7 +193,31 @@ function throwScopeUnavailable(): never {
   );
 }
 
-function throwPopupChanged(kind: 'ambiguous' | 'missing' | null = null): never {
+async function waitForRenderedReplacementPopup(
+  input: BaselineInput,
+  controlHandle: ElementHandle<HTMLElement>,
+  deadlineAt: number,
+): Promise<Extract<ControlPopupAssociation, { kind: 'resolved' }>> {
+  let lastAssociation: ControlPopupAssociation | null = null;
+  for (;;) {
+    const associated = await input.associatePopup(controlHandle, deadlineAt);
+    lastAssociation = associated;
+    if (associated.kind === 'resolved') {
+      const rendered = await popupRenderedState(associated.handle, deadlineAt);
+      if (rendered === true) return associated;
+      await associated.handle.dispose().catch(() => undefined);
+    }
+    if (remainingUntil(deadlineAt) <= 0) break;
+    await new Promise((resolve) => setTimeout(
+      resolve,
+      Math.min(POPUP_REBIND_POLL_MS, remainingUntil(deadlineAt)),
+    ));
+  }
+  throwPopupChanged(lastAssociation);
+}
+
+function throwPopupChanged(association: ControlPopupAssociation | null = null): never {
+  const kind = association?.kind ?? null;
   throw new Stage5BrowserError(
     kind === 'ambiguous' ? 'AMBIGUOUS_TARGET' : 'TARGET_NOT_FOUND',
     'The inspected popup capability changed before the selection dispatch gate.',
@@ -199,6 +226,10 @@ function throwPopupChanged(kind: 'ambiguous' | 'missing' | null = null): never {
       details: {
         reason: kind === 'ambiguous' ? 'ambiguous_control_popup_after_rebind' : 'control_popup_changed',
         actionDispatched: false,
+        associationProof: association?.kind === 'resolved' ? association.proof : null,
+        surfaceProof: association?.kind === 'resolved' ? association.surfaceProof : null,
+        renderedPopupCount: association?.renderedSurfaceCount ?? null,
+        popupOwnership: association?.popupOwnership ?? null,
         suggestedAction: 'Inspect the control once more. Stage5 Browser confirmed that no selection input was dispatched.',
       },
     },

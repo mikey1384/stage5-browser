@@ -179,6 +179,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-open-multiselect-reconciliation.md` — field-local selected-representation proof for intentionally open multi-select popups in 0.15.11
 - `docs/dogfooding-2026-08-27-framework-control-rebind.md` — phase-managed exact stale-opener rebind and zero-input failure telemetry in 0.15.12
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
+- `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-late-site-navigation.md` — telemetry-based distinction between bounded open stabilization and later autonomous site navigation
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
