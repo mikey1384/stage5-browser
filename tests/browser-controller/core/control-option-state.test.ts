@@ -138,6 +138,112 @@ describe('BrowserController custom option state', () => {
     expect(await fixture.page.locator('#selection-marker').isChecked()).toBe(true);
   });
 
+  it('maps several existing field chips back to their exact options without input', async () => {
+    const fixture = await openFixture(`<!doctype html><html><body>
+      <section id="funding-field">
+        <div id="selected-values">
+          <span>Treasury funds</span>
+          <span>Operating revenue</span>
+          <span>Investment proceeds</span>
+          <span>Conflicting choice</span>
+        </div>
+        <button aria-haspopup="listbox" aria-controls="funding-options" aria-expanded="true">
+          Funding source
+        </button>
+      </section>
+      <section id="other-field">
+        <button aria-haspopup="listbox">Other field</button>
+        <span>Unrelated exact text</span>
+      </section>
+      <div id="funding-options" role="listbox">
+        <div role="option">Treasury funds</div>
+        <div role="option">Operating revenue</div>
+        <div role="option">Investment proceeds</div>
+        <div role="option" aria-selected="false">Conflicting choice</div>
+        <div role="option">Unselected choice</div>
+        <div role="option">Unrelated exact text</div>
+      </div>
+      <output id="option-clicks">0</output>
+      <script>
+        const optionClicks = document.querySelector('#option-clicks');
+        for (const option of document.querySelectorAll('#funding-options [role=option]')) {
+          option.addEventListener('click', () => {
+            optionClicks.value = String(Number(optionClicks.value) + 1);
+          });
+        }
+      </script>
+    </body></html>`);
+
+    const inspected = await fixture.controller.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const byName = new Map(inspected.inspection.options.map((option) => [option.name, option]));
+
+    expect(inspected.inspection.multiple).toBe(true);
+    expect(byName.get('Treasury funds')?.selected).toBe(true);
+    expect(byName.get('Operating revenue')?.selected).toBe(true);
+    expect(byName.get('Investment proceeds')?.selected).toBe(true);
+    expect(byName.get('Conflicting choice')?.selected).toBeNull();
+    expect(byName.get('Unselected choice')?.selected).toBeNull();
+    expect(byName.get('Unrelated exact text')?.selected).toBeNull();
+    expect(inspected.inspection.reveal).toMatchObject({
+      openerActionDispatched: false,
+      preparationActionDispatched: false,
+    });
+
+    const represented = byName.get('Treasury funds');
+    if (represented === undefined) throw new Error('The represented option was not observed.');
+    fixture.controller.drainActionPhaseTelemetry();
+    const selected = await fixture.controller.selectOption({
+      inspectionId: inspected.inspection.inspectionId,
+      optionId: represented.optionId,
+      control: null,
+      option: null,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    expect(selected.evidence).toMatchObject({
+      actionDispatched: false,
+      selectedRepresentationObserved: true,
+      selectedState: null,
+    });
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('0');
+    expect(fixture.controller.drainActionPhaseTelemetry().actionPhases).toEqual([
+      expect.objectContaining({
+        action: 'select_option',
+        dispatchState: 'not_attempted',
+        dispatchAttempts: 0,
+        terminalOutcome: 'succeeded',
+      }),
+    ]);
+
+    const reinspected = await fixture.controller.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: false,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const conflicting = reinspected.inspection.options.find(({ name }) => name === 'Conflicting choice');
+    if (conflicting === undefined) throw new Error('The conflicting option was not observed.');
+    await expect(fixture.controller.selectOption({
+      inspectionId: reinspected.inspection.inspectionId,
+      optionId: conflicting.optionId,
+      control: null,
+      option: null,
+      frameId: null,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject({
+      code: 'OPERATION_FAILED',
+      details: { reason: 'control_option_state_conflict', actionDispatched: false },
+    });
+    expect(await fixture.page.locator('#option-clicks').textContent()).toBe('0');
+  });
+
   it('recognizes explicit framework state without trusting appearance-only classes', async () => {
     const fixture = await openFixture(`<!doctype html><html><body>
       <button aria-haspopup="listbox" aria-controls="choices" aria-expanded="true">Framework choices</button>

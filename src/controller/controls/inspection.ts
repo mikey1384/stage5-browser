@@ -5,6 +5,7 @@ import { boundedValue, type ObservedControlInspection, remainingUntil } from '..
 import type { BrowserControllerContext } from '../runtime.js';
 import { popupRendered } from './rendering.js';
 import { resolveUniqueControl } from './resolution.js';
+import { observeControlSelectionRepresentations, resolveControlSelectionRepresentationScope } from './selection-evidence.js';
 
 export const controlInspectionOperations = {
   async inspectControl(
@@ -21,6 +22,7 @@ export const controlInspectionOperations = {
     );
     let popupLocator: Locator | null = null;
     let popupHandle: ElementHandle<HTMLElement> | null = null;
+    let representationScopeHandle: ElementHandle<HTMLElement> | null = null;
     let popupAssociationProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['associationProof'] = null;
     let popupSurfaceProof: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['surfaceProof'] = null;
     let renderedPopupCount: number | null = null;
@@ -198,10 +200,44 @@ export const controlInspectionOperations = {
           scrollSteps = custom.scrollSteps;
           boundaryReached = custom.boundaryReached;
           if (descriptor !== null) {
+            representationScopeHandle = await resolveControlSelectionRepresentationScope(
+              controlHandle,
+              popupHandle,
+              deadlineAt,
+            );
+            let representedOptionCount = 0;
+            if (representationScopeHandle !== null) {
+              const representations = await observeControlSelectionRepresentations(
+                controlHandle,
+                representationScopeHandle,
+                popupHandle,
+                [...custom.options.values()].map(({ observation }) => observation.name),
+                deadlineAt,
+              );
+              if (representations !== null) {
+                for (const option of custom.options.values()) {
+                  const represented = representations.get(option.observation.name);
+                  if (represented === undefined || (
+                    !represented.controlRepresentsOption &&
+                    represented.localExactRepresentationCount === 0
+                  )) continue;
+                  representedOptionCount += 1;
+                  if (option.observation.selected === null) {
+                    option.selectedRepresentationObserved = true;
+                  } else if (option.observation.selected === false) {
+                    option.selectionStateConflict = true;
+                  }
+                  option.observation = {
+                    ...option.observation,
+                    selected: option.observation.selected === false ? null : true,
+                  };
+                }
+              }
+            }
             descriptor = {
               ...descriptor,
               multiple: descriptor.multiple || popupMultiple ||
-                custom.multipleSignal,
+                custom.multipleSignal || representedOptionCount > 1,
             };
           }
         }
@@ -230,6 +266,7 @@ export const controlInspectionOperations = {
         controlHandle,
         popupLocator,
         popupHandle,
+        ...(representationScopeHandle === null ? {} : { representationScopeHandle }),
         multiple: descriptor.multiple,
         optionsComplete,
         options: options ?? new Map(),
@@ -280,6 +317,7 @@ export const controlInspectionOperations = {
       if (!retained) {
         await Promise.allSettled([
           controlHandle.dispose(),
+          representationScopeHandle?.dispose() ?? Promise.resolve(),
           popupHandle?.dispose() ?? Promise.resolve(),
           ...[...(options?.values() ?? [])].map(({ handle }) => handle.dispose()),
         ]);

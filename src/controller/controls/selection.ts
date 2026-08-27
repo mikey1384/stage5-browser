@@ -13,6 +13,15 @@ interface NativeSelectEventRecord {
   changeListener: EventListener;
 }
 
+function representedOptionStillObserved(
+  baseline: CustomControlSelectionBaseline,
+  option: ObservedControlOption,
+): boolean {
+  return baseline.representation.controlRepresentsOption ||
+    (option.selectedRepresentationObserved === true &&
+      baseline.representation.localExactRepresentationCount > 0);
+}
+
 export function controlOptionMatches(
   candidate: ControlOptionObservation,
   requested: NonNullable<BrowserCommandInput<'selectOption'>['option']>,
@@ -100,6 +109,16 @@ export const controlSelectionOperations = {
             reason: 'option_not_enabled',
             actionDispatched: false,
             suggestedAction: 'Inspect the current form state and satisfy any prerequisite before selecting this option.',
+          },
+        });
+      }
+      if (option.selectionStateConflict === true) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The exact option exposes conflicting current selection state.', {
+          recoverable: true,
+          details: {
+            reason: 'control_option_state_conflict',
+            actionDispatched: false,
+            suggestedAction: 'Inspect authoritative current form state. Stage5 Browser dispatched no option input and will not guess between conflicting state channels.',
           },
         });
       }
@@ -247,7 +266,7 @@ export const controlSelectionOperations = {
     deadlineAt: number,
     requireSelected = false,
   ): Promise<ControlSelectionEvidence> {
-    if (option.observation.selected === true) {
+    if (option.observation.selected === true && option.selectedRepresentationObserved !== true) {
       return {
         actionDispatched: false,
         inputEventObserved: false,
@@ -289,19 +308,14 @@ export const controlSelectionOperations = {
         ...(baseline.capabilityRebound
           ? { preDispatchRecoveryReason: 'target_changed_before_input' as const }
           : {}),
-        ...(baseline.representation.controlRepresentsOption
+        ...(representedOptionStillObserved(baseline, option)
           ? { satisfiedWithoutDispatch: {
               postcondition: {
                 passed: true,
                 checks: [
-                  { kind: 'selection_representation', passed: true, expected: true, observed: true },
-                  {
-                    kind: 'selected',
-                    passed: option.observation.selected === true,
-                    expected: true,
-                    observed: option.observation.selected,
-                  },
-                  { kind: 'popup_closed', passed: false, expected: true, observed: null },
+                  { kind: 'selection_representation' as const, passed: true, expected: true, observed: true },
+                  { kind: 'selected' as const, passed: false, expected: true, observed: null },
+                  { kind: 'popup_closed' as const, passed: false, expected: true, observed: null },
                 ],
               },
             } }

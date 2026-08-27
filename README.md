@@ -181,6 +181,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15
+- `docs/dogfooding-2026-08-27-selected-chip-option-inventory.md` — efficient field-local selected-chip inventory and zero-toggle reconciliation in 0.15.16
 - `docs/dogfooding-2026-08-27-late-site-navigation.md` — telemetry-based distinction between bounded open stabilization and later autonomous site navigation
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies

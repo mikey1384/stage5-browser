@@ -18,12 +18,12 @@ interface ControlRepresentationEvaluator {
   evaluate<Result>(
     pageFunction: (
       control: HTMLElement,
-      input: { owner: HTMLElement; popup: HTMLElement | null; requestedName: string },
+      input: { owner: HTMLElement; popup: HTMLElement | null; requestedNames: string[] },
     ) => Result,
     input: {
       owner: ElementHandle<HTMLElement>;
       popup: ElementHandle<HTMLElement> | null;
-      requestedName: string;
+      requestedNames: string[];
     },
   ): Promise<Result>;
 }
@@ -81,16 +81,40 @@ export async function observeControlSelectionRepresentation(
   optionName: string,
   deadlineAt: number,
 ): Promise<ControlSelectionRepresentation | null> {
+  const representations = await observeControlSelectionRepresentations(
+    control,
+    owner,
+    popup,
+    [optionName],
+    deadlineAt,
+  );
+  return representations?.get(optionName) ?? null;
+}
+
+export async function observeControlSelectionRepresentations(
+  control: ElementHandle<HTMLElement>,
+  owner: ElementHandle<HTMLElement>,
+  popup: ElementHandle<HTMLElement> | null,
+  optionNames: string[],
+  deadlineAt: number,
+): Promise<Map<string, ControlSelectionRepresentation> | null> {
+  if (optionNames.length === 0) return new Map();
   const evaluator = control as unknown as ControlRepresentationEvaluator;
-  return boundedValue(
+  const observed = await boundedValue(
     evaluator.evaluate((element, input) => {
       const normalize = (value: string | null | undefined): string =>
         (value ?? '').replaceAll(/\s+/gu, ' ').trim().toLocaleLowerCase();
-      const { owner: scope, popup: popupElement, requestedName } = input;
+      const { owner: scope, popup: popupElement, requestedNames } = input;
       if (!scope.isConnected || !element.isConnected || (scope !== element && !scope.contains(element))) return null;
-      const requested = normalize(requestedName);
-      if (requested.length === 0) return null;
-      const sources = [
+      const requests = requestedNames.map((original) => ({ original, normalized: normalize(original) }));
+      const frequencies = new Map<string, number>();
+      for (const { normalized } of requests) {
+        if (normalized.length > 0) frequencies.set(normalized, (frequencies.get(normalized) ?? 0) + 1);
+      }
+      const uniqueRequests = requests.filter(({ normalized }) =>
+        normalized.length > 0 && frequencies.get(normalized) === 1);
+      const requested = new Set(uniqueRequests.map(({ normalized }) => normalized));
+      const sources = new Set([
         element.getAttribute('aria-valuetext'),
         element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
           ? element.value
@@ -98,7 +122,7 @@ export async function observeControlSelectionRepresentation(
         element instanceof HTMLSelectElement
           ? Array.from(element.selectedOptions).map((option) => option.label || option.textContent || '').join(' ')
           : null,
-      ].map(normalize).filter(Boolean);
+      ].map(normalize).filter(Boolean));
       const rendered = (candidate: Element): boolean => {
         const rect = candidate.getBoundingClientRect();
         const style = getComputedStyle(candidate);
@@ -108,31 +132,39 @@ export async function observeControlSelectionRepresentation(
       const outsidePopup = (candidate: Element): boolean =>
         (popupElement === null || (candidate !== popupElement && !popupElement.contains(candidate))) &&
         candidate.closest('[role="listbox"], [role="menu"], [role="tree"]') === null;
-      const exactRenderedLeaf = (candidate: Element): boolean => {
-        if (!rendered(candidate) || !outsidePopup(candidate)) return false;
-        if (normalize(candidate.textContent) !== requested) return false;
-        return !Array.from(candidate.children).some((child) =>
-          rendered(child) && outsidePopup(child) && normalize(child.textContent) === requested);
+      const exactRenderedLeafName = (candidate: Element): string | null => {
+        const name = normalize(candidate.textContent);
+        if (!requested.has(name)) return null;
+        if (!rendered(candidate) || !outsidePopup(candidate)) return null;
+        return Array.from(candidate.children).some((child) =>
+          rendered(child) && outsidePopup(child) && normalize(child.textContent) === name)
+          ? null
+          : name;
       };
-      const controlExactRepresentationCount = Array.from(element.querySelectorAll('*'))
-        .filter(exactRenderedLeaf).length;
-      const controlRepresentsOption = sources.some((source) => source === requested) ||
-        normalize(element.textContent) === requested ||
-        controlExactRepresentationCount > 0;
-
-      const descendants = Array.from(scope.querySelectorAll('*'));
-      const exactLeaf = (candidate: Element): boolean => {
-        if (candidate === element || element.contains(candidate)) return false;
-        return exactRenderedLeaf(candidate);
-      };
-      return {
-        controlRepresentsOption,
-        localExactRepresentationCount: descendants.filter(exactLeaf).length,
-      };
-    }, { owner, popup, requestedName: optionName }),
+      const representations = new Map(uniqueRequests.map(({ normalized }) => [normalized, {
+        controlRepresentsOption: sources.has(normalized) || normalize(element.textContent) === normalized,
+        localExactRepresentationCount: 0,
+      }]));
+      for (const candidate of Array.from(scope.querySelectorAll('*'))) {
+        const name = exactRenderedLeafName(candidate);
+        if (name === null) continue;
+        const representation = representations.get(name);
+        if (representation === undefined) continue;
+        if (element.contains(candidate)) {
+          representation.controlRepresentsOption = true;
+        } else {
+          representation.localExactRepresentationCount += 1;
+        }
+      }
+      return uniqueRequests.map(({ original, normalized }) => [
+        original,
+        representations.get(normalized)!,
+      ] as const);
+    }, { owner, popup, requestedNames: optionNames }),
     Math.max(1, remainingUntil(deadlineAt)),
     null,
   );
+  return observed === null ? null : new Map(observed);
 }
 
 export async function reconcileCustomControlSelection(input: {

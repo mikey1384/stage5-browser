@@ -56,6 +56,8 @@ export interface ObservedControlOption {
   observation: ControlOptionObservation;
   locator: Locator;
   handle: ElementHandle<HTMLElement>;
+  selectedRepresentationObserved?: boolean;
+  selectionStateConflict?: boolean;
 }
 
 export interface ObservedControlInspection {

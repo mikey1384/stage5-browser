@@ -326,7 +326,7 @@ describe('BrowserController custom selection representation', () => {
       localExactRepresentationCount: 0,
     };
     const control = {
-      evaluate: async () => unchangedRepresentation,
+      evaluate: async () => [['Proprietary funds', unchangedRepresentation]],
     } as unknown as ElementHandle<HTMLElement>;
     const popup = {
       evaluate: () => new Promise<never>(() => undefined),
