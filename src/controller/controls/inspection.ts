@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { type BrowserCommandInput, type BrowserCommandOutput, type ElementHandle, type Frame, Stage5BrowserError } from '../dependencies.js';
+import { type BrowserCommandInput, type BrowserCommandOutput, type ControlRevealMethod, type ElementHandle, type Frame, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import { completedControlRecovery, popupAssociationFailure, resolveInspectionTarget } from './inspection-target.js';
@@ -27,6 +27,7 @@ export const controlInspectionOperations = {
     let options: ObservedControlInspection['options'] | null = null;
     let retained = false;
     let openerActionDispatched: boolean | 'unknown' = false;
+    let revealInteractionUsed: ControlRevealMethod | null = null;
     let popupOpened = false;
     let competingPopupDismissed = false;
     let preparationActionDispatched: boolean | 'unknown' = false;
@@ -153,9 +154,20 @@ export const controlInspectionOperations = {
           } else {
             let revealError: unknown = null;
             const revealEvidence = { zeroRenderedSurfaceBaseline: false };
+            revealInteractionUsed = input.revealInteraction === 'keyboard' ? 'keyboard' : 'pointer';
             try {
-              const reveal = await this.revealControlPopup(page, frame, controlLocator, controlHandle, documentVersion, deadlineAt, revealEvidence);
-              openerActionDispatched = reveal.dispatch.actionDispatched;
+              const reveal = await this.revealControlPopup(
+                page,
+                frame,
+                controlLocator,
+                controlHandle,
+                resolvedControl,
+                revealInteractionUsed,
+                documentVersion,
+                deadlineAt,
+                revealEvidence,
+              );
+              openerActionDispatched = reveal.actionDispatched;
             } catch (error) {
               revealError = error;
               if (error instanceof Stage5BrowserError) {
@@ -276,6 +288,7 @@ export const controlInspectionOperations = {
           optionsComplete,
           reveal: {
             requested: input.revealOptions,
+            interactionUsed: revealInteractionUsed,
             openerActionDispatched,
             popupOpened,
             competingPopupDismissed,
@@ -304,6 +317,13 @@ export const controlInspectionOperations = {
             error instanceof Stage5BrowserError ? dispatchEvidenceFromError(error) : 'unknown',
           ),
         );
+      }
+      if (error instanceof Stage5BrowserError && revealInteractionUsed !== null) {
+        throw new Stage5BrowserError(error.code, error.message, {
+          recoverable: error.recoverable,
+          details: { ...error.details, revealInteraction: revealInteractionUsed },
+          cause: error,
+        });
       }
       throw error;
     } finally {

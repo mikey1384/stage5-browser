@@ -312,6 +312,7 @@ describe('privacy-safe execution telemetry', () => {
       renderedPopupCount: null,
       popupOwnership: null,
       controlRecovery: null,
+      controlRevealInteraction: null,
       selectionReconciliation: null,
       selectionInteraction: null,
       searchableSelection: null,
@@ -555,6 +556,7 @@ describe('privacy-safe execution telemetry', () => {
       result: {
         inspection: {
           reveal: {
+            revealInteraction: 'keyboard',
             associationProof: 'agent_declared',
             renderedPopupCount: 1,
             popupOwnership: {
@@ -584,6 +586,7 @@ describe('privacy-safe execution telemetry', () => {
     });
 
     expect(trace.conclusion).toMatchObject({
+      controlRevealInteraction: 'keyboard',
       popupAssociationProof: 'agent_declared',
       renderedPopupCount: 1,
       popupOwnership: { candidateCount: 5, decision: 'tie_or_near' },
@@ -603,6 +606,40 @@ describe('privacy-safe execution telemetry', () => {
       names: 'omitted',
       pageContent: 'omitted',
     });
+  });
+
+  it('retains the chosen control-reveal technique on a privacy-safe failure trace', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-keyboard-reveal-failure',
+      agentId: 'finance-agent',
+      command: 'inspectControl',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(10).toISOString(),
+      durationMs: 10,
+      outcome: 'failed',
+      error: {
+        code: 'POSTCONDITION_FAILED',
+        message: 'Fixture failure.',
+        recoverable: true,
+        details: {
+          reason: 'control_popup_not_observed',
+          actionDispatched: true,
+          clickDispatched: false,
+          revealInteraction: 'keyboard',
+          privateLabel: 'Never retain this field label',
+        },
+      },
+      result: null,
+      workerRuntime: { version: 'fixture', protocolVersion: 18 },
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion).toMatchObject({
+      actionDispatched: true,
+      clickDispatched: false,
+      controlRevealInteraction: 'keyboard',
+    });
+    expect(JSON.stringify(trace)).not.toContain('Never retain this field label');
   });
 
   it('records categorical exact-target viewport evidence without geometry or semantics', () => {

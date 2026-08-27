@@ -1,6 +1,11 @@
 import type { ExecutionTraceConclusion } from '../execution-telemetry-dependencies.js';
 import { boundedNullableInteger, isRecord, valuesForKey } from './value-readers.js';
 
+const CONTROL_REVEAL_INTERACTIONS = new Set<NonNullable<ExecutionTraceConclusion['controlRevealInteraction']>>([
+  'keyboard',
+  'pointer',
+]);
+
 const SELECTION_INTERACTIONS = new Set<NonNullable<ExecutionTraceConclusion['selectionInteraction']>>([
   'observed_option',
   'searchable_keyboard',
@@ -14,6 +19,21 @@ const SELECTION_PROOFS = new Set<NonNullable<NonNullable<ExecutionTraceConclusio
   'unresolved',
   'value_and_popup_closed',
 ]);
+
+export function controlRevealInteractionConclusion(
+  value: unknown,
+): ExecutionTraceConclusion['controlRevealInteraction'] {
+  const candidates = [
+    ...valuesForKey(value, 'revealInteraction'),
+    ...valuesForKey(value, 'interactionUsed'),
+  ];
+  const observed = new Set(candidates.filter(
+    (candidate): candidate is NonNullable<ExecutionTraceConclusion['controlRevealInteraction']> =>
+      typeof candidate === 'string' &&
+      CONTROL_REVEAL_INTERACTIONS.has(candidate as NonNullable<ExecutionTraceConclusion['controlRevealInteraction']>),
+  ));
+  return observed.size === 1 ? [...observed][0]! : null;
+}
 
 export function selectionInteractionConclusion(
   value: unknown,

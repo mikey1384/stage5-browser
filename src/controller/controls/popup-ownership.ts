@@ -58,6 +58,7 @@ export interface PopupOwnerCandidateObservation {
 interface OwnerCandidate {
   handle: ElementHandle<HTMLElement>;
   requestedControl: boolean;
+  exactlyFocused: boolean;
   role: string;
   name: string;
   expanded: boolean;
@@ -67,6 +68,96 @@ interface OwnerCandidate {
   spatialDistance: number;
   overlapsSurface: boolean;
   surfaceCoversControl: boolean;
+}
+
+type OwnerRelation = Omit<OwnerCandidate, 'handle' | 'requestedControl'>;
+
+function inspectPopupOwnerRelation(
+  control: HTMLElement,
+  surface: HTMLElement,
+): OwnerRelation | null {
+  if (!control.isConnected || !surface.isConnected) return null;
+  if (control === surface || surface.contains(control)) return null;
+  const ids = [
+    ...(control.getAttribute('aria-controls') ?? '').split(/\s+/u),
+    ...(control.getAttribute('aria-owns') ?? '').split(/\s+/u),
+  ].filter(Boolean);
+  const surfaceLabelledBy = (surface.getAttribute('aria-labelledby') ?? '').split(/\s+/u).filter(Boolean);
+  const controlLabelledBy = (control.getAttribute('aria-labelledby') ?? '')
+    .split(/\s+/u)
+    .filter(Boolean)
+    .map((id) => control.ownerDocument.getElementById(id)?.textContent ?? '')
+    .join(' ');
+  const labels = control instanceof HTMLButtonElement ||
+    control instanceof HTMLInputElement ||
+    control instanceof HTMLSelectElement ||
+    control instanceof HTMLTextAreaElement
+    ? Array.from(control.labels ?? []).map((label) => label.textContent ?? '').join(' ')
+    : '';
+  const role = control.getAttribute('role') ||
+    (control instanceof HTMLButtonElement ? 'button' :
+      control instanceof HTMLInputElement ? (control.type === 'search' ? 'searchbox' : 'textbox') :
+        control instanceof HTMLSelectElement ? (control.multiple ? 'listbox' : 'combobox') :
+          control.localName);
+  const name = (
+    control.getAttribute('aria-label') || controlLabelledBy || labels || control.textContent ||
+    control.getAttribute('title') || control.getAttribute('placeholder') || ''
+  ).replace(/\s+/gu, ' ').trim().slice(0, 500);
+  const controlRect = control.getBoundingClientRect();
+  const surfaceRect = surface.getBoundingClientRect();
+  const controlStyle = getComputedStyle(control);
+  const surfaceStyle = getComputedStyle(surface);
+  const rendered = (rect: DOMRect, style: CSSStyleDeclaration): boolean =>
+    rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+    rect.left < innerWidth && rect.top < innerHeight && style.display !== 'none' &&
+    style.visibility !== 'hidden' && style.opacity !== '0';
+  const overlap = (startA: number, endA: number, startB: number, endB: number): number =>
+    Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
+  const horizontalOverlap = overlap(controlRect.left, controlRect.right, surfaceRect.left, surfaceRect.right);
+  const verticalOverlap = overlap(controlRect.top, controlRect.bottom, surfaceRect.top, surfaceRect.bottom);
+  const horizontalRatio = horizontalOverlap / Math.max(1, Math.min(controlRect.width, surfaceRect.width));
+  const verticalRatio = verticalOverlap / Math.max(1, Math.min(controlRect.height, surfaceRect.height));
+  const verticalGap = surfaceRect.top >= controlRect.bottom
+    ? surfaceRect.top - controlRect.bottom
+    : controlRect.top >= surfaceRect.bottom ? controlRect.top - surfaceRect.bottom : 0;
+  const horizontalGap = surfaceRect.left >= controlRect.right
+    ? surfaceRect.left - controlRect.right
+    : controlRect.left >= surfaceRect.right ? controlRect.left - surfaceRect.right : 0;
+  const overlapsSurface = horizontalOverlap > 0 && verticalOverlap > 0;
+  const overlapRatio = overlapsSurface
+    ? (horizontalOverlap * verticalOverlap) / Math.max(1, controlRect.width * controlRect.height)
+    : 0;
+  const overlapLeft = Math.max(0, controlRect.left, surfaceRect.left);
+  const overlapRight = Math.min(innerWidth, controlRect.right, surfaceRect.right);
+  const overlapTop = Math.max(0, controlRect.top, surfaceRect.top);
+  const overlapBottom = Math.min(innerHeight, controlRect.bottom, surfaceRect.bottom);
+  const overlapHit = overlapRight > overlapLeft && overlapBottom > overlapTop
+    ? control.ownerDocument.elementFromPoint((overlapLeft + overlapRight) / 2, (overlapTop + overlapBottom) / 2)
+    : null;
+  const surfaceCoversControl = overlapRatio >= 0.5 && overlapHit !== null &&
+    (overlapHit === surface || surface.contains(overlapHit));
+  const spatialDistance = Math.hypot(
+    horizontalGap / Math.max(1, Math.min(controlRect.width, surfaceRect.width)),
+    verticalGap / Math.max(1, Math.min(controlRect.height, surfaceRect.height)),
+  );
+  const spatial = !surface.contains(control) && rendered(controlRect, controlStyle) &&
+    rendered(surfaceRect, surfaceStyle) &&
+    ((horizontalRatio >= 0.5 && verticalGap <= Math.max(48, controlRect.height * 2)) ||
+      (verticalRatio >= 0.5 && horizontalGap <= Math.max(48, controlRect.width * 0.5)));
+  const activeElement = control.ownerDocument.activeElement;
+  return {
+    structural: (surface.id.length > 0 && ids.includes(surface.id)) || control.contains(surface) ||
+      (control.id.length > 0 && surfaceLabelledBy.includes(control.id)),
+    exactlyFocused: activeElement === control,
+    focused: activeElement === control || control.contains(activeElement),
+    expanded: control.getAttribute('aria-expanded') === 'true',
+    spatial,
+    spatialDistance,
+    overlapsSurface,
+    surfaceCoversControl,
+    role: role.slice(0, 100),
+    name,
+  };
 }
 
 function candidateObservation(candidate: OwnerCandidate): PopupOwnerCandidateObservation {
@@ -126,12 +217,90 @@ function ownerDiagnostics(proofTier: PopupOwnerProofTier, candidates: OwnerCandi
   };
 }
 
+async function resolveExactTargetFirst(
+  popup: ElementHandle<HTMLElement>,
+  target: ElementHandle<HTMLElement> | null,
+  deadlineAt: number,
+): Promise<Extract<PopupOwnerResolution, { kind: 'resolved' }> | null> {
+  if (target === null) return null;
+  const relation = await boundedValue(
+    target.evaluate(inspectPopupOwnerRelation, popup),
+    Math.max(1, remainingUntil(deadlineAt)),
+    null,
+  );
+  if (relation === null) return null;
+  const proof: Extract<PopupOwnerResolution, { kind: 'resolved' }>['proof'] | null = relation.structural
+    ? 'structural'
+    : relation.exactlyFocused && relation.spatial ? 'focused' :
+      relation.expanded && relation.spatial ? 'expanded' : null;
+  if (proof === null) return null;
+  if (proof === 'structural') return retainedTargetOwner(target, relation, proof, deadlineAt);
+  const competingStructuralOwner = await boundedValue(
+    popup.evaluate((surface, intended) => {
+      const ownerSelector = [
+        '[aria-controls]',
+        '[aria-owns]',
+        '[aria-haspopup]',
+        'button',
+        '[role="button"]',
+        '[role="combobox"]',
+        '[role="searchbox"]',
+        'input[list]',
+      ].join(', ');
+      const labelledBy = new Set((surface.getAttribute('aria-labelledby') ?? '').split(/\s+/u).filter(Boolean));
+      return Array.from(surface.ownerDocument.querySelectorAll<HTMLElement>(ownerSelector)).some((candidate) => {
+        if (candidate === intended) return false;
+        const linkedIds = [
+          ...(candidate.getAttribute('aria-controls') ?? '').split(/\s+/u),
+          ...(candidate.getAttribute('aria-owns') ?? '').split(/\s+/u),
+        ].filter(Boolean);
+        return candidate.contains(surface) ||
+          (surface.id.length > 0 && linkedIds.includes(surface.id)) ||
+          (candidate.id.length > 0 && labelledBy.has(candidate.id));
+      });
+    }, target),
+    Math.max(1, remainingUntil(deadlineAt)),
+    true,
+  );
+  if (competingStructuralOwner) return null;
+  return retainedTargetOwner(target, relation, proof, deadlineAt);
+}
+
+async function retainedTargetOwner(
+  target: ElementHandle<HTMLElement>,
+  relation: OwnerRelation,
+  proof: Extract<PopupOwnerResolution, { kind: 'resolved' }>['proof'],
+  deadlineAt: number,
+): Promise<Extract<PopupOwnerResolution, { kind: 'resolved' }> | null> {
+  const ownerReference = await boundedValue(
+    target.evaluateHandle((element) => element),
+    Math.max(1, remainingUntil(deadlineAt)),
+    null,
+  );
+  const owner = ownerReference?.asElement() as ElementHandle<HTMLElement> | null;
+  if (owner === null) {
+    await ownerReference?.dispose().catch(() => undefined);
+    return null;
+  }
+  const candidate: OwnerCandidate = { handle: owner, requestedControl: true, ...relation };
+  return {
+    kind: 'resolved',
+    owner,
+    candidate: candidateObservation(candidate),
+    targetMatch: true,
+    proof,
+    diagnostics: ownerDiagnostics(proof, [candidate], 'single_candidate'),
+  };
+}
+
 export async function resolveControlPopupOwner(
   frame: Frame,
   popup: ElementHandle<HTMLElement>,
   target: ElementHandle<HTMLElement> | null,
   deadlineAt: number,
 ): Promise<PopupOwnerResolution> {
+  const exactTarget = await resolveExactTargetFirst(popup, target, deadlineAt);
+  if (exactTarget !== null) return exactTarget;
   const owners = frame.locator(POPUP_OWNER_SELECTOR);
   const count = await boundedValue(owners.count(), Math.max(1, remainingUntil(deadlineAt)), -1);
   if (count < 0 || count > MAX_POPUP_OWNERS) {
@@ -160,119 +329,7 @@ export async function resolveControlPopupOwner(
       );
       if (handle === null) continue;
       const relation = await boundedValue(
-        handle.evaluate((control, surface) => {
-          if (!control.isConnected || !surface.isConnected) return null;
-          if (control === surface || surface.contains(control)) return null;
-          const ids = [...(control.getAttribute('aria-controls') ?? '').split(/\s+/), ...(control.getAttribute('aria-owns') ?? '').split(/\s+/)].filter(
-            Boolean,
-          );
-          const surfaceLabelledBy = (surface.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean);
-          const controlLabelledBy = (control.getAttribute('aria-labelledby') ?? '')
-            .split(/\s+/)
-            .filter(Boolean)
-            .map((id) => control.ownerDocument.getElementById(id)?.textContent ?? '')
-            .join(' ');
-          const labels =
-            control instanceof HTMLButtonElement ||
-            control instanceof HTMLInputElement ||
-            control instanceof HTMLSelectElement ||
-            control instanceof HTMLTextAreaElement
-              ? Array.from(control.labels ?? [])
-                  .map((label) => label.textContent ?? '')
-                  .join(' ')
-              : '';
-          const role =
-            control.getAttribute('role') ||
-            (control instanceof HTMLButtonElement
-              ? 'button'
-              : control instanceof HTMLInputElement
-                ? control.type === 'search'
-                  ? 'searchbox'
-                  : 'textbox'
-                : control instanceof HTMLSelectElement
-                  ? control.multiple
-                    ? 'listbox'
-                    : 'combobox'
-                  : control.localName);
-          const name = (
-            control.getAttribute('aria-label') ||
-            controlLabelledBy ||
-            labels ||
-            control.textContent ||
-            control.getAttribute('title') ||
-            control.getAttribute('placeholder') ||
-            ''
-          )
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 500);
-          const controlRect = control.getBoundingClientRect();
-          const surfaceRect = surface.getBoundingClientRect();
-          const controlStyle = getComputedStyle(control);
-          const surfaceStyle = getComputedStyle(surface);
-          const rendered = (rect: DOMRect, style: CSSStyleDeclaration): boolean =>
-            rect.width > 0 &&
-            rect.height > 0 &&
-            rect.right > 0 &&
-            rect.bottom > 0 &&
-            rect.left < innerWidth &&
-            rect.top < innerHeight &&
-            style.display !== 'none' &&
-            style.visibility !== 'hidden' &&
-            style.opacity !== '0';
-          const overlap = (startA: number, endA: number, startB: number, endB: number): number => Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
-          const horizontalOverlap = overlap(controlRect.left, controlRect.right, surfaceRect.left, surfaceRect.right);
-          const verticalOverlap = overlap(controlRect.top, controlRect.bottom, surfaceRect.top, surfaceRect.bottom);
-          const horizontalRatio = horizontalOverlap / Math.max(1, Math.min(controlRect.width, surfaceRect.width));
-          const verticalRatio = verticalOverlap / Math.max(1, Math.min(controlRect.height, surfaceRect.height));
-          const verticalGap =
-            surfaceRect.top >= controlRect.bottom
-              ? surfaceRect.top - controlRect.bottom
-              : controlRect.top >= surfaceRect.bottom
-                ? controlRect.top - surfaceRect.bottom
-                : 0;
-          const horizontalGap =
-            surfaceRect.left >= controlRect.right
-              ? surfaceRect.left - controlRect.right
-              : controlRect.left >= surfaceRect.right
-                ? controlRect.left - surfaceRect.right
-                : 0;
-          const overlapsSurface = horizontalOverlap > 0 && verticalOverlap > 0;
-          const overlapRatio = overlapsSurface ? (horizontalOverlap * verticalOverlap) / Math.max(1, controlRect.width * controlRect.height) : 0;
-          const overlapLeft = Math.max(0, controlRect.left, surfaceRect.left);
-          const overlapRight = Math.min(innerWidth, controlRect.right, surfaceRect.right);
-          const overlapTop = Math.max(0, controlRect.top, surfaceRect.top);
-          const overlapBottom = Math.min(innerHeight, controlRect.bottom, surfaceRect.bottom);
-          const overlapHit =
-            overlapRight > overlapLeft && overlapBottom > overlapTop
-              ? control.ownerDocument.elementFromPoint((overlapLeft + overlapRight) / 2, (overlapTop + overlapBottom) / 2)
-              : null;
-          const surfaceCoversControl = overlapRatio >= 0.5 && overlapHit !== null && (overlapHit === surface || surface.contains(overlapHit));
-          const spatialDistance = Math.hypot(
-            horizontalGap / Math.max(1, Math.min(controlRect.width, surfaceRect.width)),
-            verticalGap / Math.max(1, Math.min(controlRect.height, surfaceRect.height)),
-          );
-          const spatial =
-            !surface.contains(control) &&
-            rendered(controlRect, controlStyle) &&
-            rendered(surfaceRect, surfaceStyle) &&
-            ((horizontalRatio >= 0.5 && verticalGap <= Math.max(48, controlRect.height * 2)) ||
-              (verticalRatio >= 0.5 && horizontalGap <= Math.max(48, controlRect.width * 0.5)));
-          return {
-            structural:
-              (surface.id.length > 0 && ids.includes(surface.id)) ||
-              control.contains(surface) ||
-              (control.id.length > 0 && surfaceLabelledBy.includes(control.id)),
-            focused: control.ownerDocument.activeElement === control || control.contains(control.ownerDocument.activeElement),
-            expanded: control.getAttribute('aria-expanded') === 'true',
-            spatial,
-            spatialDistance,
-            overlapsSurface,
-            surfaceCoversControl,
-            role: role.slice(0, 100),
-            name,
-          };
-        }, popup),
+        handle.evaluate(inspectPopupOwnerRelation, popup),
         Math.max(1, remainingUntil(deadlineAt)),
         null,
       );

@@ -87,6 +87,8 @@ export interface PostconditionResult {
 }
 
 export type ControlKind = 'custom_popup' | 'native_select';
+export type ControlRevealInteraction = 'auto' | 'keyboard' | 'pointer';
+export type ControlRevealMethod = Exclude<ControlRevealInteraction, 'auto'>;
 export type ControlPopupAssociationProof = 'active_descendant' | 'explicit' | 'structural' | 'focused' | 'expanded' | 'spatial' | 'agent_declared' | 'post_dispatch_unique';
 export type ControlPopupSurfaceProof = 'semantic_role' | 'positioned_option_group';
 export interface ControlPopupOwnershipEvidence {
@@ -149,6 +151,7 @@ export interface ControlOptionsInspection {
   optionsComplete: boolean;
   reveal: {
     requested: boolean;
+    interactionUsed: ControlRevealMethod | null;
     openerActionDispatched: boolean | 'unknown';
     popupOpened: boolean;
     competingPopupDismissed: boolean;

@@ -52,11 +52,13 @@ describe('MCP form fast paths and telemetry', () => {
         <label for="country">Country</label>
         <input id="country" role="combobox" aria-autocomplete="list" aria-expanded="false">
         <div id="country-options" role="listbox" hidden></div>
+        <button id="role-control" type="button" aria-haspopup="listbox">Role</button>
+        <div id="role-options" role="listbox" hidden><div role="option">Director</div></div>
         <label for="state">State</label><input id="state">
         <label for="zip">ZIP code</label><input id="zip">
-        <output id="counts">country:0 enters:0 state:0 zip:0 replacements:0</output>
+        <output id="counts">country:0 enters:0 role:0 state:0 zip:0 replacements:0</output>
         <script>
-          const stateCounts = { country: 0, enters: 0, state: 0, zip: 0, replacements: 0 };
+          const stateCounts = { country: 0, enters: 0, role: 0, state: 0, zip: 0, replacements: 0 };
           const render = () => {
             counts.value = Object.entries(stateCounts).map(([key, value]) => key + ':' + value).join(' ');
           };
@@ -77,6 +79,17 @@ describe('MCP form fast paths and telemetry', () => {
             country.setAttribute('aria-expanded', 'false');
             country.removeAttribute('aria-activedescendant');
             document.querySelector('#country-options').hidden = true;
+            render();
+          });
+          const roleControl = document.querySelector('#role-control');
+          roleControl.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            stateCounts.role += 1;
+            document.querySelector('#role-options').hidden = false;
+            const replacement = roleControl.cloneNode(true);
+            replacement.setAttribute('aria-controls', 'role-options');
+            roleControl.replaceWith(replacement);
+            replacement.focus();
             render();
           });
           const wireZip = (field) => field.addEventListener('input', () => {
@@ -131,6 +144,46 @@ describe('MCP form fast paths and telemetry', () => {
     await client.callTool({
       name: 'browser_open',
       arguments: { url: `http://127.0.0.1:${port}/form`, newTab: false, stabilizationMs: 0, timeoutMs: 10_000 },
+    });
+
+    const revealed = await client.callTool({
+      name: 'browser_inspect_control',
+      arguments: {
+        control: { role: 'button', name: 'Role', exact: true },
+        frameId: null,
+        revealOptions: true,
+        revealInteraction: 'keyboard',
+        maxOptions: 20,
+        timeoutMs: 10_000,
+      },
+    });
+    expect(revealed.isError).not.toBe(true);
+    expect(revealed.structuredContent).toMatchObject({
+      result: {
+        inspection: {
+          options: [{ name: 'Director' }],
+          reveal: {
+            interactionUsed: 'keyboard',
+            openerActionDispatched: true,
+            popupOpened: true,
+          },
+        },
+      },
+    });
+    const revealOperationId = structured(revealed).operationId;
+    if (typeof revealOperationId !== 'string') throw new Error('Control reveal omitted its operationId.');
+    const revealTelemetry = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: { operationId: revealOperationId, limit: 5, detail: 'full' },
+    });
+    expect(revealTelemetry.structuredContent).toMatchObject({
+      traces: [{
+        command: 'inspectControl',
+        actions: expect.arrayContaining([
+          expect.objectContaining({ action: 'press', dispatchState: 'dispatched' }),
+        ]),
+        conclusion: { controlRevealInteraction: 'keyboard' },
+      }],
     });
 
     const selected = await client.callTool({

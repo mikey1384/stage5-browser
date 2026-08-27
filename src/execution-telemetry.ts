@@ -24,6 +24,7 @@ import {
 } from './execution-telemetry/lifecycle-conclusions.js';
 import { normalizeTrace, privacyContract, summarizeTrace, type ExecutionTraceFilters } from './execution-telemetry/query.js';
 import {
+  controlRevealInteractionConclusion,
   formFieldRebindingConclusion,
   searchableSelectionConclusion,
   selectionInteractionConclusion,
@@ -274,6 +275,7 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     renderedPopupCount: boundedIntegerConclusion(valuesForKey(combined, 'renderedPopupCount'), 50),
     popupOwnership: popupOwnershipConclusion(combined),
     controlRecovery: controlRecoveryConclusion(combined),
+    controlRevealInteraction: controlRevealInteractionConclusion(combined),
     selectionReconciliation: selectionReconciliationConclusion(combined),
     selectionInteraction: selectionInteractionConclusion(combined),
     searchableSelection: searchableSelectionConclusion(combined),

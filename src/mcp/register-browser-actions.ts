@@ -191,7 +191,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
   server.registerTool(
     TOOL.browserInspectControl,
     {
-      title: 'Inspect one form control and its options',
+      title: 'Inspect control options via pointer or keyboard',
       inputSchema: inspectControlInputSchema,
       annotations: {
         readOnlyHint: false,
@@ -208,7 +208,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
   server.registerTool(
     TOOL.browserSelectOption,
     {
-      title: 'Set one exact form option state',
+      title: 'Select one exact option, including searchable dropdowns',
       inputSchema: selectOptionInputSchema,
       annotations: {
         readOnlyHint: false,

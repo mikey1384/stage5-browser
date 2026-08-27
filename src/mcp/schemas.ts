@@ -135,6 +135,7 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     ]).nullable().default(null),
     frameId: frameIdSchema,
     revealOptions: z.boolean().default(true),
+    revealInteraction: z.enum(['auto', 'keyboard', 'pointer']).default('auto'),
     maxOptions: z.number().int().min(1).max(200).default(100),
     timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
     dialogResponse: dialogResponseSchema.nullable().default(null),

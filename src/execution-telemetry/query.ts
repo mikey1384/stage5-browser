@@ -26,6 +26,9 @@ export function normalizeTrace(trace: Partial<BrowserExecutionTrace>): BrowserEx
     conclusion: {
       ...conclusion,
       controlRecovery: isRecord(conclusion.controlRecovery) ? conclusion.controlRecovery : null,
+      controlRevealInteraction: typeof conclusion.controlRevealInteraction === 'string'
+        ? conclusion.controlRevealInteraction
+        : null,
       selectionReconciliation: isRecord(conclusion.selectionReconciliation) ? conclusion.selectionReconciliation : null,
       selectionInteraction: typeof conclusion.selectionInteraction === 'string' ? conclusion.selectionInteraction : null,
       searchableSelection: isRecord(conclusion.searchableSelection) ? conclusion.searchableSelection : null,

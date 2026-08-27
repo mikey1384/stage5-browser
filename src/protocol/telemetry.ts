@@ -5,6 +5,7 @@ import type {
   ControlPopupOwnershipEvidence,
   ControlPopupSurfaceProof,
   ControlRecoveryEvidence,
+  ControlRevealMethod,
   ControlSelectionReconciliationEvidence,
   ControlSelectionMethod,
   PostconditionCheck,
@@ -86,6 +87,7 @@ export interface ExecutionTraceConclusion {
   renderedPopupCount: number | null;
   popupOwnership: ControlPopupOwnershipEvidence | null;
   controlRecovery: ControlRecoveryEvidence | null;
+  controlRevealInteraction: ControlRevealMethod | null;
   selectionReconciliation: ControlSelectionReconciliationEvidence | null;
   selectionInteraction: ControlSelectionMethod | null;
   searchableSelection: {
