@@ -17,6 +17,7 @@ import {
   resolveControlPopupOwner,
   type PopupOwnerCandidateObservation,
 } from './popup-ownership.js';
+import { isOnePositionedPopupSurfaceSet } from './popup-causal-set.js';
 import { discoverControlPopupSurfaces } from './popup-surfaces.js';
 
 interface PopupCandidate {
@@ -230,11 +231,17 @@ export const controlPopupAssociationOperations = {
       }
       if (
         selected.size === 0 &&
-        policy.allowUniqueRenderedAfterDispatch === true &&
-        rendered.length === 1
+        policy.allowUniqueRenderedAfterDispatch === true
       ) {
-        selected.add(rendered[0]!);
-        selectedProof = 'post_dispatch_unique';
+        const renderedRoots = await outermostPopupCandidates(rendered, deadlineAt);
+        const oneCausalSurfaceSet = renderedRoots.length === 1 || await isOnePositionedPopupSurfaceSet(
+          renderedRoots.map(({ handle }) => handle),
+          deadlineAt,
+        );
+        if (oneCausalSurfaceSet) {
+          for (const candidate of renderedRoots) selected.add(candidate);
+          selectedProof = 'post_dispatch_unique';
+        }
       }
 
       const selectedSurfaces = await outermostPopupCandidates([...selected], deadlineAt);
