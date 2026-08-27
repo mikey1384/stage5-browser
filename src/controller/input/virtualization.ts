@@ -5,9 +5,10 @@ import type { BrowserControllerContext } from '../runtime.js';
 export const inputVirtualizationOperations = {
   async incrementalScrollTowardClickTarget(
     handle: ElementHandle<HTMLElement | SVGElement>,
+    seekPointerContact = false,
   ): Promise<ClickViewportMovement | null> {
     try {
-      return await handle.evaluate((element) => {
+      return await handle.evaluate((element, input) => {
         let composedBoundaryTraversed = false;
         const composedParent = (candidate: Element): HTMLElement | null => {
           if (candidate.assignedSlot !== null) {
@@ -74,18 +75,28 @@ export const inputVirtualizationOperations = {
           const style = getComputedStyle(surface);
           const visibleRect = visibleSurfaceRect(surface);
           if (visibleRect.right <= visibleRect.left || visibleRect.bottom <= visibleRect.top) return noMovement();
-          const horizontalDirection = direction(
+          let horizontalDirection = direction(
             targetRect.left,
             targetRect.right,
             visibleRect.left,
             visibleRect.right,
           );
-          const verticalDirection = direction(
+          let verticalDirection = direction(
             targetRect.top,
             targetRect.bottom,
             visibleRect.top,
             visibleRect.bottom,
           );
+          const horizontalCenterDistance = (targetRect.left + targetRect.right) / 2 -
+            (visibleRect.left + visibleRect.right) / 2;
+          const verticalCenterDistance = (targetRect.top + targetRect.bottom) / 2 -
+            (visibleRect.top + visibleRect.bottom) / 2;
+          const centerHorizontally = input.seekPointerContact &&
+            horizontalDirection === 0 && Math.abs(horizontalCenterDistance) > 1;
+          const centerVertically = input.seekPointerContact &&
+            verticalDirection === 0 && Math.abs(verticalCenterDistance) > 1;
+          if (centerHorizontally) horizontalDirection = horizontalCenterDistance < 0 ? -1 : 1;
+          if (centerVertically) verticalDirection = verticalCenterDistance < 0 ? -1 : 1;
           const canMoveHorizontally = horizontalDirection !== 0 &&
             (surfaceKind === 'document' || scrolls(style.overflowX)) &&
             surface.scrollWidth > surface.clientWidth + 1;
@@ -96,25 +107,27 @@ export const inputVirtualizationOperations = {
 
           const beforeLeft = surface.scrollLeft;
           const beforeTop = surface.scrollTop;
-          const horizontalDistance = horizontalDirection > 0
-            ? Math.max(64, targetRect.left - visibleRect.right)
-            : Math.max(64, visibleRect.left - targetRect.right);
-          const verticalDistance = verticalDirection > 0
-            ? Math.max(64, targetRect.top - visibleRect.bottom)
-            : Math.max(64, visibleRect.top - targetRect.bottom);
+          const horizontalDistance = centerHorizontally
+            ? Math.abs(horizontalCenterDistance)
+            : horizontalDirection > 0
+              ? Math.max(64, targetRect.left - visibleRect.right)
+              : Math.max(64, visibleRect.left - targetRect.right);
+          const verticalDistance = centerVertically
+            ? Math.abs(verticalCenterDistance)
+            : verticalDirection > 0
+              ? Math.max(64, targetRect.top - visibleRect.bottom)
+              : Math.max(64, visibleRect.top - targetRect.bottom);
           const priorBehavior = surface.style.scrollBehavior;
           surface.style.scrollBehavior = 'auto';
           if (canMoveHorizontally) {
-            surface.scrollLeft = beforeLeft + horizontalDirection * boundedStep(
-              horizontalDistance,
-              visibleRect.right - visibleRect.left,
-            );
+            surface.scrollLeft = beforeLeft + horizontalDirection * (centerHorizontally
+              ? horizontalDistance
+              : boundedStep(horizontalDistance, visibleRect.right - visibleRect.left));
           }
           if (canMoveVertically) {
-            surface.scrollTop = beforeTop + verticalDirection * boundedStep(
-              verticalDistance,
-              visibleRect.bottom - visibleRect.top,
-            );
+            surface.scrollTop = beforeTop + verticalDirection * (centerVertically
+              ? verticalDistance
+              : boundedStep(verticalDistance, visibleRect.bottom - visibleRect.top));
           }
           surface.style.scrollBehavior = priorBehavior;
           const horizontalMovement = Math.abs(surface.scrollLeft - beforeLeft) > 1;
@@ -146,7 +159,7 @@ export const inputVirtualizationOperations = {
           return noMovement();
         }
         return moveSurface(scrollingElement, 'document');
-      });
+      }, { seekPointerContact });
     } catch {
       return null;
     }

@@ -134,6 +134,7 @@ export class ActionPhaseSession {
       nestedSurfaceMovement: prior.nestedSurfaceMovement || evidence.nestedSurfaceMovement,
       documentMovement: prior.documentMovement || evidence.documentMovement,
       composedBoundaryTraversed: prior.composedBoundaryTraversed || evidence.composedBoundaryTraversed,
+      pointerContactRecovery: prior.pointerContactRecovery || evidence.pointerContactRecovery,
       completedInViewport: evidence.completedInViewport,
       reachStrategy: evidence.reachStrategy,
     };

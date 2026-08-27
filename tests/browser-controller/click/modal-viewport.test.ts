@@ -92,6 +92,77 @@ describe('BrowserController modal target viewport preparation', () => {
     });
   });
 
+  it('moves a newly visible target away from a covering sibling before exact contact', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><head><style>
+        body { margin: 0; height: 100vh; overflow: hidden; }
+        #surface { position: fixed; inset: 40px auto auto 40px; width: 320px; height: 100px; overflow-y: auto; }
+        #cover { position: sticky; top: 0; z-index: 2; height: 55px; background: white; }
+        #target { display: block; width: 100%; height: 40px; }
+        #spacer { height: 300px; }
+      </style></head><body>
+        <div id="surface" role="dialog" aria-modal="true" aria-label="Available choices">
+          <div id="cover" role="option">Covering sibling</div>
+          <button id="target" type="button">Target choice</button>
+          <div id="spacer"></div>
+        </div>
+        <output id="clicks">0</output>
+        <script>
+          surface.scrollTop = surface.scrollHeight;
+          target.addEventListener('click', () => { clicks.value = String(Number(clicks.value) + 1); });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-covered-after-scroll-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/covered-after-scroll`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+
+    const observed = await controller.snapshot({
+      depth: 8,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 2_000,
+    });
+    const ref = observed.snapshot.match(/button "Target choice"[^\n]*\[ref=([^\]]+)\]/u)?.[1];
+    expect(ref).toBeDefined();
+    if (ref === undefined) throw new Error('Covered target fixture exposed no exact ref.');
+
+    const page = (controller as unknown as { activePage: Page }).activePage;
+    await expect(inspectTargetState(page.locator('#target'))).resolves.toMatchObject({
+      visible: true,
+      inViewport: false,
+    });
+    const clicked = await controller.clickRef({
+      snapshotId: observed.snapshotId,
+      ref,
+      frameId: null,
+      postcondition: null,
+      timeoutMs: 4_000,
+    });
+
+    expect(clicked).toMatchObject({
+      dispatch: { actionDispatched: true, clickDispatched: true },
+      viewportPreparation: {
+        verticalMovement: true,
+        nestedSurfaceMovement: true,
+        pointerContactRecovery: true,
+        completedInViewport: true,
+      },
+    });
+    await expect(inspectTargetState(page.locator('#target'))).resolves.toMatchObject({
+      inViewport: true,
+      receivesPointerEvents: true,
+    });
+    await expect(page.locator('#clicks').textContent()).resolves.toBe('1');
+  });
+
   it('scrolls a horizontally clipped modal action before exact contact', async () => {
     server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });

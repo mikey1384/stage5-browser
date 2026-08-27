@@ -234,11 +234,12 @@ export const inputClickReferenceOperations = {
       nestedSurfaceMovement: false,
       documentMovement: false,
       composedBoundaryTraversed: false,
+      pointerContactRecovery: false,
       completedInViewport: targetState.inViewport,
       reachStrategy: 'pointer_viewport',
     };
 
-    const identity = targetState.inViewport
+    const identity = targetState.inViewport && targetState.receivesPointerEvents !== false
       ? null
       : await boundedValue(
         this.observeClickTargetIdentity(handle),
@@ -252,14 +253,16 @@ export const inputClickReferenceOperations = {
 
     for (
       let step = 0;
-      !targetState.inViewport &&
+      (!targetState.inViewport || targetState.receivesPointerEvents === false) &&
         step < CLICK_REF_INCREMENTAL_SCROLL_STEPS &&
         Date.now() < preparationDeadline;
       step += 1
     ) {
       viewportPreparation.attempts += 1;
+      const seekPointerContact = targetState.inViewport && targetState.receivesPointerEvents === false;
+      viewportPreparation.pointerContactRecovery ||= seekPointerContact;
       const movement = await boundedValue(
-        this.incrementalScrollTowardClickTarget(handle),
+        this.incrementalScrollTowardClickTarget(handle, seekPointerContact),
         Math.max(1, remainingUntil(preparationDeadline)),
         null,
       );
@@ -329,7 +332,9 @@ export const inputClickReferenceOperations = {
           );
         }
       }
-      if (movement !== null && !movement.moved && !targetState.inViewport) {
+      if (movement !== null && !movement.moved && (
+        !targetState.inViewport || targetState.receivesPointerEvents === false
+      )) {
         break;
       }
     }

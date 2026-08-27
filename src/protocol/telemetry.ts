@@ -10,6 +10,7 @@ export interface ViewportPreparationTelemetry {
   nestedSurfaceMovement: boolean;
   documentMovement: boolean;
   composedBoundaryTraversed: boolean;
+  pointerContactRecovery: boolean;
   completedInViewport: boolean;
   reachStrategy: 'pointer_viewport' | 'postconditioned_keyboard';
 }

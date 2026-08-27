@@ -30,6 +30,7 @@ function viewportPreparationFromError(error: unknown): ViewportPreparationTeleme
     typeof evidence.nestedSurfaceMovement !== 'boolean' ||
     typeof evidence.documentMovement !== 'boolean' ||
     typeof evidence.composedBoundaryTraversed !== 'boolean' ||
+    typeof evidence.pointerContactRecovery !== 'boolean' ||
     typeof evidence.completedInViewport !== 'boolean' ||
     (evidence.reachStrategy !== 'pointer_viewport' && evidence.reachStrategy !== 'postconditioned_keyboard')
   ) return null;
