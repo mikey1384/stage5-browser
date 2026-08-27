@@ -2,7 +2,7 @@
 
 Date: 2026-08-27
 
-Release candidate: Stage5 Browser 0.19.5, MCP host behavior 8.
+Release: Stage5 Browser 0.19.5, MCP host behavior 8.
 
 ## Actual feedback
 
@@ -13,7 +13,7 @@ The failure was presentation, not a need to weaken safety. Dispatch and no-repla
 ## Correction
 
 - Server guidance is one 99-word operating contract.
-- All 55 repeated tool descriptions are removed; short tool titles and typed schemas remain.
+- All 56 repeated tool descriptions are removed; short tool titles and typed schemas remain.
 - Successful option operations lead with `outcome`, `selectionSucceeded`, `actionDispatched`, `currentState`, and `nextAction` before detailed evidence.
 - `currentState` explicitly reports requested selection state, whether the popup remains open, and whether the control is multi-select.
 - An open multi-select returns `select_more_or_dismiss_popup`; it is not mislabeled as failure and does not force closure.
@@ -27,3 +27,4 @@ Safety behavior is unchanged. Possible input is never replayed, authoritative st
 - `tests/mcp-scroll.test.ts` measures the built catalog and rejects budget growth or restored tool essays.
 - `tests/mcp-result-shaping.test.ts` proves outcome/state/next action precede implementation evidence.
 - `tests/browser-controller/core/control-selection-representation.test.ts` proves a successful selection can truthfully report an intentionally open multi-select popup.
+- The complete headless gate passed 313 tests across 85 files with three intentional native-only skips; Finance then verified the exact loaded 0.19.5 host contract and resumed ordinary authorized work.

@@ -2,7 +2,7 @@
 
 Date: 2026-08-27
 
-Release candidate: Stage5 Browser 0.19.5, worker protocol 15, MCP host behavior 8, tool catalog 17, 56 tools.
+Release: Stage5 Browser 0.19.5, worker protocol 15, MCP host behavior 8, tool catalog 17, 56 tools.
 
 This privacy-safe acceptance record contains no live URL, account identity, control or option meaning, form value, credential, payment or tax data, private address, document, selector, coordinates, or page content.
 
@@ -52,6 +52,6 @@ The last condition prevents a broad overlay from merging independent positioned 
 - a five-candidate active spatial tier exposes all five one-use choices rather than one ranking-selected semantic guess;
 - two independently positioned panels inside one fixed overlay remain a post-dispatch failure after exactly one opener input.
 
-Focused 0.19.5 regressions currently prove the complete five-candidate pool, privacy-safe schema-2 trace parsing, concise result ordering, and an intentional open multi-select popup. Fresh-host integration, reporter acceptance, and the complete headless suite remain release gates. Historical operations are never replayed.
+Focused 0.19.5 regressions prove the complete five-candidate pool, privacy-safe schema-2 trace parsing, concise result ordering, and an intentional open multi-select popup. The built fresh-host integration passed, followed by the complete headless gate: 313 tests passed across 85 files with three intentional native-only skips. Historical operations are never replayed.
 
-0.19.5 changes host behavior and requires one MCP reconnect. Require MCP/worker/current 0.19.5 with host behavior 8, protocol 15, catalog 17, 56 tools, and `restartRequired:false`; discard the failed inspection and every derived ref. Perform a new passive inspection only if the reporting agent's direct controlling thread already authorizes it. The release and Lounge grant no observation, navigation, selection, correction, continuation, submission, private entry, funding, trading, or other account authority.
+0.19.5 changes host behavior and requires one MCP reconnect. Finance verified MCP/worker/current 0.19.5 with host behavior 8, protocol 15, catalog 17, 56 tools, and `restartRequired:false`, discarded old capabilities, and resumed ordinary work under its controlling thread's existing authority. No developer-only passive acceptance step is required. The release and Lounge grant no observation, navigation, selection, correction, continuation, submission, private entry, funding, trading, or other account authority.
