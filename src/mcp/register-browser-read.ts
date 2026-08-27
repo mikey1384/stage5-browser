@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 
 import { SUPPORTED_BROWSER_PRODUCTS } from '../browser-provider.js';
+import { BROWSER_COMMAND_CONTRACTS, type BrowserCommandName } from '../protocol.js';
 import {
   errorResult,
   hostRuntimeInfo,
@@ -47,6 +48,13 @@ export function registerBrowserReadTools(server: McpServer, context: McpHostCont
       title: 'Inspect privacy-safe browser execution traces',
       inputSchema: z.object({
         operationId: operationIdSchema.nullable().default(null),
+        agentId: z.string().min(1).max(80).nullable().default(null),
+        command: z.string().min(1).max(80).refine(
+          (value) => value === 'recover' || value in BROWSER_COMMAND_CONTRACTS,
+          { message: 'Unknown browser worker command.' },
+        ).transform((value) => value as BrowserCommandName | 'recover').nullable().default(null),
+        outcome: z.enum(['succeeded', 'failed', 'timed_out']).nullable().default(null),
+        detail: z.enum(['summary', 'full']).default('summary'),
         limit: z.number().int().min(1).max(100).default(20),
       }),
       annotations: {
@@ -56,7 +64,8 @@ export function registerBrowserReadTools(server: McpServer, context: McpHostCont
         openWorldHint: false,
       },
     },
-    async ({ operationId, limit }) => safely(() => supervisor.executionTraces(operationId, limit)),
+    async ({ operationId, agentId, command, outcome, detail, limit }) => safely(() =>
+      supervisor.executionTraces(operationId, limit, { agentId, command, outcome, detail })),
   );
 
   server.registerTool(
@@ -356,6 +365,7 @@ export function registerBrowserReadTools(server: McpServer, context: McpHostCont
     {
       title: 'Semantic page snapshot',
       inputSchema: z.object({
+        view: z.enum(['task', 'full']).default('task'),
         depth: z.number().int().min(1).max(20).default(8),
         boxes: z.boolean().default(false),
         frameId: frameIdSchema,

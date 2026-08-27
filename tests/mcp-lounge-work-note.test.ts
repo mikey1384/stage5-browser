@@ -123,7 +123,7 @@ describe('MCP Lounge durable work-note handoff', () => {
     expect(superseded.structuredContent).toMatchObject({
       error: { details: { reason: 'SESSION_CLOSED' } },
     });
-    await expect(replacement.client.callTool({ name: 'lounge_status', arguments: {} })
+    await expect(replacement.client.callTool({ name: 'lounge_status', arguments: { detail: 'full' } })
       .then(structured)).resolves.toMatchObject({
         workNoteRevision: 1,
         workNote: { revision: 1, ...note },
@@ -141,7 +141,7 @@ describe('MCP Lounge durable work-note handoff', () => {
     });
     const managerStatus = structured(await manager.client.callTool({
       name: 'lounge_status',
-      arguments: {},
+      arguments: { detail: 'full' },
     }));
     expect(managerStatus.managerAccess).toBe(true);
     expect(managerStatus.memberWorkNotes).toEqual(expect.arrayContaining([

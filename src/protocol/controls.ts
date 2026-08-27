@@ -176,6 +176,14 @@ export interface ControlSelectionEvidence {
   selectedRepresentationObserved: boolean;
   selectedState: boolean | null;
   popupClosed: boolean | null;
+  reconciliation: ControlSelectionReconciliationEvidence;
+}
+
+export interface ControlSelectionReconciliationEvidence {
+  targetResolution: 'retained_exact' | 'retained_scope_after_control_replacement' | 'rebound_exact' | 'unresolved';
+  attempts: number;
+  durationMs: number;
+  terminalProof: 'selected_state' | 'representation_change' | 'popup_closed' | 'unresolved';
 }
 
 export interface ControlSelectionSummary {
@@ -188,6 +196,13 @@ export interface ControlSelectionSummary {
     multiple: boolean;
   };
   nextAction: 'continue' | 'dismiss_popup' | 'select_more_or_dismiss_popup';
+  viableNextMoves: Array<
+    | 'continue'
+    | 'continue_if_popup_not_obstructing'
+    | 'dismiss_with_escape'
+    | 'dismiss_with_exact_outside_click'
+    | 'select_more_with_fresh_inspection'
+  >;
 }
 
 export interface ControlMultiSelectionResult {
@@ -204,6 +219,7 @@ export interface FillRefEvidence {
   valueMatches: boolean;
   targetConnectedAfter: boolean;
   targetKind: 'contenteditable' | 'input' | 'textarea';
+  inputSurface: 'contenteditable' | 'input' | 'password' | 'textarea';
 }
 
 export type NavigationWarningCode =

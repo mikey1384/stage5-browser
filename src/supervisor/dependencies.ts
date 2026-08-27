@@ -6,7 +6,7 @@ export { profileDirForBrowser, type Stage5BrowserConfig } from '../config.js';
 export { isLaunchFailureReason } from '../diagnostics.js';
 export { Stage5BrowserError, serializeUnknownError, type SerializedStage5BrowserError } from '../errors.js';
 export { OperationJournal, type OperationOutcome } from '../operation-journal.js';
-export { buildExecutionTrace, ExecutionTelemetryJournal, type BuildExecutionTraceInput } from '../execution-telemetry.js';
+export { buildExecutionTrace, ExecutionTelemetryJournal, type BuildExecutionTraceInput, type ExecutionTraceFilters } from '../execution-telemetry.js';
 export { OperationRegistry } from '../operations/registry.js';
 export type { OperationStatusResult } from '../operations/types.js';
 export { readNativeControlRecord } from '../native-control-channel.js';

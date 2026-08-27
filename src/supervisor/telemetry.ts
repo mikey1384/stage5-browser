@@ -1,4 +1,4 @@
-import { type BrowserExecutionTrace, type BuildExecutionTraceInput, buildExecutionTrace, type ExecutionTraceList, type WorkerCommandTelemetry } from './dependencies.js';
+import { type BrowserExecutionTrace, type BuildExecutionTraceInput, buildExecutionTrace, type ExecutionTraceFilters, type ExecutionTraceList, type WorkerCommandTelemetry } from './dependencies.js';
 import type { BrowserSupervisorContext } from './runtime.js';
 
 export const supervisorTelemetryOperations = {
@@ -27,8 +27,8 @@ export const supervisorTelemetryOperations = {
     return trace;
   },
 
-  async executionTraces(operationId: string | null, limit: number): Promise<ExecutionTraceList> {
-    return this.telemetryJournal.list(operationId, limit);
+  async executionTraces(operationId: string | null, limit: number, filters: ExecutionTraceFilters = {}): Promise<ExecutionTraceList> {
+    return this.telemetryJournal.list(operationId, limit, filters);
   },
 } satisfies Record<string, unknown> & ThisType<BrowserSupervisorContext>;
 

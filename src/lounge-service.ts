@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { Stage5BrowserError } from './errors.js';
+import { compactLoungeStatus, loungeWaitNotice } from './lounge-output.js';
 import { LoungeStoreClient } from './lounge-store-client.js';
 import {
   LoungeStoreError,
@@ -276,7 +277,7 @@ export class LoungeService {
           });
           return {
             ...inbox,
-            ...notice,
+            ...loungeWaitNotice(notice, noticeChanged),
             noticeChanged,
             timedOut: false,
             online: true,
@@ -299,7 +300,7 @@ export class LoungeService {
             sessionId: joined.sessionId,
             agentId: joined.agentId,
             messages: [],
-            ...notice,
+            ...loungeWaitNotice(notice, false),
             noticeChanged: false,
             timedOut: true,
             online: false,
@@ -348,14 +349,15 @@ export class LoungeService {
     }
   }
 
-  async status(): Promise<Record<string, unknown>> {
+  async status(detail: 'compact' | 'full' = 'full'): Promise<Record<string, unknown>> {
     const joined = this.requireJoined();
     try {
       const status = await this.store.status({ sessionId: joined.sessionId });
       this.lastNoticeRevision = status.noticeRevision;
       return {
-        ...status,
+        ...(detail === 'full' ? { ...status, detail: 'full' } : compactLoungeStatus(status)),
         managerAccess: this.isManager(joined.agentId),
+        fullStatusAvailable: true,
         authority: 'coordination_only',
         presenceRule: 'Only a live lounge_wait is wakeable. Offline messages remain durable until the next joined wait.',
       };

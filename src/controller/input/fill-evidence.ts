@@ -88,7 +88,7 @@ export const inputFillEvidenceOperations = {
       const input = element instanceof HTMLInputElement;
       const inputType = input ? element.type.toLocaleLowerCase() : null;
       const supportedInput = input && ![
-        'button', 'checkbox', 'file', 'hidden', 'image', 'password', 'radio', 'range', 'reset', 'submit',
+        'button', 'checkbox', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit',
       ].includes(inputType ?? '');
       const targetKind = supportedInput
         ? 'input'
@@ -245,6 +245,9 @@ export const inputFillEvidenceOperations = {
       valueMatches: observedInput.valueMatches,
       targetConnectedAfter: observedInput.targetConnectedAfter,
       targetKind: target.targetKind,
+      inputSurface: target.inputType === 'password'
+        ? 'password'
+        : target.targetKind,
     };
     if (evidence.valueMatches) return evidence;
 

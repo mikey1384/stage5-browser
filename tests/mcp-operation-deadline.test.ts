@@ -95,7 +95,7 @@ describe('MCP terminal response delivery', () => {
 
     const traces = await client.callTool({
       name: 'browser_execution_traces',
-      arguments: { operationId, limit: 10 },
+      arguments: { operationId, limit: 10, detail: 'full' },
     });
     expect(traces.isError).not.toBe(true);
     expect(traces.structuredContent).toMatchObject({

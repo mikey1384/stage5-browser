@@ -22,7 +22,7 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - preserve exact cross-worker ownership through a private atomic per-profile lease and recover only a conclusively proven Stage5 orphan
 - preserve the bounded privacy-safe last-action result across a compatible native-worker replacement only for the exact same tab and document
 - enumerate several currently viable generic motions with structural prerequisites, costs, authority boundaries, and replay consequences so the agent can choose the semantic tactic
-- release a persistent isolated profile into a visibly marked native browser for passwords, passkeys, tax identifiers, identity documents, selfies, or other private steps, then resume without exposing the user's input
+- optionally release a persistent isolated profile into a visibly marked native browser when the caller/provider requires human-only input, then resume without exposing the user's input; exact browser fills otherwise accept upstream-authorized values without semantic policing
 - dispatch role and ref clicks through one deadline-safe exact-target engine whose trusted-event evidence survives document replacement
 - stop or explicitly recover the browser
 - detect a stale MCP build, diagnose launch preflight/profile failures, automation exposure, sandbox policy, successful/error request classes around the last click, and distinguish worker recovery from browser recovery
@@ -53,7 +53,7 @@ npm run build
 npm start
 ```
 
-The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. A host reconnect is needed once after initial registration or a real tool-catalog change. Already-loaded Lounge tools remain available to coordinate that reconnect even while browser operations fail closed on the stale contract. Compatible runtime patches roll forward automatically on the next browser operation—even when the exact build fingerprint changes during a private handoff—and do not require reinstalling or redeploying Stage5 Browser. See `docs/agent-setup.md` for the ChatGPT and Claude connection decision trees, discovery checks, and authentication behavior.
+The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. A host reconnect is needed once after initial registration or a real public host contract change. Already-loaded Lounge tools remain available to coordinate that reconnect even while browser operations fail closed on the stale contract. Fingerprint-only runtime patches never interrupt a connected worker; the supervisor adopts them at the next state-preserving boundary, including exact native reattachment during a private handoff. A direct Playwright context defers replacement until explicit stop because replacing it would discard in-memory page state. See `docs/agent-setup.md` for the ChatGPT and Claude connection decision trees, discovery checks, and authentication behavior.
 
 ## MCP tools
 
@@ -63,12 +63,12 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `lounge_send` | Send one idempotent coordination-only message to Lounge members |
 | `lounge_wait` | Stay genuinely online and wake when a durable inbox message or pinned-notice revision arrives |
 | `lounge_ack` | Acknowledge one or more delivered messages as seen or acted upon |
-| `lounge_status` | Inspect this identity's work note, membership, manager access, pinned notice, presence, and aggregate delivery state; managers also see current member notes |
+| `lounge_status` | Read compact membership, presence, notice metadata, and this identity's work note by default; request `detail: "full"` for sent-message state and manager-visible member notes |
 | `lounge_set_work_note` | Compare-and-set this identity's bounded durable handoff note with idempotent mutation semantics |
 | `lounge_pin` | Manager-only compare-and-set update or clear of the durable pinned notice |
 | `lounge_history` | Manager-only audited paginated read of all room messages without claiming recipient delivery |
 | `browser_operation_status` | Recover a reserved or completed operation result without replaying its action, including terminal delivery timing |
-| `browser_execution_traces` | Query durable privacy-safe stable-agent, manager, phase, dispatch, reconciliation, and outcome evidence by operation ID |
+| `browser_execution_traces` | Query filtered compact privacy-safe manager, phase, dispatch, reconciliation, and outcome evidence; request `detail: "full"` only for deep diagnostics |
 | `browser_available_moves` | List bounded current generic motions and preparation paths without page text or any expansion of authority |
 | `browser_page_events` | Read durable sanitized page/document replacement events and explicit unsaved-state risk |
 | `browser_status` | Report MCP/build freshness plus worker, browser, configured and actual runtime profile identity, tab, and active-page state |
@@ -83,7 +83,7 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_inspect_tab` | Read a ref-free exact-tab document passively, or explicitly activate its renderer within the controlled browser for bounded loading evidence and prove restoration of the prior selected tab |
 | `browser_close_tab` | Close one exact fresh opaque tab without index/title/URL fallback |
 | `browser_frames` | Inventory the active page's main document and nested frames |
-| `browser_snapshot` | Read semantic structure, scope a unique visible modal, and issue document-bound element, hidden-file-input, and nested-scroll references |
+| `browser_snapshot` | Read a task-focused semantic action surface by default, or opt into the full semantic page; both scope a unique modal and issue document-bound capabilities |
 | `browser_screenshot` | Explicitly capture a PNG artifact |
 | `browser_reserve_operation` | Reserve a stable operation ID before a consequential action so completion remains queryable across caller delivery failures |
 | `browser_click_by_role` | Resolve one unique role/name target and use the shared deadline-safe exact-target engine, optionally verifying URL, selected, visible, or exact hidden state |
@@ -190,6 +190,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-mcp-copy-budget.md` — actual agent-overload feedback, the measured 94.2% default-prose reduction, and outcome-first selection results in 0.19.5
 - `docs/dogfooding-2026-08-27-native-same-process-handoff.md` — exact native-CDP handoff without process exit, form loss, or private-state replay in 0.19.6
 - `docs/dogfooding-2026-08-27-native-target-settle.md` — bounded exact native-target discovery settling plus privacy-safe fresh-host telemetry in 0.19.7
+- `docs/dogfooding-2026-08-27-hand-contract-and-fast-reconciliation.md` — upstream-authorized exact input, replacement-aware bounded selection proof, and compact pull-based observations in 0.20.0
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15
@@ -276,7 +277,7 @@ Key implementation files:
 - Loading waits pin one observation root for the full operation and count only indicators intersecting that selected surface's visible region. A uniquely visible semantic feed may scope a document wait, but a later viewport change cannot silently replace it; detachment returns prompt structured surface-loss evidence with completed-step facts instead of becoming false loader disappearance or consuming the remaining wait. Outermost standalone quotations count as article-shaped semantic content without double-counting quotations nested inside articles. Loading-only semantic status shells remain loaders rather than content; an exact generic loading-text leaf is considered only through a bounded complete scan, while explicit semantic loaders take precedence. Unrelated page loaders and statuses inside substantive posts do not prevent feed completion evidence. Reaching a bounded authoritative semantic candidate limit returns structured incomplete-observation evidence instead of treating truncated counts as definitive. The separately bounded animation heuristic cannot block semantic content growth or explicit loader disappearance; animation-only disappearance requires a complete heuristic scan.
 - Scroll is recorded as the latest sanitized page action, allowing diagnostics to isolate successful, redirected, failed, and HTTP-error requests within that bounded action window.
 - A click that cannot dispatch records sanitized visibility, enabled-state, viewport proof, and pointer-interception evidence. Durable execution traces add only categorical target state, popup surface/association proof, rendered-surface count, reach strategy, bounded pointer-contact recovery, dispatch evidence, reconciliation outcome, and boolean desired/observed option state; they never retain geometry, labels, selectors, values, or page content.
-- Private interaction bootstrap releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume; credentials, tax identifiers, identity documents, selfies, and other private values stay outside agent arguments and logs.
+- Private interaction bootstrap is an optional caller/provider technique. It releases Playwright completely, pins the selected profile partition, and launches the exact same native executable/profile identity without automation flags. A static Stage5 marker tab and the returned application-specific label distinguish concurrent handoffs. Browser tools remain blocked until explicit resume. When upstream scope permits direct entry, exact fill operations accept the supplied value; values always stay outside observations, results, logs, telemetry, and Lounge messages.
 - Chromium-family handoffs use a fixed ephemeral loopback-only CDP endpoint. The user leaves the dedicated browser open; resume attaches to that exact process, so in-memory session cookies are never serialized, imported, or restored by a new browser process. A user-only profile record with an explicit `awaiting_user`/`controlled` state lets compatible worker replacements reconnect without allowing a fresh worker to attach during private login. The endpoint is not returned to agents or written to the operation journal.
 - Firefox retains the exit-and-restart handoff, modeled as `close_requested → process_exited → profile_unlocked`. An interrupted request/resume continues that retained phase within the remaining operation budget instead of relaunching. On macOS, a persistent `.parentlock` counts as active only while the OS reports a holder. Resume still rejects a running, actually locked, or launch-identity-mismatched profile and never deletes locks or rewrites shutdown preferences.
 - The pinned Playwright Firefox binary currently reports `navigator.webdriver: true` even during its uncontrolled native launch despite receiving no automation flags. Use Brave, Chrome, or Edge for bot-sensitive login/KYC; Firefox's private handoff is supported for lifecycle/session continuity but does not claim automation invisibility.

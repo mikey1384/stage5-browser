@@ -3,7 +3,7 @@ import { boundedValue, type ObservedControlInspection, type ObservedControlPopup
 import type { ControlPopupAssociation } from './popup-association.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
 import { resolveUniqueControl } from './resolution.js';
-import { observeControlSelectionRepresentationsInAdaptiveScope, type ControlSelectionRepresentation } from './selection-evidence.js';
+import { observeControlSelectionRepresentationsInAdaptiveScope, type ControlSelectionRepresentation } from './selection-representation.js';
 
 const RETAINED_CONTROL_PROBE_MS = 500;
 const SELECTION_BASELINE_OBSERVATION_MS = 2_000;

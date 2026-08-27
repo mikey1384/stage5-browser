@@ -95,7 +95,7 @@ describe('RuntimeArtifactMonitor', () => {
     });
   });
 
-  it('marks a rebuilt worker for bounded supervisor replacement', async () => {
+  it('lets a connected worker finish against a compatible rebuilt artifact', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-worker-runtime-'));
     temporaryRoots.push(root);
     const artifact = path.join(root, 'build-stamp.json');
@@ -104,8 +104,28 @@ describe('RuntimeArtifactMonitor', () => {
 
     await writeFile(artifact, JSON.stringify(stamp({ buildId: 'build-2' })));
     expect(monitor.inspect()).toMatchObject({
+      compatibleUpdateAvailable: true,
+      restartRequired: false,
+      restartReason: null,
+    });
+    expect(() => monitor.assertCurrent()).not.toThrow();
+  });
+
+  it('still disconnects a worker when its protocol contract changes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-worker-protocol-'));
+    temporaryRoots.push(root);
+    const artifact = path.join(root, 'build-stamp.json');
+    await writeFile(artifact, JSON.stringify(stamp()));
+    const monitor = new RuntimeArtifactMonitor('worker', pathToFileURL(artifact));
+
+    await writeFile(
+      artifact,
+      JSON.stringify(stamp({ buildId: 'build-2', workerProtocolVersion: 6 })),
+    );
+    expect(monitor.inspect()).toMatchObject({
+      compatibleUpdateAvailable: false,
       restartRequired: true,
-      restartReason: 'runtime_artifact_changed',
+      restartReason: 'worker_protocol_changed',
     });
     expect(() => monitor.assertCurrent()).toThrowError(expect.objectContaining({ code: 'WORKER_DISCONNECTED' }));
   });

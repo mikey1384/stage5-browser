@@ -25,18 +25,7 @@ export const formPlanOperations = {
             details: { reason: 'form_plan_field_not_observed', failedStep: index, actionDispatched: false },
           });
         }
-        if (field.observation.kind === 'private') {
-          throw new Stage5BrowserError('AUTH_HANDOFF_REQUIRED', 'Private form fields cannot receive agent-supplied staged values.', {
-            recoverable: true,
-            details: {
-              reason: 'private_form_field_requires_handoff',
-              failedStep: index,
-              actionDispatched: false,
-              suggestedAction: 'Use the field-scoped private handoff for this exact field; do not send its value to the agent.',
-            },
-          });
-        }
-        if (step.kind === 'fill' && !['contenteditable', 'date', 'text', 'textarea'].includes(field.observation.kind)) {
+        if (step.kind === 'fill' && !['contenteditable', 'date', 'private', 'text', 'textarea'].includes(field.observation.kind)) {
           throw new Stage5BrowserError('OPERATION_FAILED', 'A fill step does not match the observed field kind.', {
             details: { reason: 'form_plan_step_kind_mismatch', failedStep: index, actionDispatched: false },
           });

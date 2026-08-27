@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import { type BrowserCommandInput, type BrowserCommandOutput, type ControlOptionObservation, type ControlSelectionEvidence, type Frame, type Page, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedControlInspection, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
@@ -7,14 +5,8 @@ import type { ClickActivationPolicy } from '../action/click-plan.js';
 import { elementWithinPopupSurfaces, inspectPopupSurfaceSetRendering, resolveUniqueSemanticReferenceInPopupSurfaces } from './popup-set.js';
 import { observeCustomControlSelectionBaseline, type CustomControlSelectionBaseline } from './selection-baseline.js';
 import { reconcileCustomControlSelection } from './selection-evidence.js';
+import { selectNativeControlOption } from './native-selection.js';
 import { completedSelectionSummary } from './selection-summary.js';
-
-interface NativeSelectEventRecord {
-  inputEventObserved: boolean;
-  changeEventObserved: boolean;
-  inputListener: EventListener;
-  changeListener: EventListener;
-}
 
 function representedOptionStillObserved(
   baseline: CustomControlSelectionBaseline,
@@ -155,138 +147,7 @@ export const controlSelectionOperations = {
     }
   },
 
-  async selectNativeControlOption(
-    inspection: ObservedControlInspection,
-    option: ObservedControlOption,
-    deadlineAt: number,
-    desiredSelected = true,
-  ): Promise<ControlSelectionEvidence> {
-    const phases = this.actionPhases.begin('select_option', Math.max(1, remainingUntil(deadlineAt)));
-    const token = `__stage5_select_${randomUUID().replaceAll('-', '')}`;
-    try {
-      phases.enter('observe');
-      const before = await inspection.controlHandle.evaluate((control, target) => {
-        if (!(control instanceof HTMLSelectElement) || !(target instanceof HTMLOptionElement) || target.closest('select') !== control) return null;
-        return {
-          targetIndex: target.index,
-          selected: target.selected,
-          selectedIndexes: Array.from(control.options).filter((candidate) => candidate.selected).map((candidate) => candidate.index),
-          multiple: control.multiple,
-          disabled: control.disabled || target.disabled,
-        };
-      }, option.handle);
-      if (before === null || before.disabled) {
-        throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The native select capability changed before dispatch.', {
-          recoverable: true,
-          details: { reason: before === null ? 'native_option_changed' : 'option_not_enabled', actionDispatched: false },
-        });
-      }
-      phases.enter('plan');
-      if (before.selected === desiredSelected) {
-        phases.enter('preflight');
-        phases.enter('prepare');
-        phases.beginFinalization();
-        phases.complete('succeeded');
-        return {
-          actionDispatched: false,
-          inputEventObserved: false,
-          changeEventObserved: false,
-          selectionEffectObserved: true,
-          selectedRepresentationObserved: false,
-          selectedState: desiredSelected,
-          popupClosed: null,
-        };
-      }
-      if (!desiredSelected && !before.multiple) {
-        throw new Stage5BrowserError('OPERATION_FAILED', 'The selected native option cannot be cleared without choosing a replacement.', {
-          recoverable: true,
-          details: {
-            reason: 'control_not_multiselect',
-            actionDispatched: false,
-            suggestedAction: 'Choose the intended replacement option for this single-select control.',
-          },
-        });
-      }
-      phases.enter('preflight');
-      await inspection.controlHandle.evaluate((control, key) => {
-        const global = window as typeof window & Record<string, unknown>;
-        const inputListener: EventListener = () => { (global[key] as NativeSelectEventRecord).inputEventObserved = true; };
-        const changeListener: EventListener = () => { (global[key] as NativeSelectEventRecord).changeEventObserved = true; };
-        global[key] = { inputEventObserved: false, changeEventObserved: false, inputListener, changeListener } satisfies NativeSelectEventRecord;
-        control.addEventListener('input', inputListener);
-        control.addEventListener('change', changeListener);
-      }, token);
-      phases.enter('prepare');
-      const indexes = desiredSelected
-        ? before.multiple
-          ? [...new Set([...before.selectedIndexes, before.targetIndex])]
-          : [before.targetIndex]
-        : before.selectedIndexes.filter((index) => index !== before.targetIndex);
-      phases.beginDispatch();
-      let dispatchError: unknown = null;
-      try {
-        await inspection.controlHandle.selectOption(
-          indexes.map((index) => ({ index })),
-          { timeout: Math.max(1, remainingUntil(deadlineAt)) },
-        );
-      } catch (error) {
-        dispatchError = error;
-      }
-      const after = await inspection.controlHandle.evaluate((control, args) => {
-        const global = window as typeof window & Record<string, unknown>;
-        const record = global[args.key] as NativeSelectEventRecord | undefined;
-        const select = control instanceof HTMLSelectElement ? control : null;
-        const selected = select?.options.item(args.targetIndex)?.selected ?? false;
-        if (record !== undefined) {
-          control.removeEventListener('input', record.inputListener);
-          control.removeEventListener('change', record.changeListener);
-          delete global[args.key];
-        }
-        return {
-          inputEventObserved: record?.inputEventObserved ?? false,
-          changeEventObserved: record?.changeEventObserved ?? false,
-          selected,
-        };
-      }, { key: token, targetIndex: before.targetIndex });
-      const actionDispatched = after.inputEventObserved || after.changeEventObserved || after.selected !== before.selected
-        ? true
-        : dispatchError === null ? 'unknown' as const : false;
-      phases.concludeDispatch({ actionDispatched });
-      phases.enter('reconcile');
-      if (after.selected !== desiredSelected) {
-        throw new Stage5BrowserError('POSTCONDITION_FAILED', `Native option input did not produce the exact ${desiredSelected ? 'selected' : 'unselected'} state.`, {
-          recoverable: true,
-          details: {
-            reason: desiredSelected
-              ? 'native_option_selection_not_observed'
-              : 'native_option_deselection_not_observed',
-            actionDispatched,
-            suggestedAction: actionDispatched === false
-              ? 'Inspect the control once more before deciding whether another state change is useful.'
-              : 'Inspect authoritative form state. Possible input occurred; do not replay the option input automatically.',
-          },
-          cause: dispatchError,
-        });
-      }
-      phases.beginFinalization();
-      phases.complete('succeeded');
-      return {
-        actionDispatched,
-        inputEventObserved: after.inputEventObserved,
-        changeEventObserved: after.changeEventObserved,
-        selectionEffectObserved: true,
-        selectedRepresentationObserved: false,
-        selectedState: desiredSelected,
-        popupClosed: null,
-      };
-    } catch (error) {
-      phases.ensureFailed();
-      throw error;
-    } finally {
-      phases.ensureFailed();
-      this.actionPhases.finish(phases);
-    }
-  },
+  selectNativeControlOption,
 
   async selectCustomControlOption(
     page: Page,
@@ -315,6 +176,7 @@ export const controlSelectionOperations = {
       });
     }
     let observedBaseline: CustomControlSelectionBaseline | null = null;
+    let reconciliationEvidence: ControlSelectionEvidence['reconciliation'] | null = null;
     const result = await this.executeClickAction({
       action: 'select_option',
       timeoutMs: Math.max(1, remainingUntil(deadlineAt)),
@@ -440,8 +302,43 @@ export const controlSelectionOperations = {
               popupSurfaces: baseline.popupSurfaces,
               desiredSelected,
               requireSelected: requireSelected || inspection.multiple,
+              recover: async (recoveryDeadlineAt) => {
+                try {
+                  const rebound = await observeCustomControlSelectionBaseline({
+                    associatePopup: (controlHandle, associationDeadlineAt) =>
+                      this.associatedControlPopup(frame, controlHandle, associationDeadlineAt, {
+                        agentDeclaredOwner: inspection.agentDeclaredPopupOwner,
+                        requireRendered: true,
+                      }),
+                    deadlineAt: recoveryDeadlineAt,
+                    frame,
+                    inspection,
+                    optionName: option.observation.name,
+                  });
+                  const resolvedOption = await resolveUniqueSemanticReferenceInPopupSurfaces(
+                    frame,
+                    rebound.popupSurfaces,
+                    { role: option.observation.role, name: option.observation.name, url: null },
+                    recoveryDeadlineAt,
+                  );
+                  return {
+                    control: rebound.controlHandle,
+                    owner: rebound.representationScope,
+                    popupSurfaces: rebound.popupSurfaces,
+                    option: resolvedOption.kind === 'resolved' ? resolvedOption.locator : prepared.locator,
+                    dispose: async () => {
+                      if (resolvedOption.kind === 'resolved') {
+                        await resolvedOption.handle.dispose().catch(() => undefined);
+                      }
+                    },
+                  };
+                } catch {
+                  return null;
+                }
+              },
               selectedState: (locator) => this.controlOptionSelectedState(locator),
             });
+            reconciliationEvidence = reconciliation.reconciliation;
             return reconciliation.postcondition;
           },
           discardCapabilities: () => undefined,
@@ -477,6 +374,14 @@ export const controlSelectionOperations = {
       popupClosed: typeof popupCheck?.observed === 'boolean'
         ? popupCheck.observed
         : null,
+      reconciliation: reconciliationEvidence ?? {
+        targetResolution: 'retained_exact',
+        attempts: 0,
+        durationMs: 0,
+        terminalProof: typeof selectedCheck?.observed === 'boolean'
+          ? 'selected_state'
+          : 'representation_change',
+      },
     };
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;

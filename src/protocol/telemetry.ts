@@ -5,6 +5,7 @@ import type {
   ControlPopupOwnershipEvidence,
   ControlPopupSurfaceProof,
   ControlRecoveryEvidence,
+  ControlSelectionReconciliationEvidence,
   PostconditionCheck,
 } from './controls.js';
 import type { NativeReattachObservation } from './browser-state.js';
@@ -82,6 +83,41 @@ export interface ExecutionTraceConclusion {
   renderedPopupCount: number | null;
   popupOwnership: ControlPopupOwnershipEvidence | null;
   controlRecovery: ControlRecoveryEvidence | null;
+  selectionReconciliation: ControlSelectionReconciliationEvidence | null;
+  profileOwnership: {
+    classification:
+      | 'abandoned'
+      | 'authentication_handoff_pending'
+      | 'busy_other_stage5_session'
+      | 'controlled'
+      | 'current_owner'
+      | 'dedicated_browser_control_unavailable'
+      | 'external_owner'
+      | 'invalid'
+      | 'none'
+      | 'owned_active'
+      | 'owned_orphaned'
+      | 'owner_process_unavailable'
+      | 'reconnectable_stage5_browser'
+      | 'unknown_lock_owner';
+    ownership: 'none' | 'not_proven' | 'proven' | null;
+    lockOwnerProcess: 'none' | 'not_running_or_unreadable' | 'running' | null;
+    applicationIdentity: 'matched' | 'mismatched' | 'unverified' | null;
+    loopbackControl: 'absent' | 'ambiguous' | 'available' | 'unverified' | null;
+    recovery:
+      | 'automatic_reattach'
+      | 'automatic_owned_restart'
+      | 'close_dedicated_browser_normally'
+      | 'do_not_modify_locks'
+      | 'none'
+      | 'return_to_authentication_handoff'
+      | null;
+    ownerWorkerRunning: boolean | null;
+    heartbeat: 'fresh' | 'stale' | 'unavailable' | null;
+    browserProcess: 'matched' | 'mismatched' | 'not_running' | 'unavailable' | null;
+    controlMode: 'human_handoff' | 'native_cdp' | 'playwright' | null;
+    phase: 'close_requested' | 'human_input' | 'launching' | 'owned_active' | 'process_exited' | 'profile_unlocked' | null;
+  } | null;
   handoffRelease: {
     strategy: 'native_same_process' | 'process_relaunch';
     phase: 'close_requested' | 'process_exited' | 'profile_unlocked' | 'human_input';
@@ -98,6 +134,31 @@ export interface ExecutionTraceConclusion {
     receivesPointerEvents: boolean | null;
     pointerHitPoint: 'center' | 'alternate' | null;
   } | null;
+}
+
+export interface ExecutionActionTraceSummary {
+  action: string;
+  durationMs: number | null;
+  dispatchState: WorkerActionPhaseTelemetry['dispatchState'];
+  dispatchAttempts: number;
+  recoveryReason: NonNullable<WorkerActionPhaseTelemetry['recovery']>['reason'] | null;
+  terminalOutcome: WorkerActionPhaseTelemetry['terminalOutcome'];
+  phaseMs: Partial<Record<WorkerActionPhaseTelemetry['transitions'][number]['phase'], number | null>>;
+}
+
+export interface BrowserExecutionTraceSummary {
+  traceId: string;
+  recordedAtMs: number;
+  operationId: string;
+  agentId: string | null;
+  command: BrowserCommandName | 'recover';
+  manager: BrowserActionManager | 'recovery_manager';
+  durationMs: number;
+  outcome: BrowserExecutionTrace['outcome'];
+  errorCode: string | null;
+  reason: string | null;
+  actions: ExecutionActionTraceSummary[];
+  conclusion: Partial<ExecutionTraceConclusion>;
 }
 
 export interface BrowserExecutionTrace {
@@ -136,8 +197,12 @@ export interface BrowserExecutionTrace {
 }
 
 export interface ExecutionTraceList {
-  traces: BrowserExecutionTrace[];
+  traces: Array<BrowserExecutionTrace | BrowserExecutionTraceSummary>;
   limit: number;
   operationId: string | null;
+  agentId: string | null;
+  command: BrowserCommandName | 'recover' | null;
+  outcome: BrowserExecutionTrace['outcome'] | null;
+  detail: 'summary' | 'full';
   privacy: BrowserExecutionTrace['privacy'];
 }

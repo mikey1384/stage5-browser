@@ -12,11 +12,20 @@ export function completedSelectionSummary(
       : false;
   const popupClosed = evidence.at(-1)?.popupClosed ?? null;
   const popupOpen = popupClosed === null ? null : !popupClosed;
+  const viableNextMoves: ControlSelectionSummary['viableNextMoves'] = popupOpen
+    ? [
+        ...(multiple ? ['select_more_with_fresh_inspection' as const] : []),
+        'continue_if_popup_not_obstructing',
+        'dismiss_with_escape',
+        'dismiss_with_exact_outside_click',
+      ]
+    : ['continue'];
   return {
     outcome: 'succeeded',
     selectionSucceeded: true,
     actionDispatched,
     currentState: { requestedSelected, popupOpen, multiple },
     nextAction: popupOpen ? (multiple ? 'select_more_or_dismiss_popup' : 'dismiss_popup') : 'continue',
+    viableNextMoves,
   };
 }

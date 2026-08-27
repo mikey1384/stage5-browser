@@ -86,7 +86,7 @@ export interface BrowserCommandMap {
     output: NavigateHistoryOutput;
   };
   snapshot: {
-    input: { depth: number; boxes: boolean; frameId: string | null; timeoutMs: number };
+    input: { depth: number; boxes: boolean; frameId: string | null; timeoutMs: number; view?: 'task' | 'full' };
     output: {
       page: PageSummary;
       frame: FrameSummary;
@@ -106,6 +106,9 @@ export interface BrowserCommandMap {
         message: string;
         suggestedAction: string;
       }>;
+      snapshotView: 'task' | 'full';
+      omittedLineCount: number;
+      fullSnapshotAvailable: boolean;
       snapshot: string;
     };
   };

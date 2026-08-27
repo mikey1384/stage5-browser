@@ -50,6 +50,13 @@ describe('privacy-safe execution telemetry', () => {
           selectedRepresentationObserved: false,
           selectedState: false,
           popupClosed: false,
+          reconciliation: {
+            targetResolution: 'rebound_exact',
+            attempts: 2,
+            durationMs: 117,
+            terminalProof: 'selected_state',
+            privateOptionName: 'Never persist this reconciliation value',
+          },
         },
       },
       workerRuntime: null,
@@ -140,6 +147,12 @@ describe('privacy-safe execution telemetry', () => {
         selectionEffectObserved: true,
         selectedRepresentationObserved: false,
         popupClosed: false,
+        selectionReconciliation: {
+          targetResolution: 'rebound_exact',
+          attempts: 2,
+          durationMs: 117,
+          terminalProof: 'selected_state',
+        },
       },
       privacy: {
         urls: 'omitted',
@@ -164,6 +177,32 @@ describe('privacy-safe execution telemetry', () => {
     expect(persisted).not.toContain('Private choice name');
     expect(persisted).not.toContain('Never persist this form value');
     expect(persisted).not.toContain('never-store');
+    expect(persisted).not.toContain('Never persist this reconciliation value');
+
+    const summary = await journal.list(null, 10, {
+      agentId: 'youtube-agent',
+      command: 'selectOption',
+      outcome: 'succeeded',
+      detail: 'summary',
+    });
+    expect(summary).toMatchObject({
+      agentId: 'youtube-agent',
+      command: 'selectOption',
+      outcome: 'succeeded',
+      detail: 'summary',
+      traces: [{
+        operationId: 'operation-telemetry-fixture',
+        actions: [{ phaseMs: { dispatch: 10, reconcile: 40 } }],
+        conclusion: {
+          selectionReconciliation: {
+            targetResolution: 'rebound_exact',
+            terminalProof: 'selected_state',
+          },
+        },
+      }],
+    });
+    expect(summary.traces[0]).not.toHaveProperty('host');
+    expect(summary.traces[0]?.actions[0]).not.toHaveProperty('phases');
   });
 
   it('retains canonical reconciliation checks after partial input fails closed', () => {
@@ -224,10 +263,65 @@ describe('privacy-safe execution telemetry', () => {
       renderedPopupCount: null,
       popupOwnership: null,
       controlRecovery: null,
+      selectionReconciliation: null,
+      profileOwnership: null,
       handoffRelease: null,
       nativeReattach: null,
       targetState: null,
     });
+  });
+
+  it('retains categorical profile-lock ownership without process or application identity', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-profile-lock-fixture',
+      agentId: 'twinkle-developer',
+      command: 'start',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(4).toISOString(),
+      durationMs: 4,
+      outcome: 'failed',
+      error: {
+        code: 'BROWSER_NOT_READY',
+        message: 'Fixture profile remains locked.',
+        recoverable: true,
+        details: {
+          reason: 'profile_locked',
+          profileOwner: {
+            classification: 'abandoned',
+            ownershipProven: false,
+            expectedApplication: 'Private application name',
+            ownerWorkerRunning: false,
+            heartbeat: 'stale',
+            browserProcess: 'unavailable',
+            controlMode: 'playwright',
+            phase: 'owned_active',
+            processId: 42424,
+            profilePath: '/private/profile/path',
+          },
+        },
+      },
+      result: null,
+      workerRuntime: null,
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion.profileOwnership).toEqual({
+      classification: 'abandoned',
+      ownership: 'not_proven',
+      lockOwnerProcess: null,
+      applicationIdentity: null,
+      loopbackControl: null,
+      recovery: null,
+      ownerWorkerRunning: false,
+      heartbeat: 'stale',
+      browserProcess: 'unavailable',
+      controlMode: 'playwright',
+      phase: 'owned_active',
+    });
+    const serialized = JSON.stringify(trace);
+    expect(serialized).not.toContain('Private application name');
+    expect(serialized).not.toContain('/private/profile/path');
+    expect(serialized).not.toContain('42424');
   });
 
   it('retains only categorical private-handoff release proprioception', () => {

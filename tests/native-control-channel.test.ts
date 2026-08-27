@@ -122,6 +122,49 @@ describe('native browser control record', () => {
     await expect(readNativeControlRecord(root, 'brave')).resolves.toEqual(expectedControlBinding);
   });
 
+  it('retains a value-free legacy fill diagnostic that predates input-surface telemetry', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-native-record-legacy-fill-'));
+    temporaryRoots.push(root);
+    const record = {
+      version: 1,
+      kind: 'chromium_cdp',
+      browser: 'brave',
+      state: 'controlled',
+      processId: process.pid,
+      port: 29_123,
+      createdAt: '2026-08-24T12:00:00.000Z',
+      selectedTargetId: 'opaque-target-1',
+      selectedDocumentId: 'opaque-document-1',
+      retainedAction: {
+        selectedTargetId: 'opaque-target-1',
+        documentId: 'opaque-document-1',
+        diagnostic: {
+          action: 'fill_ref',
+          outcome: 'succeeded',
+          reason: null,
+          actionDispatched: true,
+          clickDispatched: null,
+          targetState: null,
+          inputEvidence: {
+            actionDispatched: true,
+            inputEventObserved: true,
+            changeEventObserved: false,
+            valueMatchedBefore: false,
+            valueMatches: true,
+            targetConnectedAfter: true,
+            targetKind: 'input',
+          },
+          pageUrl: 'https://example.com/business',
+          startedAt: '2026-08-24T12:01:00.000Z',
+          occurredAt: '2026-08-24T12:01:01.000Z',
+        },
+      },
+    };
+
+    await writeFile(nativeControlRecordPath(root), JSON.stringify(record));
+    await expect(readNativeControlRecord(root, 'brave')).resolves.toEqual(record);
+  });
+
   it('rejects unknown or malformed top-level capability metadata', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-native-record-invalid-capability-'));
     temporaryRoots.push(root);

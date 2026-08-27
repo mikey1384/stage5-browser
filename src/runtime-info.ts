@@ -6,15 +6,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Stage5BrowserError } from './errors.js';
 import { MCP_TOOL_NAMES } from './mcp/tool-names.js';
 
-export const STAGE5_BROWSER_VERSION = '0.19.7';
-export const WORKER_PROTOCOL_VERSION = 15;
-export const MCP_HOST_BEHAVIOR_VERSION = 10;
-export const TOOL_CATALOG_VERSION = 17;
+export const STAGE5_BROWSER_VERSION = '0.20.0';
+export const WORKER_PROTOCOL_VERSION = 16;
+export const MCP_HOST_BEHAVIOR_VERSION = 11;
+export const TOOL_CATALOG_VERSION = 18;
 export const MCP_TOOL_COUNT = Object.keys(MCP_TOOL_NAMES).length;
 
 export type RuntimeComponent = 'mcp' | 'worker';
 export type RuntimeRestartReason =
-  | 'runtime_artifact_changed'
   | 'runtime_artifact_unreadable'
   | 'mcp_host_behavior_changed'
   | 'tool_catalog_changed'
@@ -170,13 +169,17 @@ export class RuntimeArtifactMonitor {
       currentFingerprint = fingerprint(this.artifactPath);
       currentBuild = readBuildStamp(this.artifactPath);
       if (currentFingerprint !== this.loadedFingerprint) {
-        if (this.component === 'worker') {
-          restartReason = 'runtime_artifact_changed';
-        } else if (currentBuild.toolCatalogVersion !== this.loadedBuild.toolCatalogVersion) {
-          restartReason = 'tool_catalog_changed';
-        } else if (currentBuild.workerProtocolVersion !== this.loadedBuild.workerProtocolVersion) {
+        if (currentBuild.workerProtocolVersion !== this.loadedBuild.workerProtocolVersion) {
           restartReason = 'worker_protocol_changed';
-        } else if (currentBuild.hostBehaviorVersion !== this.loadedBuild.hostBehaviorVersion) {
+        } else if (
+          this.component === 'mcp' &&
+          currentBuild.toolCatalogVersion !== this.loadedBuild.toolCatalogVersion
+        ) {
+          restartReason = 'tool_catalog_changed';
+        } else if (
+          this.component === 'mcp' &&
+          currentBuild.hostBehaviorVersion !== this.loadedBuild.hostBehaviorVersion
+        ) {
           restartReason = 'mcp_host_behavior_changed';
         } else {
           compatibleUpdateAvailable = true;

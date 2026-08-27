@@ -2,6 +2,7 @@ export { browserCommandContract } from './protocol.js';
 export type {
   BrowserCommandName,
   BrowserExecutionTrace,
+  BrowserExecutionTraceSummary,
   ExecutionTraceConclusion,
   ExecutionTraceList,
   PostconditionCheck,

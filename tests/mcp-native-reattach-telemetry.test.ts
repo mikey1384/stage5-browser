@@ -56,7 +56,7 @@ describe('fresh MCP host native-reattach telemetry', () => {
 
     const telemetry = await client.callTool({
       name: 'browser_execution_traces',
-      arguments: { operationId, limit: 10 },
+      arguments: { operationId, limit: 10, detail: 'full' },
     });
     expect(telemetry.structuredContent).toMatchObject({
       traces: [{

@@ -19,6 +19,67 @@ const NATIVE_REATTACH_RESOLUTIONS = new Set<NonNullable<ExecutionTraceConclusion
   'settled_exact',
   'unresolved',
 ]);
+const PROFILE_CLASSIFICATIONS = new Set<NonNullable<ExecutionTraceConclusion['profileOwnership']>['classification']>([
+  'abandoned',
+  'authentication_handoff_pending',
+  'busy_other_stage5_session',
+  'controlled',
+  'current_owner',
+  'dedicated_browser_control_unavailable',
+  'external_owner',
+  'invalid',
+  'none',
+  'owned_active',
+  'owned_orphaned',
+  'owner_process_unavailable',
+  'reconnectable_stage5_browser',
+  'unknown_lock_owner',
+]);
+const PROFILE_OWNERSHIPS = new Set<NonNullable<NonNullable<ExecutionTraceConclusion['profileOwnership']>['ownership']>>([
+  'none',
+  'not_proven',
+  'proven',
+]);
+
+export function profileOwnershipConclusion(
+  result: unknown,
+  error: SerializedStage5BrowserError | null,
+): ExecutionTraceConclusion['profileOwnership'] {
+  const direct = isRecord(result) && isRecord(result.profileOwner)
+    ? result.profileOwner
+    : isRecord(error?.details?.profileOwner)
+      ? error.details.profileOwner
+      : null;
+  if (direct === null || !member(direct.classification, PROFILE_CLASSIFICATIONS)) return null;
+  const lease = isRecord(direct.lease) ? direct.lease : null;
+  const ownership = member(direct.ownership, PROFILE_OWNERSHIPS)
+    ? direct.ownership
+    : typeof direct.ownershipProven === 'boolean'
+      ? direct.ownershipProven ? 'proven' : 'not_proven'
+      : null;
+  return {
+    classification: direct.classification,
+    ownership,
+    lockOwnerProcess: enumValue(direct.lockOwnerProcess, ['none', 'not_running_or_unreadable', 'running']),
+    applicationIdentity: enumValue(direct.applicationIdentity, ['matched', 'mismatched', 'unverified']),
+    loopbackControl: enumValue(direct.loopbackControl, ['absent', 'ambiguous', 'available', 'unverified']),
+    recovery: enumValue(direct.recovery, [
+      'automatic_reattach', 'automatic_owned_restart', 'close_dedicated_browser_normally',
+      'do_not_modify_locks', 'none', 'return_to_authentication_handoff',
+    ]),
+    ownerWorkerRunning: nullableBoolean(direct.ownerWorkerRunning ?? lease?.ownerWorkerRunning) ?? null,
+    heartbeat: enumValue(direct.heartbeat ?? lease?.heartbeat, ['fresh', 'stale', 'unavailable']),
+    browserProcess: enumValue(direct.browserProcess ?? lease?.browserProcess, [
+      'matched', 'mismatched', 'not_running', 'unavailable',
+    ]),
+    controlMode: enumValue(direct.controlMode ?? lease?.controlMode, [
+      'human_handoff', 'native_cdp', 'playwright',
+    ]),
+    phase: enumValue(direct.phase ?? lease?.phase, [
+      'close_requested', 'human_input', 'launching', 'owned_active', 'process_exited', 'profile_unlocked',
+    ]),
+  };
+}
 
 export function handoffReleaseConclusion(
   result: unknown,
@@ -87,6 +148,16 @@ function boundedInteger(value: unknown, maximum: number): boolean {
 
 function nullableBoolean(value: unknown): boolean | null | undefined {
   return value === null || typeof value === 'boolean' ? value : undefined;
+}
+
+function member<Value extends string>(value: unknown, allowed: ReadonlySet<Value>): value is Value {
+  return typeof value === 'string' && allowed.has(value as Value);
+}
+
+function enumValue<const Value extends string>(value: unknown, allowed: readonly Value[]): Value | null {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? value as Value
+    : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

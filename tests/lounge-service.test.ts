@@ -144,6 +144,12 @@ describe('LoungeService', () => {
       },
       authority: 'coordination_only',
     });
+    await expect(listener.wait({ timeoutMs: 100 }, new AbortController().signal)).resolves.toMatchObject({
+      timedOut: true,
+      noticeChanged: false,
+      noticeRevision: 1,
+      pinnedNotice: null,
+    });
     await expect(listener.pin({
       body: 'Unauthorized replacement.',
       expectedRevision: 1,

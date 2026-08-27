@@ -100,7 +100,7 @@ describe('MCP browser available moves', () => {
     expect(typeof structured.operationId).toBe('string');
     const telemetry = await client.callTool({
       name: 'browser_execution_traces',
-      arguments: { operationId: structured.operationId, limit: 10 },
+      arguments: { operationId: structured.operationId, limit: 10, detail: 'full' },
     });
     expect(telemetry.structuredContent).toMatchObject({
       traces: [{

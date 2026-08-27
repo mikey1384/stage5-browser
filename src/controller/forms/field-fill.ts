@@ -23,8 +23,8 @@ export const formFieldFillOperations = {
       phases.enter('observe');
       const before = await this.observeFormFieldState(field.handle);
       phases.enter('plan');
-      if (!['contenteditable', 'date', 'text', 'textarea'].includes(field.observation.kind)) {
-        throw new Stage5BrowserError('OPERATION_FAILED', 'The exact form field is not a non-private text editor.', {
+      if (!['contenteditable', 'date', 'private', 'text', 'textarea'].includes(field.observation.kind)) {
+        throw new Stage5BrowserError('OPERATION_FAILED', 'The exact form field is not a text editor.', {
           recoverable: true,
           details: { reason: 'form_field_not_fillable', actionDispatched: false },
         });

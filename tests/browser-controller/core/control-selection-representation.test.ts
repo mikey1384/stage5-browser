@@ -96,6 +96,12 @@ describe('BrowserController custom selection representation', () => {
       actionDispatched: true,
       currentState: { requestedSelected: true, popupOpen: true, multiple: true },
       nextAction: 'select_more_or_dismiss_popup',
+      viableNextMoves: [
+        'select_more_with_fresh_inspection',
+        'continue_if_popup_not_obstructing',
+        'dismiss_with_escape',
+        'dismiss_with_exact_outside_click',
+      ],
     });
     expect(selected?.evidence).toMatchObject({
       actionDispatched: true,
@@ -111,6 +117,77 @@ describe('BrowserController custom selection representation', () => {
             textContent: () => Promise<string | null>;
           };
         };
+      }
+    ).activePage;
+    expect(await page.locator('#clicks').textContent()).toBe('1');
+  });
+
+  it('proves selection from the retained field after React-style control replacement without spending the action deadline', async () => {
+    await openFixture(`<!doctype html><html><body>
+      <section id="account-use-field">
+        <div id="selected-values"></div>
+        <button id="account-use" aria-haspopup="listbox" aria-controls="account-use-options" aria-expanded="false">
+          Account use
+        </button>
+      </section>
+      <div id="account-use-options" role="listbox" aria-label="Account use choices" aria-multiselectable="true" hidden>
+        <div id="investing" role="option">Proprietary trading / investing</div>
+      </div>
+      <output id="clicks">0</output>
+      <script>
+        document.querySelector('#account-use').addEventListener('click', () => {
+          document.querySelector('#account-use').setAttribute('aria-expanded', 'true');
+          document.querySelector('#account-use-options').hidden = false;
+        });
+        document.querySelector('#investing').addEventListener('click', () => {
+          clicks.value = String(Number(clicks.value) + 1);
+          document.querySelector('#account-use-field').innerHTML =
+            '<div id="selected-values"><span class="chip">Proprietary trading / investing</span></div>' +
+            '<button id="account-use" aria-haspopup="listbox" aria-controls="account-use-options" aria-expanded="true">Account use</button>';
+        });
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Account use', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const intended = inspected?.inspection.options[0];
+    if (inspected === undefined || intended === undefined) {
+      throw new Error('The replacement fixture did not expose its exact option.');
+    }
+
+    const startedAt = Date.now();
+    const selected = await controller?.selectOption({
+      inspectionId: inspected.inspection.inspectionId,
+      optionId: intended.optionId,
+      control: null,
+      option: null,
+      frameId: null,
+      timeoutMs: 15_000,
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(2_500);
+    expect(selected).toMatchObject({
+      outcome: 'succeeded',
+      selectionSucceeded: true,
+      currentState: { popupOpen: true, multiple: true },
+      nextAction: 'select_more_or_dismiss_popup',
+      evidence: {
+        selectedRepresentationObserved: true,
+        popupClosed: false,
+        reconciliation: {
+          targetResolution: 'retained_scope_after_control_replacement',
+          terminalProof: 'representation_change',
+        },
+      },
+    });
+    const page = (
+      controller as unknown as {
+        activePage: { locator: (selector: string) => { textContent: () => Promise<string | null> } };
       }
     ).activePage;
     expect(await page.locator('#clicks').textContent()).toBe('1');
@@ -330,6 +407,7 @@ describe('BrowserController custom selection representation', () => {
   it('does not manufacture popup closure when the authoritative visibility observation times out', async () => {
     const unchangedRepresentation = {
       controlRepresentsOption: false,
+      controlConnected: true,
       localExactRepresentationCount: 0,
     };
     const control = {
@@ -361,6 +439,54 @@ describe('BrowserController custom selection representation', () => {
         checks: expect.arrayContaining([
           expect.objectContaining({ kind: 'popup_closed', passed: false, observed: false }),
         ]),
+      },
+    });
+  });
+
+  it('does not mistake a detached old popup for closure when a replacement popup remains open', async () => {
+    const before = { controlRepresentsOption: false, controlConnected: true, localExactRepresentationCount: 0 };
+    const disconnected = { ...before, controlConnected: false };
+    const retainedOwner = {
+      evaluate: async () => [['Choice', disconnected]],
+    } as unknown as ElementHandle<HTMLElement>;
+    const reboundOwner = {
+      evaluate: async () => [['Choice', before]],
+    } as unknown as ElementHandle<HTMLElement>;
+    const oldPopup = { evaluate: async () => false } as unknown as ElementHandle<HTMLElement>;
+    const openPopup = { evaluate: async () => true } as unknown as ElementHandle<HTMLElement>;
+    const page = {
+      waitForTimeout: async (timeoutMs: number) => await new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    } as unknown as Page;
+
+    await expect(reconcileCustomControlSelection({
+      before,
+      control: retainedOwner,
+      deadlineAt: Date.now() + 100,
+      option: {} as Locator,
+      optionName: 'Choice',
+      owner: retainedOwner,
+      page,
+      popupSurfaces: [{ locator: null, handle: oldPopup, surfaceProof: 'semantic_role' }],
+      desiredSelected: true,
+      requireSelected: false,
+      recover: async () => ({
+        control: reboundOwner,
+        owner: reboundOwner,
+        option: {} as Locator,
+        popupSurfaces: [{ locator: null, handle: openPopup, surfaceProof: 'semantic_role' }],
+        dispose: async () => undefined,
+      }),
+      selectedState: async () => null,
+    })).rejects.toMatchObject({
+      code: 'POSTCONDITION_FAILED',
+      details: {
+        checks: expect.arrayContaining([
+          expect.objectContaining({ kind: 'popup_closed', passed: false, observed: false }),
+        ]),
+        reconciliation: {
+          targetResolution: 'rebound_exact',
+          terminalProof: 'unresolved',
+        },
       },
     });
   });

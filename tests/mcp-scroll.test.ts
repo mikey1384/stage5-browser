@@ -141,6 +141,8 @@ describe('MCP nested scrolling', () => {
       ...tools.tools.flatMap(({ title, description }) => [title, description].filter((value): value is string => typeof value === 'string')),
     ].join(' ');
     expect(wordCount(currentDefaultProse)).toBeLessThanOrEqual(Math.floor(LEGACY_DEFAULT_MCP_PROSE_WORDS * 0.1));
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('provider policy govern what the agent may enter');
+    expect(MCP_SERVER_INSTRUCTIONS).not.toContain('Keep private values out of tool arguments');
     expect(tools.tools.every(({ description }) => description === undefined)).toBe(true);
     const scrollTool = tools.tools.find((tool) => tool.name === 'browser_scroll');
     expect(scrollTool?.inputSchema).toMatchObject({
@@ -216,7 +218,7 @@ describe('MCP nested scrolling', () => {
     if (typeof inspectOperationId !== 'string') throw new Error('Control inspection did not expose its operationId.');
     const inspectTelemetry = await client.callTool({
       name: 'browser_execution_traces',
-      arguments: { operationId: inspectOperationId, limit: 10 },
+      arguments: { operationId: inspectOperationId, limit: 10, detail: 'full' },
     });
     expect(inspectTelemetry.structuredContent).toMatchObject({
       traces: [
@@ -246,6 +248,24 @@ describe('MCP nested scrolling', () => {
         },
       ],
     });
+    const compactTelemetry = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: {
+        operationId: inspectOperationId,
+        command: 'inspectControl',
+        outcome: 'succeeded',
+        limit: 10,
+      },
+    });
+    expect(compactTelemetry.structuredContent).toMatchObject({
+      detail: 'summary',
+      command: 'inspectControl',
+      outcome: 'succeeded',
+      traces: [{ operationId: inspectOperationId, command: 'inspectControl' }],
+    });
+    const compactTrace = (compactTelemetry.structuredContent as { traces: Array<Record<string, unknown>> }).traces[0];
+    expect(compactTrace).not.toHaveProperty('host');
+    expect(compactTrace).not.toHaveProperty('privacy');
     const missingControl = await client.callTool({
       name: 'browser_inspect_control',
       arguments: {
@@ -280,7 +300,7 @@ describe('MCP nested scrolling', () => {
     if (typeof missingOperationId !== 'string') throw new Error('Failed control inspection omitted its operationId.');
     const missingTelemetry = await client.callTool({
       name: 'browser_execution_traces',
-      arguments: { operationId: missingOperationId, limit: 10 },
+      arguments: { operationId: missingOperationId, limit: 10, detail: 'full' },
     });
     expect(missingTelemetry.structuredContent).toMatchObject({
       traces: [
@@ -323,6 +343,8 @@ describe('MCP nested scrolling', () => {
         | {
             result?: {
               snapshotId?: unknown;
+              snapshotView?: unknown;
+              omittedLineCount?: unknown;
               scrollContainers?: Array<{ ref?: unknown }>;
             };
           }
@@ -331,6 +353,8 @@ describe('MCP nested scrolling', () => {
     const snapshotId = result?.snapshotId;
     const ref = result?.scrollContainers?.[0]?.ref;
     expect(typeof snapshotId).toBe('string');
+    expect(result?.snapshotView).toBe('task');
+    expect(typeof result?.omittedLineCount).toBe('number');
     expect(typeof ref).toBe('string');
     if (typeof snapshotId !== 'string' || typeof ref !== 'string') {
       throw new Error('MCP snapshot did not expose a nested scroll-container capability.');
@@ -367,7 +391,7 @@ describe('MCP nested scrolling', () => {
     if (typeof operationId !== 'string') throw new Error('Scroll result did not expose its operationId.');
     const telemetry = await client.callTool({
       name: 'browser_execution_traces',
-      arguments: { operationId, limit: 10 },
+      arguments: { operationId, limit: 10, detail: 'full' },
     });
     expect(telemetry.isError).not.toBe(true);
     expect(telemetry.structuredContent).toMatchObject({
@@ -417,7 +441,7 @@ describe('MCP nested scrolling', () => {
     if (typeof clickOperationId !== 'string') throw new Error('Click result did not expose its operationId.');
     const clickTelemetry = await client.callTool({
       name: 'browser_execution_traces',
-      arguments: { operationId: clickOperationId, limit: 10 },
+      arguments: { operationId: clickOperationId, limit: 10, detail: 'full' },
     });
     expect(clickTelemetry.structuredContent).toMatchObject({
       traces: [

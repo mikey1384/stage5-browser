@@ -7,7 +7,7 @@ import { completedControlRecovery, popupAssociationFailure, resolveInspectionTar
 import type { ControlPopupAssociation } from './popup-association.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering, popupSurfaceSetMultiple } from './popup-set.js';
 import { resolveUniqueControl } from './resolution.js';
-import { type ControlSelectionRepresentation, observeControlSelectionRepresentationsInAdaptiveScope } from './selection-evidence.js';
+import { type ControlSelectionRepresentation, observeControlSelectionRepresentationsInAdaptiveScope } from './selection-representation.js';
 
 export const controlInspectionOperations = {
   async inspectControl(input: BrowserCommandInput<'inspectControl'>): Promise<BrowserCommandOutput<'inspectControl'>> {

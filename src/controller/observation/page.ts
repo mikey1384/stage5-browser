@@ -1,6 +1,7 @@
 import { type Browser, type BrowserCommandInput, type BrowserCommandOutput, chmod, type ElementHandle, type Frame, inspectTargetState, type Locator, MAX_SCROLL_CONTAINERS_PER_SNAPSHOT, mkdir, type NavigationWarning, observeScrollContainers, path, randomUUID, type Response, Stage5BrowserError, validateNavigationUrl, withScrollContainerSemanticDetails } from '../dependencies.js';
 import { boundedValue, MAX_FILE_INPUTS_PER_SNAPSHOT, MAX_POPUP_RENDERED_STATE_CANDIDATES, type ObservedReferenceSemantic, POPUP_OPTION_ROLES, POPUP_RENDERED_STATE_ROLES, POPUP_SURFACE_ROLES, remainingUntil, SCREENSHOT_RENDER_SETTLE_MS } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { discardOmittedSnapshotCapabilities, selectSnapshotView } from './snapshot-view.js';
 
 export const observationPageOperations = {
   async open(input: BrowserCommandInput<'open'>): Promise<BrowserCommandOutput<'open'>> {
@@ -35,7 +36,6 @@ export const observationPageOperations = {
       }
     };
     page.on('framenavigated', onFrameNavigated);
-
     const startedAt = Date.now();
     let response: Response | null;
     try {
@@ -154,7 +154,7 @@ export const observationPageOperations = {
       observedTextEditors = await this.observeTextEditors(root.locator, baseRefs, deadlineAt);
       observedFileInputs = await this.observeFileInputs(root.locator);
       observedScrollContainers = await observeScrollContainers(root.locator);
-      const snapshot = await withScrollContainerSemanticDetails({
+      const completeSnapshot = await withScrollContainerSemanticDetails({
         frame,
         snapshot: baseSnapshot,
         containers: observedScrollContainers.containers,
@@ -164,9 +164,12 @@ export const observationPageOperations = {
         filterInactivePopupSnapshot: (detail) =>
           this.filterInactivePopupSnapshot(frame, detail, deadlineAt),
       });
+      const viewed = selectSnapshotView(completeSnapshot, input.view);
+      const { snapshot } = viewed;
       const refs = new Set(
         snapshot.match(/\[ref=([^\]]+)\]/g)?.map((value) => value.slice(5, -1)) ?? [],
       );
+      await discardOmittedSnapshotCapabilities(observedTextEditors.editors, refs);
       if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
         throw new Stage5BrowserError(
           'TARGET_NOT_FOUND',
@@ -230,7 +233,7 @@ export const observationPageOperations = {
               }]
             : []),
         ],
-        snapshot,
+        ...viewed,
       };
     } finally {
       if (!retained) {

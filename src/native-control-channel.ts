@@ -201,7 +201,7 @@ function isSafeDispatchEvidence(value: unknown): boolean {
 function isSafeInputEvidence(value: unknown): boolean {
   if (!isRecordWithOnlyKeys(value, [
     'actionDispatched', 'inputEventObserved', 'changeEventObserved', 'valueMatchedBefore',
-    'valueMatches', 'targetConnectedAfter', 'targetKind',
+    'valueMatches', 'targetConnectedAfter', 'targetKind', 'inputSurface',
   ])) return false;
   return (typeof value.actionDispatched === 'boolean' || value.actionDispatched === 'unknown')
     && typeof value.inputEventObserved === 'boolean'
@@ -211,6 +211,12 @@ function isSafeInputEvidence(value: unknown): boolean {
     && typeof value.targetConnectedAfter === 'boolean'
     && ['contenteditable', 'input', 'textarea'].includes(
       typeof value.targetKind === 'string' ? value.targetKind : '',
+    )
+    && (
+      value.inputSurface === undefined ||
+      ['contenteditable', 'input', 'password', 'textarea'].includes(
+        typeof value.inputSurface === 'string' ? value.inputSurface : '',
+      )
     );
 }
 

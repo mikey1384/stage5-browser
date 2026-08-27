@@ -20,7 +20,9 @@ import {
 import {
   handoffReleaseConclusion,
   nativeReattachConclusion,
+  profileOwnershipConclusion,
 } from './execution-telemetry/lifecycle-conclusions.js';
+import { normalizeTrace, privacyContract, summarizeTrace, type ExecutionTraceFilters } from './execution-telemetry/query.js';
 
 const MAX_TELEMETRY_BYTES = 4 * 1_024 * 1_024;
 const RETAINED_TELEMETRY_BYTES = 2 * 1_024 * 1_024;
@@ -69,6 +71,20 @@ const POPUP_OWNER_DECISIONS = new Set<NonNullable<ExecutionTraceConclusion['cont
   'unavailable',
   'consumed',
 ]);
+const SELECTION_TARGET_RESOLUTIONS = new Set<NonNullable<ExecutionTraceConclusion['selectionReconciliation']>['targetResolution']>([
+  'retained_exact',
+  'retained_scope_after_control_replacement',
+  'rebound_exact',
+  'unresolved',
+]);
+const SELECTION_TERMINAL_PROOFS = new Set<NonNullable<ExecutionTraceConclusion['selectionReconciliation']>['terminalProof']>([
+  'selected_state',
+  'representation_change',
+  'popup_closed',
+  'unresolved',
+]);
+
+export type { ExecutionTraceFilters } from './execution-telemetry/query.js';
 
 export interface BuildExecutionTraceInput {
   operationId: string;
@@ -108,13 +124,17 @@ export class ExecutionTelemetryJournal {
     await chmod(this.filePath, 0o600);
   }
 
-  async list(operationId: string | null, limit: number): Promise<ExecutionTraceList> {
+  async list(operationId: string | null, limit: number, filters: ExecutionTraceFilters = {}): Promise<ExecutionTraceList> {
+    const agentId = filters.agentId ?? null;
+    const command = filters.command ?? null;
+    const outcome = filters.outcome ?? null;
+    const detail = filters.detail ?? 'full';
     let contents: string;
     try {
       contents = await readFile(this.filePath, 'utf8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { traces: [], limit, operationId, privacy: privacyContract() };
+        return { traces: [], limit, operationId, agentId, command, outcome, detail, privacy: privacyContract() };
       }
       throw error;
     }
@@ -129,11 +149,19 @@ export class ExecutionTelemetryJournal {
           return [];
         }
       })
-      .filter((trace) => operationId === null || trace.operationId === operationId);
+      .filter((trace) => operationId === null || trace.operationId === operationId)
+      .filter((trace) => agentId === null || trace.agentId === agentId)
+      .filter((trace) => command === null || trace.command === command)
+      .filter((trace) => outcome === null || trace.outcome === outcome);
+    const selected = traces.slice(-limit);
     return {
-      traces: traces.slice(-limit),
+      traces: detail === 'full' ? selected : selected.map(summarizeTrace),
       limit,
       operationId,
+      agentId,
+      command,
+      outcome,
+      detail,
       privacy: privacyContract(),
     };
   }
@@ -234,10 +262,37 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     renderedPopupCount: boundedIntegerConclusion(valuesForKey(combined, 'renderedPopupCount'), 50),
     popupOwnership: popupOwnershipConclusion(combined),
     controlRecovery: controlRecoveryConclusion(combined),
+    selectionReconciliation: selectionReconciliationConclusion(combined),
+    profileOwnership: profileOwnershipConclusion(result, error),
     handoffRelease: handoffReleaseConclusion(result, error),
     nativeReattach: nativeReattachConclusion(result, error),
     targetState: targetStateConclusion(combined),
   };
+}
+
+function selectionReconciliationConclusion(value: unknown): ExecutionTraceConclusion['selectionReconciliation'] {
+  const observed = valuesForKey(value, 'reconciliation').flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const targetResolution = candidate.targetResolution;
+    const terminalProof = candidate.terminalProof;
+    const attempts = boundedNullableInteger(candidate.attempts, 100);
+    const durationMs = boundedNullableInteger(candidate.durationMs, 60_000);
+    if (
+      typeof targetResolution !== 'string' ||
+      !SELECTION_TARGET_RESOLUTIONS.has(targetResolution as NonNullable<ExecutionTraceConclusion['selectionReconciliation']>['targetResolution']) ||
+      typeof terminalProof !== 'string' ||
+      !SELECTION_TERMINAL_PROOFS.has(terminalProof as NonNullable<ExecutionTraceConclusion['selectionReconciliation']>['terminalProof']) ||
+      attempts === undefined || attempts === null || durationMs === undefined || durationMs === null
+    ) return [];
+    return [{
+      targetResolution: targetResolution as NonNullable<ExecutionTraceConclusion['selectionReconciliation']>['targetResolution'],
+      attempts,
+      durationMs,
+      terminalProof: terminalProof as NonNullable<ExecutionTraceConclusion['selectionReconciliation']>['terminalProof'],
+    }];
+  });
+  const unique = new Map(observed.map((candidate) => [JSON.stringify(candidate), candidate]));
+  return unique.size === 1 ? [...unique.values()][0]! : null;
 }
 
 function directBoolean(value: unknown, key: string): boolean | null {
@@ -438,34 +493,4 @@ function safeReason(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function normalizeTrace(trace: Partial<BrowserExecutionTrace>): BrowserExecutionTrace {
-  const conclusion: Record<string, unknown> = isRecord(trace.conclusion) ? trace.conclusion : {};
-  const host: Record<string, unknown> = isRecord(trace.host) ? trace.host : {};
-  return {
-    ...trace,
-    host: {
-      version: typeof host.version === 'string' ? host.version : null,
-      behaviorVersion: typeof host.behaviorVersion === 'number' ? host.behaviorVersion : null,
-      toolCatalogVersion: typeof host.toolCatalogVersion === 'number' ? host.toolCatalogVersion : null,
-      toolCount: typeof host.toolCount === 'number' ? host.toolCount : null,
-    },
-    conclusion: {
-      ...conclusion,
-      controlRecovery: isRecord(conclusion.controlRecovery) ? conclusion.controlRecovery : null,
-      handoffRelease: isRecord(conclusion.handoffRelease) ? conclusion.handoffRelease : null,
-      nativeReattach: isRecord(conclusion.nativeReattach) ? conclusion.nativeReattach : null,
-    },
-  } as BrowserExecutionTrace;
-}
-
-function privacyContract(): BrowserExecutionTrace['privacy'] {
-  return {
-    urls: 'omitted',
-    selectors: 'omitted',
-    names: 'omitted',
-    values: 'omitted',
-    pageContent: 'omitted',
-  };
 }

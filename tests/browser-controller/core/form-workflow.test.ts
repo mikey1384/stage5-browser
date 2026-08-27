@@ -25,6 +25,7 @@ async function openForm(): Promise<void> {
     response.end(`<!doctype html><html><body>
       <form aria-label="Company profile">
         <label for="legal">Legal name</label><input id="legal" required>
+        <label for="address">Business address</label><input id="address" autocomplete="street-address" required>
         <label for="date">Incorporation date</label><input id="date" type="date" required>
         <label for="purpose">Use of account</label><select id="purpose">
           <option>Business operations</option><option>Treasury management</option>
@@ -35,7 +36,7 @@ async function openForm(): Promise<void> {
       </form>
       <output id="events">0</output>
       <script>
-        for (const field of [legal, date, purpose, terms]) {
+        for (const field of [legal, address, date, purpose, terms, secret]) {
           field.addEventListener('input', () => { events.value = String(Number(events.value) + 1); });
           field.addEventListener('change', () => { events.value = String(Number(events.value) + 1); });
         }
@@ -71,24 +72,29 @@ describe('BrowserController form workflow manager', () => {
       frameId: null,
       steps: [
         { kind: 'fill', fieldId: field('Legal name'), value: 'Stage Five Labs' },
+        { kind: 'fill', fieldId: field('Business address'), value: 'Authorized fixture address' },
         { kind: 'fill', fieldId: field('Incorporation date'), value: '2024-05-06' },
         { kind: 'select', fieldId: field('Use of account'), option: { name: 'Treasury management', exact: true } },
         { kind: 'set_checked', fieldId: field('Information is accurate'), checked: true },
+        { kind: 'fill', fieldId: field('Private identifier'), value: 'agent-authorized-fixture-value' },
       ],
       timeoutMs: 10_000,
     });
-    expect(result?.completedSteps).toHaveLength(4);
+    expect(result?.completedSteps).toHaveLength(6);
     expect(result?.completedSteps.every(({ after }) => after.valid !== false)).toBe(true);
     expect(result?.actionDispatched).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('agent-authorized-fixture-value');
 
     const page = (controller as unknown as { activePage: { locator: (selector: string) => {
       inputValue: () => Promise<string>;
       isChecked: () => Promise<boolean>;
     } } }).activePage;
     expect(await page.locator('#legal').inputValue()).toBe('Stage Five Labs');
+    expect(await page.locator('#address').inputValue()).toBe('Authorized fixture address');
     expect(await page.locator('#date').inputValue()).toBe('2024-05-06');
     expect(await page.locator('#purpose').inputValue()).toBe('Treasury management');
     expect(await page.locator('#terms').isChecked()).toBe(true);
+    expect(await page.locator('#secret').inputValue()).toBe('agent-authorized-fixture-value');
 
     const after = await controller?.formSummary({ frameId: null, maxFields: 20, maxActions: 20, timeoutMs: 5_000 });
     expect(after?.fields.find(({ name }) => name === 'Legal name')?.valuePresence).toBe('present');

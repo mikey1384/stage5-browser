@@ -205,7 +205,20 @@ describe('MCP Agent Lounge', () => {
     }));
     expect(duplicate).toMatchObject({ messageId, duplicate: true });
 
-    const status = structured(await browser.client.callTool({ name: 'lounge_status', arguments: {} }));
+    const compactStatus = structured(await browser.client.callTool({ name: 'lounge_status', arguments: {} }));
+    expect(compactStatus).toMatchObject({
+      detail: 'compact',
+      requestingAgentId: 'browser-agent',
+      memberCount: 3,
+      recentSentMessagesAvailableInFullStatus: true,
+    });
+    expect(compactStatus).not.toHaveProperty('recentSentMessages');
+    expect(compactStatus).not.toHaveProperty('memberWorkNotes');
+
+    const status = structured(await browser.client.callTool({
+      name: 'lounge_status',
+      arguments: { detail: 'full' },
+    }));
     expect(status).toMatchObject({
       requestingAgentId: 'browser-agent',
       members: expect.arrayContaining([
@@ -435,7 +448,7 @@ describe('MCP Agent Lounge', () => {
     }));
     expect(structured(await coordinator.client.callTool({
       name: 'lounge_status',
-      arguments: {},
+      arguments: { detail: 'full' },
     }))).toMatchObject({
       recentSentMessages: [expect.objectContaining({
         messageId,

@@ -107,7 +107,9 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
     TOOL.loungeStatus,
     {
       title: 'Agent Lounge status',
-      inputSchema: z.object({}),
+      inputSchema: z.object({
+        detail: z.enum(['compact', 'full']).default('compact'),
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -115,7 +117,7 @@ export function registerLoungeTools(server: McpServer, context: McpHostContext):
         openWorldHint: false,
       },
     },
-    async () => safely(() => lounge.status()),
+    async ({ detail }) => safely(() => lounge.status(detail)),
   );
 
   server.registerTool(
