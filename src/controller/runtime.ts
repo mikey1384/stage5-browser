@@ -70,6 +70,8 @@ import { controlRevealOperations, type ControlRevealOperations } from './control
 import { controlMultiSelectionOperations, type ControlMultiSelectionOperations } from './controls/multi-selection.js';
 import { BrowserPageLifecycleManager, pageLifecycleOperations, type PageLifecycleOperations } from './lifecycle/page-events.js';
 import { observationAvailableMovesOperations, type ObservationAvailableMovesOperations } from './observation/available-moves.js';
+import { BrowserPageStateRiskManager } from './persistence/page-state-risk-manager.js';
+import { lifecyclePageStateRiskOperations, type LifecyclePageStateRiskOperations } from './lifecycle/page-state-risk.js';
 export interface BrowserControllerContext extends
   LifecycleStartOperations,
   LifecycleAvailabilityOperations,
@@ -135,7 +137,8 @@ export interface BrowserControllerContext extends
   PopupPreparationOperations,
   ControlRevealOperations,
   PageLifecycleOperations,
-  ObservationAvailableMovesOperations {
+  ObservationAvailableMovesOperations,
+  LifecyclePageStateRiskOperations {
   context: BrowserContext | undefined;
   activePage: Page | undefined;
   state: BrowserLifecycleState;
@@ -176,6 +179,7 @@ export interface BrowserControllerContext extends
   downloadManager: BrowserDownloadManager;
   dialogManager: BrowserDialogManager;
   pageLifecycleManager: BrowserPageLifecycleManager;
+  pageStateRiskManager: BrowserPageStateRiskManager;
   config: Stage5BrowserConfig;
   humanBrowserLauncher: HumanBrowserLauncher;
   profileStorageInspector: typeof inspectProfileStorage;
@@ -276,7 +280,8 @@ export interface BrowserController extends
   PopupPreparationOperations,
   ControlRevealOperations,
   PageLifecycleOperations,
-  ObservationAvailableMovesOperations {}
+  ObservationAvailableMovesOperations,
+  LifecyclePageStateRiskOperations {}
 
 export class BrowserController {
   private context: BrowserContext | undefined;
@@ -319,6 +324,7 @@ export class BrowserController {
   private readonly downloadManager: BrowserDownloadManager;
   private readonly dialogManager: BrowserDialogManager;
   private readonly pageLifecycleManager: BrowserPageLifecycleManager;
+  private readonly pageStateRiskManager = new BrowserPageStateRiskManager();
 
   constructor(
     private readonly config: Stage5BrowserConfig,
@@ -444,6 +450,7 @@ for (const operations of [
   controlRevealOperations,
   pageLifecycleOperations,
   observationAvailableMovesOperations,
+  lifecyclePageStateRiskOperations,
 ]) {
   installOperations(BrowserController.prototype, operations);
 }

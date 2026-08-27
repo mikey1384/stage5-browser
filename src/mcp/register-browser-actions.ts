@@ -247,6 +247,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         operationId: operationIdSchema.optional(),
         action: z.enum(BROWSER_HISTORY_ACTIONS),
         expectedUrl: urlExpectationSchema.nullable().default(null),
+        acknowledgeStateRisk: z.boolean().default(false),
         dialogResponse: dialogResponseSchema.nullable().default(null),
         stabilizationMs: z.number().int().min(0).max(5_000).default(500),
         timeoutMs: z.number().int().min(1_000).max(60_000).default(config.navigationTimeoutMs),
@@ -270,6 +271,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
       inputSchema: z.object({
         operationId: operationIdSchema.optional(),
         tabId: tabIdSchema,
+        acknowledgeStateRisk: z.boolean().default(false),
         timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
       }),
       annotations: {

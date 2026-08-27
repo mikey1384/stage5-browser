@@ -1,4 +1,4 @@
-import { type Browser, type BrowserCommandOutput, type Page, type SanitizedClickDispatchEvidence, type SanitizedPageActivationEvidence, Stage5BrowserError } from '../dependencies.js';
+import { type Browser, type BrowserCommandOutput, type Page, type PageStateRisk, type SanitizedClickDispatchEvidence, type SanitizedPageActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { clickFinalizationReserve, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import type { ViewportPreparationTelemetry } from '../../protocol/telemetry.js';
@@ -47,6 +47,7 @@ export const clickExecutorOperations = {
     let dispatchEvidence: SanitizedClickDispatchEvidence | null = null;
     let pagesBeforeDispatch: ReadonlySet<Page> = new Set();
     let downloadCursorBeforeDispatch = 0;
+    let stateRisk: PageStateRisk | null = null;
     const actionStartedAt = new Date(phases.startedAtMs).toISOString();
     const deadlineAt = phases.deadlineAtMs;
     const actionDeadlineAt = deadlineAt - clickFinalizationReserve(definition.timeoutMs);
@@ -55,6 +56,12 @@ export const clickExecutorOperations = {
       const observation = await definition.observe();
       phases.enter('plan');
       plan = await definition.plan(observation);
+      stateRisk = this.pageStateRiskManager.preflightAction(
+        plan.page,
+        definition.intent,
+        definition.acknowledgeStateRisk ?? false,
+      );
+      await this.persistNativePageStateRisk(plan.page);
       if (plan.preDispatchRecoveryReason !== undefined) {
         phases.recordPreDispatchRecovery(plan.preDispatchRecoveryReason);
       }
@@ -65,6 +72,7 @@ export const clickExecutorOperations = {
         this.lastKnownUrl = plan.page.url();
         const result = {
           page: await this.pageSummary(plan.page, undefined, remainingUntil(deadlineAt)),
+          stateRisk,
           frame: this.frameSummary(plan.frame, plan.page),
           postcondition: plan.satisfiedWithoutDispatch.postcondition,
           viewportPreparation: null,
@@ -147,6 +155,7 @@ export const clickExecutorOperations = {
           this.lastKnownUrl = plan.page.url();
           const result = {
             page: await this.pageSummary(plan.page, undefined, remainingUntil(deadlineAt)),
+            stateRisk,
             frame: this.frameSummary(plan.frame, plan.page),
             postcondition: reconciled.postcondition,
             viewportPreparation: preparedTarget?.viewportPreparation ?? null,
@@ -186,6 +195,7 @@ export const clickExecutorOperations = {
         this.lastKnownUrl = plan.page.url();
         const result = {
           page: await this.pageSummary(plan.page, undefined, remainingUntil(deadlineAt)),
+          stateRisk,
           frame: this.frameSummary(plan.frame, plan.page),
           postcondition,
           viewportPreparation: preparedTarget.viewportPreparation,

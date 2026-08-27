@@ -1,5 +1,6 @@
-export { browserCommandContract } from './protocol.js';
+export { BROWSER_ACTION_INTENTS, browserCommandContract } from './protocol.js';
 export type {
+  BrowserActionIntent,
   BrowserCommandName,
   BrowserExecutionTrace,
   BrowserExecutionTraceSummary,

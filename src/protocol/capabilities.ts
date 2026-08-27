@@ -43,9 +43,9 @@ export const BROWSER_MANAGER_CAPABILITIES = {
     compositionBoundary: 'Structural facts are deterministic; the agent chooses semantic values within user authority.',
   },
   transfer_manager: {
-    responsibility: 'Move explicitly authorized files into observed inputs and capture browser downloads as private artifacts.',
-    techniques: ['set_observed_file_input', 'observe_upload_processing', 'capture_download', 'wait_for_download', 'restore_download_manifest'],
-    compositionBoundary: 'Transfers never imply remote processing/submission success and trigger actions are never replayed.',
+    responsibility: 'Move explicitly authorized files into observed inputs, track unproven workflow persistence, and capture browser downloads as private artifacts.',
+    techniques: ['set_observed_file_input', 'observe_upload_processing', 'track_unproven_workflow_persistence', 'capture_download', 'wait_for_download', 'restore_download_manifest'],
+    compositionBoundary: 'Transfers never imply remote processing/submission success; navigation-risk decisions belong to the agent and trigger actions are never replayed.',
   },
   dialog_manager: {
     responsibility: 'Prevent JavaScript dialogs from deadlocking the hand and respond only under an exact action-scoped expectation.',
@@ -79,6 +79,7 @@ export const BROWSER_CONTEXT_LAYERS = {
     'sanitized_download_manifest',
     'sanitized_dialog_manifest',
     'sanitized_page_lifecycle_manifest',
+    'exact_document_page_state_risk',
   ],
   session: [
     'controlled_browser_identity',
@@ -95,6 +96,7 @@ export const BROWSER_CONTEXT_LAYERS = {
     'form_field_capabilities',
     'control_option_capabilities',
     'popup_owner_candidate_capabilities',
+    'page_state_risk_revision',
   ],
   action: [
     'absolute_deadline',

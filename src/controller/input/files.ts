@@ -98,7 +98,11 @@ export const inputFilesOperations = {
         files.map((file) => file.canonicalPath),
         { timeout: input.timeoutMs },
       );
+      this.pageStateRiskManager.noteFileSelection(page, files.length);
+      await this.persistNativePageStateRisk(page);
     } catch (error) {
+      const stateRisk = this.pageStateRiskManager.noteFileSelection(page, files.length);
+      await this.persistNativePageStateRisk(page);
       phases.concludeDispatch({ actionDispatched: 'unknown' });
       phases.enter('reconcile');
       if (eventObservationKey !== null) {
@@ -114,6 +118,7 @@ export const inputFilesOperations = {
             reason: 'file_selection_failed',
             fileSelectionDispatched: 'unknown',
             actionOutcome: 'file_selection_outcome_unknown',
+            stateRisk,
             suggestedAction: 'Inspect the current composer before selecting the file again; the failed operation is not replayed automatically.',
           },
           cause: error,
@@ -170,6 +175,11 @@ export const inputFilesOperations = {
       snapshot: null,
     };
     const warnings: FileSelectionWarning[] = [...processing.warnings];
+    warnings.push({
+      code: 'workflow_persistence_unverified',
+      message: 'Upload completion does not prove that this workflow saved the attachment.',
+      suggestedAction: 'Save first, or acknowledge the reported state risk before navigating.',
+    });
     try {
       const remaining = Math.max(100, input.timeoutMs - (Date.now() - startedAtMs));
       const preview = await this.snapshot({

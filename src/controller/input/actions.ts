@@ -21,6 +21,8 @@ export const inputActionsOperations = {
     return await this.executeClickAction({
       action: 'click_by_role',
       timeoutMs: input.timeoutMs,
+      intent: input.intent ?? 'unclassified',
+      acknowledgeStateRisk: input.acknowledgeStateRisk ?? false,
       observe: async () => {
         const page = await this.ensureActivePage(this.requireContext());
         return { page, frame: this.resolveFrame(page, input.frameId) };
@@ -68,6 +70,8 @@ export const inputActionsOperations = {
     return await this.executeClickAction({
       action: 'click_by_ref',
       timeoutMs: input.timeoutMs,
+      intent: input.intent ?? 'unclassified',
+      acknowledgeStateRisk: input.acknowledgeStateRisk ?? false,
       observe: async () => {
         const page = await this.ensureActivePage(this.requireContext());
         const frame = this.resolveFrame(page, input.frameId);

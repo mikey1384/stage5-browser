@@ -52,6 +52,7 @@ function compactClick(result: Record<string, unknown>): Record<string, unknown> 
     actionDispatched: dispatch.actionDispatched,
     clickDispatched: dispatch.clickDispatched,
     effectConfirmed: postcondition?.passed ?? null,
+    stateRisk: result.stateRisk,
     currentUrl: pageUrl(result.page),
     newPageCount: result.newPageCount,
     newDownloadCount: result.newDownloadCount,
@@ -126,6 +127,7 @@ function compactMotion(result: Record<string, unknown>): Record<string, unknown>
     motion: result.motion,
     actionDispatched: dispatch.actionDispatched,
     effectConfirmed: postcondition?.passed ?? null,
+    stateRisk: result.stateRisk,
     newPageCount: result.newPageCount,
     newDownloadCount: result.newDownloadCount,
   });
@@ -136,6 +138,7 @@ function compactHistory(result: Record<string, unknown>): Record<string, unknown
     action: result.action,
     actionDispatched: result.actionDispatched,
     moved: result.moved,
+    stateRisk: result.stateRisk,
     finalUrl: result.finalUrl,
     warnings: result.warnings,
   });
@@ -147,6 +150,7 @@ function compactCloseTab(result: Record<string, unknown>): Record<string, unknow
     closedTabId: result.closedTabId,
     wasSelected: result.wasSelected,
     selectedTabId: result.selectedTabId,
+    stateRisk: result.stateRisk,
     remainingPageCount: Array.isArray(result.pages) ? result.pages.length : null,
   });
 }

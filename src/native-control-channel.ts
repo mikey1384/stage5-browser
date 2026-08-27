@@ -7,6 +7,7 @@ import {
   type BrowserProduct,
 } from './browser-provider.js';
 import type { SanitizedActionDiagnostic } from './page-diagnostics.js';
+import type { PageStateRisk } from './protocol.js';
 import { sanitizeUrlForJournal } from './url-policy.js';
 
 const CONTROL_RECORD_NAME = '.stage5-browser-control.json';
@@ -29,6 +30,11 @@ export interface NativeControlRecord {
     /** Opaque main-document loader identity; never returned or journaled. */
     documentId: string;
     diagnostic: SanitizedActionDiagnostic;
+  };
+  retainedPageStateRisk?: {
+    selectedTargetId: string;
+    documentId: string;
+    stateRisk: PageStateRisk;
   };
 }
 
@@ -302,6 +308,34 @@ function retainedAction(value: unknown): NativeControlRecord['retainedAction'] |
   };
 }
 
+function retainedPageStateRisk(value: unknown): NativeControlRecord['retainedPageStateRisk'] | undefined {
+  if (!isRecordWithOnlyKeys(value, ['selectedTargetId', 'documentId', 'stateRisk'])) return undefined;
+  const stateRisk = value.stateRisk;
+  if (
+    typeof value.selectedTargetId !== 'string' ||
+    value.selectedTargetId.length === 0 ||
+    value.selectedTargetId.length > 256 ||
+    typeof value.documentId !== 'string' ||
+    value.documentId.length === 0 ||
+    value.documentId.length > 256 ||
+    !isRecordWithOnlyKeys(stateRisk, ['kind', 'fileCount', 'acknowledgementRequired']) ||
+    stateRisk.kind !== 'possible_unsaved_file_selections' ||
+    !Number.isSafeInteger(stateRisk.fileCount) ||
+    (stateRisk.fileCount as number) < 1 ||
+    (stateRisk.fileCount as number) > 100 ||
+    typeof stateRisk.acknowledgementRequired !== 'boolean'
+  ) return undefined;
+  return {
+    selectedTargetId: value.selectedTargetId,
+    documentId: value.documentId,
+    stateRisk: {
+      kind: 'possible_unsaved_file_selections',
+      fileCount: stateRisk.fileCount as number,
+      acknowledgementRequired: stateRisk.acknowledgementRequired,
+    },
+  };
+}
+
 function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
   if (!isRecordWithOnlyKeys(value, [
     'version',
@@ -314,6 +348,7 @@ function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
     'selectedTargetId',
     'selectedDocumentId',
     'retainedAction',
+    'retainedPageStateRisk',
   ])) {
     return null;
   }
@@ -341,6 +376,7 @@ function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
     );
   if (!valid) return null;
   const restoredAction = retainedAction(candidate.retainedAction);
+  const restoredPageStateRisk = retainedPageStateRisk(candidate.retainedPageStateRisk);
   return {
     version: 1,
     kind: 'chromium_cdp',
@@ -352,6 +388,7 @@ function parsedNativeControlRecord(value: unknown): NativeControlRecord | null {
     ...(candidate.selectedTargetId === undefined ? {} : { selectedTargetId: candidate.selectedTargetId }),
     ...(candidate.selectedDocumentId === undefined ? {} : { selectedDocumentId: candidate.selectedDocumentId }),
     ...(restoredAction === undefined ? {} : { retainedAction: restoredAction }),
+    ...(restoredPageStateRisk === undefined ? {} : { retainedPageStateRisk: restoredPageStateRisk }),
   };
 }
 

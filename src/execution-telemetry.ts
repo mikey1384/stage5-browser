@@ -8,6 +8,7 @@ import {
   MCP_TOOL_COUNT,
   STAGE5_BROWSER_VERSION,
   TOOL_CATALOG_VERSION,
+  type BrowserActionIntent,
   type BrowserCommandName,
   type BrowserExecutionTrace,
   type ExecutionTraceConclusion,
@@ -17,19 +18,9 @@ import {
   type SerializedStage5BrowserError,
   type WorkerCommandTelemetry,
 } from './execution-telemetry-dependencies.js';
-import {
-  handoffReleaseConclusion,
-  nativeReattachConclusion,
-  profileOwnershipConclusion,
-} from './execution-telemetry/lifecycle-conclusions.js';
+import { handoffReleaseConclusion, nativeReattachConclusion, profileOwnershipConclusion } from './execution-telemetry/lifecycle-conclusions.js';
 import { normalizeTrace, privacyContract, summarizeTrace, type ExecutionTraceFilters } from './execution-telemetry/query.js';
-import {
-  activationTransportConclusion,
-  controlRevealInteractionConclusion,
-  formFieldRebindingConclusion,
-  searchableSelectionConclusion,
-  selectionInteractionConclusion,
-} from './execution-telemetry/interaction-conclusions.js';
+import { activationTransportConclusion, controlRevealInteractionConclusion, controlRevealReconciliationConclusion, formFieldRebindingConclusion, pageStateRiskConclusion, searchableSelectionConclusion, selectionInteractionConclusion } from './execution-telemetry/interaction-conclusions.js';
 import {
   boundedNullableInteger,
   isRecord,
@@ -112,6 +103,8 @@ export interface BuildExecutionTraceInput {
   operationId: string;
   agentId: string | null;
   command: BrowserCommandName | 'recover';
+  declaredIntent?: BrowserActionIntent | null;
+  stateRiskAcknowledgementRequested?: boolean | null;
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -225,6 +218,8 @@ export function buildExecutionTrace(input: BuildExecutionTraceInput): BrowserExe
     operationId: input.operationId,
     agentId: input.agentId,
     command: input.command,
+    declaredIntent: input.declaredIntent ?? null,
+    stateRiskAcknowledgementRequested: input.stateRiskAcknowledgementRequested ?? null,
     manager: contract.manager,
     phaseSystem: contract.phaseSystem,
     dispatchBoundary: contract.dispatch,
@@ -268,6 +263,7 @@ export function buildExecutionTrace(input: BuildExecutionTraceInput): BrowserExe
 function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | null, workerTelemetry: WorkerCommandTelemetry | null): ExecutionTraceConclusion {
   const combined = { result, error };
   const checks = checkSummaries(combined);
+  const pageStateRisk = pageStateRiskConclusion(combined);
   const explicitActionDispatched = dispatchConclusion(valuesForKey(combined, 'actionDispatched'));
   return {
     actionDispatched: explicitActionDispatched ?? phaseDispatchConclusion(workerTelemetry),
@@ -286,6 +282,7 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     popupOwnership: popupOwnershipConclusion(combined),
     controlRecovery: controlRecoveryConclusion(combined),
     controlRevealInteraction: controlRevealInteractionConclusion(combined),
+    controlRevealReconciliation: controlRevealReconciliationConclusion(combined),
     selectionReconciliation: selectionReconciliationConclusion(combined),
     selectionInteraction: selectionInteractionConclusion(combined),
     searchableSelection: searchableSelectionConclusion(combined),
@@ -293,6 +290,8 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     profileOwnership: profileOwnershipConclusion(result, error),
     handoffRelease: handoffReleaseConclusion(result, error),
     nativeReattach: nativeReattachConclusion(result, error),
+    unsavedStateRisk: pageStateRisk?.kind ?? null,
+    stateRiskAcknowledged: pageStateRisk?.acknowledged ?? null,
     targetState: targetStateConclusion(combined),
   };
 }

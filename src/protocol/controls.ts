@@ -58,7 +58,8 @@ export interface FileSelectionWarning {
     | 'processing_completion_unverified'
     | 'processing_error_observed'
     | 'processing_marker_preexisting'
-    | 'progress_disappeared_unverified';
+    | 'progress_disappeared_unverified'
+    | 'workflow_persistence_unverified';
   message: string;
   suggestedAction: string;
 }
@@ -89,6 +90,7 @@ export interface PostconditionResult {
 export type ControlKind = 'custom_popup' | 'native_select';
 export type ControlRevealInteraction = 'auto' | 'keyboard' | 'pointer';
 export type ControlRevealMethod = Exclude<ControlRevealInteraction, 'auto'>;
+export type ControlRevealReconciliation = 'immediate' | 'stabilized';
 export type ControlPopupAssociationProof = 'active_descendant' | 'explicit' | 'structural' | 'focused' | 'expanded' | 'spatial' | 'agent_declared' | 'post_dispatch_unique';
 export type ControlPopupSurfaceProof = 'semantic_role' | 'positioned_option_group';
 export interface ControlPopupOwnershipEvidence {
@@ -153,6 +155,7 @@ export interface ControlOptionsInspection {
   reveal: {
     requested: boolean;
     interactionUsed: ControlRevealMethod | null;
+    reconciliation: ControlRevealReconciliation | null;
     openerActionDispatched: boolean | 'unknown';
     popupOpened: boolean;
     competingPopupDismissed: boolean;

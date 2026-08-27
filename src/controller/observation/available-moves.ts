@@ -42,6 +42,7 @@ export const observationAvailableMovesOperations = {
       selectedPage: status.activePageIndex !== null,
       controlMode,
       policyMode: this.actionPolicy.status().mode,
+      pageStateRisk: activePage === undefined ? null : this.pageStateRiskManager.current(activePage),
       capabilityCounts: {
         observedTabs,
         semanticSnapshots: snapshots.length,

@@ -4,8 +4,8 @@ import type { BrowserDiagnostics } from '../diagnostics.js';
 import type { RuntimeProcessInfo } from '../runtime-info.js';
 import type { SanitizedPageActivationEvidence } from '../page-diagnostics.js';
 import type { AuthenticationStatus } from './authentication.js';
-import type { AvailableBrowsers, BrowserStatus, BrowserTabSummary, FrameSummary, PageSummary } from './browser-state.js';
-import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlPopupAgentAssociation, ControlRevealInteraction, ControlSelectionEvidence, ControlSelectionInteraction, ControlSelectionSummary, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
+import type { AvailableBrowsers, BrowserStatus, BrowserTabSummary, FrameSummary, PageStateRisk, PageSummary } from './browser-state.js';
+import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlPopupAgentAssociation, ControlRevealInteraction, ControlRevealMethod, ControlRevealReconciliation, ControlSelectionEvidence, ControlSelectionInteraction, ControlSelectionSummary, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
 import type { ScrollContainerObservation, ScrollDirection, ScrollEndState, ScrollPosition, ScrollWaitCondition, ScrollWaitResult } from './scroll.js';
 import type { BrowserMotionInput, BrowserMotionOutput } from './motions.js';
 import type { CloseTabOutput, NavigateHistoryInput, NavigateHistoryOutput } from './navigation.js';
@@ -66,9 +66,10 @@ export interface BrowserCommandMap {
     output: BrowserStatus;
   };
   open: {
-    input: { url: string; newTab: boolean; stabilizationMs?: number; timeoutMs: number; dialogResponse?: BrowserDialogExpectation | null };
+    input: { url: string; newTab: boolean; acknowledgeStateRisk?: boolean; stabilizationMs?: number; timeoutMs: number; dialogResponse?: BrowserDialogExpectation | null };
     output: {
       page: PageSummary;
+      stateRisk: PageStateRisk | null;
       requestedUrl: string;
       finalUrl: string;
       responseStatus: number | null;
@@ -150,7 +151,7 @@ export interface BrowserCommandMap {
     };
   };
   closeTab: {
-    input: { tabId: string; timeoutMs: number };
+    input: { tabId: string; acknowledgeStateRisk?: boolean; timeoutMs: number };
     output: CloseTabOutput;
   };
   inspectTab: {
@@ -199,10 +200,12 @@ export interface BrowserCommandMap {
       postcondition: ClickPostcondition | null;
       timeoutMs: number;
       intent?: BrowserActionIntent;
+      acknowledgeStateRisk?: boolean;
       dialogResponse?: BrowserDialogExpectation | null;
     };
     output: {
       page: PageSummary;
+      stateRisk: PageStateRisk | null;
       frame: FrameSummary;
       postcondition: PostconditionResult | null;
       viewportPreparation: ViewportPreparationTelemetry | null;
@@ -222,10 +225,12 @@ export interface BrowserCommandMap {
       postcondition: ClickPostcondition | null;
       timeoutMs: number;
       intent?: BrowserActionIntent;
+      acknowledgeStateRisk?: boolean;
       dialogResponse?: BrowserDialogExpectation | null;
     };
     output: {
       page: PageSummary;
+      stateRisk: PageStateRisk | null;
       frame: FrameSummary;
       postcondition: PostconditionResult | null;
       viewportPreparation: ViewportPreparationTelemetry | null;
@@ -332,6 +337,7 @@ export interface BrowserCommandMap {
       optionIds: string[] | null;
       control: ControlTarget | null;
       options: ControlOptionTarget[] | null;
+      revealInteraction?: ControlRevealInteraction;
       frameId: string | null;
       timeoutMs: number;
       intent?: BrowserActionIntent;
@@ -342,6 +348,8 @@ export interface BrowserCommandMap {
       frame: FrameSummary;
       inspectionId: string;
       kind: ControlOptionsInspection['kind'];
+      revealInteraction: ControlRevealMethod | null;
+      revealReconciliation: ControlRevealReconciliation | null;
       selectedNames: string[];
       selections: ControlMultiSelectionResult[];
       dialog?: BrowserDialogActionResult;

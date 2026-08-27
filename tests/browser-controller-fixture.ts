@@ -23,7 +23,7 @@ import {
 
 const DEFAULT_TEST_CLEANUP_GRACE_MS = 8_000;
 const EXACT_PROCESS_EXIT_GRACE_MS = 2_000;
-const MAX_RETAINED_RELEASE_CONTINUATIONS = 2;
+const MAX_RETAINED_RELEASE_CONTINUATIONS = 3;
 
 export async function waitForDisposableDevToolsPort(
   profileDir: string,

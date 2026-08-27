@@ -12,7 +12,7 @@ Every worker command has exactly one compile-time owner in `protocol/command-con
 | tab | stable identity, selection, passive inspection, restore, close |
 | interaction | click, hover, focus, keys, double/context click, drag, scroll |
 | form | redacted summary, fills, controls/options, checks, staged plans |
-| transfer | observed file inputs and durable sanitized download capture |
+| transfer | observed file inputs, unproven workflow-persistence state, and durable sanitized download capture |
 | dialog | alert/confirm/prompt/beforeunload response and history |
 | private handoff | field-scoped private input and authenticated reattachment |
 | policy | optional agent-declared semantic review boundaries |
@@ -28,7 +28,7 @@ Consequential element/file input belongs to `ActionPhaseManager` or a workflow t
 
 `runtime.ts` owns one scoped context. The canonical layer model is exported as `BROWSER_CONTEXT_LAYERS`:
 
-- durable: ownership lease, operation terminal journal, Lounge state, sanitized download and dialog manifests;
+- durable: ownership lease, operation terminal journal, Lounge state, sanitized download/dialog manifests, and exact-document value-free page risk;
 - session: controlled runtime/profile, stable tab selection, policy, and handoff state;
 - document: frame/document versions and one-use snapshot/form/control capabilities;
 - action: deadline, phases, exact handles, dispatch evidence, postconditions, and dialog expectation;

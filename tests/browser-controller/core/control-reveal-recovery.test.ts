@@ -96,6 +96,57 @@ describe('BrowserController control reveal recovery', () => {
     ]));
   });
 
+  it('waits read-only for a delayed popup after partial pointer input without replaying the opener', async () => {
+    const page = await openFixture(`<!doctype html><html><body>
+      <button id="target" aria-haspopup="listbox" aria-controls="target-options" aria-expanded="false">Ownership roles</button>
+      <div id="target-options" role="listbox" aria-multiselectable="true" hidden>
+        <div role="option">Primary role</div>
+      </div>
+      <output id="downs">0</output><output id="clicks">0</output>
+      <script>
+        target.addEventListener('mousedown', () => {
+          downs.value = String(Number(downs.value) + 1);
+          const replacement = target.cloneNode(true);
+          target.replaceWith(replacement);
+          setTimeout(() => {
+            replacement.setAttribute('aria-expanded', 'true');
+            document.getElementById('target-options').hidden = false;
+          }, 120);
+        });
+        target.addEventListener('click', () => { clicks.value = String(Number(clicks.value) + 1); });
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Ownership roles', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 3_000,
+    });
+
+    expect(inspected?.inspection).toMatchObject({
+      options: [{ name: 'Primary role' }],
+      reveal: {
+        openerActionDispatched: true,
+        popupOpened: true,
+        associationProof: 'explicit',
+        reconciliation: 'stabilized',
+      },
+    });
+    await expect(page.locator('#target-options').isVisible()).resolves.toBe(true);
+    await expect(page.locator('#downs').textContent()).resolves.toBe('1');
+    await expect(page.locator('#clicks').textContent()).resolves.toBe('0');
+    expect(controller?.drainActionPhaseTelemetry().actionPhases).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: 'click_by_role',
+        dispatchState: 'dispatched',
+        dispatchAttempts: 1,
+        terminalOutcome: 'succeeded',
+      }),
+    ]));
+  });
+
   it('passively inspects its exact open popup while another popup remains open', async () => {
     const page = await openFixture(`<!doctype html><html><body>
       <button id="prior" aria-haspopup="listbox" aria-controls="prior-options" aria-expanded="true">Intended use</button>

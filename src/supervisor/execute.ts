@@ -1,4 +1,4 @@
-import { type BrowserCommandInput, type BrowserCommandName, type BrowserCommandOutput, type OperationOutcome, type OperationStatusResult, Stage5BrowserError, serializeUnknownError } from './dependencies.js';
+import { BROWSER_ACTION_INTENTS, type BrowserActionIntent, type BrowserCommandInput, type BrowserCommandName, type BrowserCommandOutput, type OperationOutcome, type OperationStatusResult, Stage5BrowserError, serializeUnknownError } from './dependencies.js';
 import { type RecoveryOutcome, type RecoveryResult, type RuntimeTransition, SupervisedOperationError, type SupervisedResult } from './model.js';
 import type { BrowserSupervisorContext } from './runtime.js';
 
@@ -14,6 +14,9 @@ export const executeOperations = {
     }
 
     const operation = this.operations.begin(command, requestedOperationId);
+    const declaredIntent = categoricalIntent(payload);
+    const requestedAcknowledgement = (payload as { acknowledgeStateRisk?: unknown }).acknowledgeStateRisk;
+    const stateRiskAcknowledgementRequested = typeof requestedAcknowledgement === 'boolean' ? requestedAcknowledgement : null;
     return this.queue.run(async () => {
       const { operationId, startedAt } = operation;
       const startedAtMs = Date.parse(startedAt);
@@ -59,6 +62,8 @@ export const executeOperations = {
           operationId,
           agentId: this.agentContextId,
           command,
+          declaredIntent,
+          stateRiskAcknowledgementRequested,
           startedAt,
           completedAt: new Date(terminalAtMs).toISOString(),
           durationMs: terminalAtMs - startedAtMs,
@@ -106,6 +111,8 @@ export const executeOperations = {
           operationId,
           agentId: this.agentContextId,
           command,
+          declaredIntent,
+          stateRiskAcknowledgementRequested,
           startedAt,
           completedAt: new Date(terminalAtMs).toISOString(),
           durationMs: terminalAtMs - startedAtMs,
@@ -305,3 +312,11 @@ export const executeOperations = {
 } satisfies Record<string, unknown> & ThisType<BrowserSupervisorContext>;
 
 export type ExecuteOperations = typeof executeOperations;
+
+function categoricalIntent(payload: unknown): BrowserActionIntent | null {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null;
+  const intent = (payload as { intent?: unknown }).intent;
+  return typeof intent === 'string' && (BROWSER_ACTION_INTENTS as readonly string[]).includes(intent)
+    ? intent as BrowserActionIntent
+    : null;
+}

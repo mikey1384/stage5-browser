@@ -35,6 +35,8 @@ const PRIORITY_KEYS = [
   'selectionSucceeded',
   'actionDispatched',
   'currentState',
+  'stateRisk',
+  'acknowledgementRequired',
   'nextAction',
   'viableNextMoves',
   'popupOpen',

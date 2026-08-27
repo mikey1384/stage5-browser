@@ -187,6 +187,7 @@ export const lifecycleNativeAttachOperations = {
     this.activePage = activePageBeforeRuntimeInspection;
     await this.persistNativeSelectedPage(this.activePage);
     await this.restoreNativeActionAfterAttach(this.activePage);
+    await this.restoreNativePageStateRiskAfterAttach(this.activePage);
     this.runtimeProfileObservation = runtimeProfile;
     const targetOriginLoadedAtControlledStart = authenticationProbeTargetOrigin !== null
       && (
@@ -313,9 +314,13 @@ export const lifecycleNativeAttachOperations = {
       record.selectedTargetId === selectedTargetId
       && (selectedDocumentId === null || record.selectedDocumentId === selectedDocumentId)
     ) return;
-    const { retainedAction: _staleRetainedAction, ...recordWithoutRetainedAction } = record;
+    const {
+      retainedAction: _staleRetainedAction,
+      retainedPageStateRisk: _stalePageStateRisk,
+      ...recordWithoutRetainedState
+    } = record;
     const updated: NativeControlRecord = {
-      ...recordWithoutRetainedAction,
+      ...recordWithoutRetainedState,
       selectedTargetId,
       ...(selectedDocumentId === null ? {} : { selectedDocumentId }),
     };

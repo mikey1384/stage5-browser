@@ -1,4 +1,4 @@
-import type { BrowserTabSummary, FrameSummary, PageSummary } from './browser-state.js';
+import type { BrowserTabSummary, FrameSummary, PageStateRisk, PageSummary } from './browser-state.js';
 import type { ClickPostcondition, PostconditionResult, SupportedAriaRole } from './controls.js';
 import type { DownloadObservation } from './downloads.js';
 import type { BrowserDialogActionResult, BrowserDialogExpectation } from './dialogs.js';
@@ -64,11 +64,13 @@ export interface BrowserMotionInput {
   frameId: string | null;
   postcondition: ClickPostcondition | null;
   timeoutMs: number;
+  acknowledgeStateRisk?: boolean;
   dialogResponse?: BrowserDialogExpectation | null;
 }
 
 export interface BrowserMotionOutput {
   page: PageSummary;
+  stateRisk: PageStateRisk | null;
   frame: FrameSummary;
   motion: BrowserMotionKind;
   dispatch: BrowserMotionDispatchEvidence;

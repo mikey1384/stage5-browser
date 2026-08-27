@@ -11,6 +11,7 @@ export { OperationRegistry } from '../operations/registry.js';
 export type { OperationStatusResult } from '../operations/types.js';
 export { readNativeControlRecord } from '../native-control-channel.js';
 export { profileOwnershipRetainsPrivateHandoff, readProfileOwnershipLease } from '../profile-ownership-lease.js';
-export type { BrowserActionPolicyMode, BrowserCommandInput, BrowserCommandName, BrowserCommandOutput, BrowserExecutionTrace, BrowserStatus, BrowserWorkerRequest, BrowserWorkerResponse, ExecutionTraceList, WorkerCommandTelemetry } from '../protocol.js';
+export { BROWSER_ACTION_INTENTS } from '../protocol.js';
+export type { BrowserActionIntent, BrowserActionPolicyMode, BrowserCommandInput, BrowserCommandName, BrowserCommandOutput, BrowserExecutionTrace, BrowserStatus, BrowserWorkerRequest, BrowserWorkerResponse, ExecutionTraceList, WorkerCommandTelemetry } from '../protocol.js';
 export { SerialQueue } from '../serial-queue.js';
 export { STAGE5_BROWSER_VERSION, WORKER_PROTOCOL_VERSION, type RuntimeProcessInfo } from '../runtime-info.js';

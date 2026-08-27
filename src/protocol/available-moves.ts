@@ -1,6 +1,6 @@
 import { BROWSER_COMMAND_CONTRACTS, type BrowserActionManager, type BrowserCommandContract, type BrowserMovePrerequisite, type BrowserPhaseSystem } from './command-contracts.js';
 import type { BrowserCommandName } from './commands.js';
-import type { BrowserLifecycleState } from './browser-state.js';
+import type { BrowserLifecycleState, PageStateRisk } from './browser-state.js';
 import { BROWSER_COMMAND_POLICY, type BrowserActionPolicyMode } from './policy.js';
 
 export const BROWSER_MOVE_AVAILABILITIES = ['available', 'needs_preparation', 'blocked'] as const;
@@ -19,6 +19,7 @@ export interface BrowserMoveContext {
   selectedPage: boolean;
   controlMode: BrowserControlMode;
   policyMode: BrowserActionPolicyMode;
+  pageStateRisk: PageStateRisk | null;
   capabilityCounts: {
     observedTabs: number;
     semanticSnapshots: number;
@@ -148,7 +149,7 @@ function deriveMove(
           missingPrerequisites.every((requirement) => PREPARABLE.has(requirement))
         ? 'needs_preparation'
         : 'blocked';
-  const callerRequirements = callerRequirementsFor(command, technique, context.policyMode);
+  const callerRequirements = callerRequirementsFor(command, technique, context);
   if (policyBlocked) callerRequirements.push('review_policy_change_requires_user_authorized_workflow');
   const enablingCommands = contract.missingPrerequisitePolicy === 'not_meaningful' &&
     missingPrerequisites.length > 0
@@ -237,7 +238,7 @@ function enablingCommandsFor(
 function callerRequirementsFor(
   command: BrowserCommandName,
   technique: string,
-  policyMode: BrowserActionPolicyMode,
+  context: BrowserMoveContext,
 ): string[] {
   const requirements: string[] = [];
   if (['clickByRole', 'fillByRole', 'motion', 'inspectControl', 'selectOption', 'selectOptions', 'setChecked'].includes(command)) {
@@ -256,7 +257,16 @@ function callerRequirementsFor(
   if (command === 'open' || command === 'waitForUrl') requirements.push('authorized_url_intent');
   if (command === 'setInputFiles') requirements.push('explicitly_authorized_local_files');
   if (command === 'applyFormPlan') requirements.push('agent_chosen_staged_field_plan');
-  if (policyMode === 'review_only' && BROWSER_COMMAND_POLICY[command] === 'declared_intent_in_review' &&
+  if (context.pageStateRisk?.acknowledgementRequired === true) {
+    if (command === 'open') {
+      requirements.push('same_page_navigation_requires_current_page_state_risk_acknowledgement');
+    } else if (command === 'navigateHistory' || command === 'closeTab') {
+      requirements.push('acknowledge_current_page_state_risk');
+    } else if (command === 'clickByRole' || command === 'clickRef' || command === 'motion') {
+      requirements.push('navigation_intent_requires_current_page_state_risk_acknowledgement');
+    }
+  }
+  if (context.policyMode === 'review_only' && BROWSER_COMMAND_POLICY[command] === 'declared_intent_in_review' &&
     !(command === 'motion' && (technique === 'focus' || technique === 'hover'))) {
     requirements.push('review_safe_agent_declared_intent');
   }

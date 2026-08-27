@@ -8,6 +8,14 @@ export const observationPageOperations = {
     const context = await this.ensureContext();
     const page = input.newTab ? await context.newPage() : await this.ensureActivePage(context);
     this.activePage = page;
+    const stateRisk = input.newTab
+      ? null
+      : this.pageStateRiskManager.preflightNavigation(
+        page,
+        input.acknowledgeStateRisk ?? false,
+        'navigation',
+      );
+    await this.persistNativePageStateRisk(page);
     if (
       this.authenticationHandoff?.state === 'awaiting_user' &&
       !this.authenticationHandoff.session.state().running &&
@@ -103,6 +111,7 @@ export const observationPageOperations = {
 
     return {
       page: await this.pageSummary(page),
+      stateRisk,
       requestedUrl,
       finalUrl,
       responseStatus,

@@ -6,6 +6,7 @@ import type {
   ControlPopupSurfaceProof,
   ControlRecoveryEvidence,
   ControlRevealMethod,
+  ControlRevealReconciliation,
   ControlSelectionReconciliationEvidence,
   ControlSelectionMethod,
   PostconditionCheck,
@@ -13,6 +14,7 @@ import type {
 } from './controls.js';
 import type { FormFieldRebindingSummary } from './forms.js';
 import type { NativeReattachObservation } from './browser-state.js';
+import type { BrowserActionIntent } from './policy.js';
 
 export interface ViewportPreparationTelemetry {
   attempts: number;
@@ -89,6 +91,7 @@ export interface ExecutionTraceConclusion {
   popupOwnership: ControlPopupOwnershipEvidence | null;
   controlRecovery: ControlRecoveryEvidence | null;
   controlRevealInteraction: ControlRevealMethod | null;
+  controlRevealReconciliation: ControlRevealReconciliation | null;
   selectionReconciliation: ControlSelectionReconciliationEvidence | null;
   selectionInteraction: ControlSelectionMethod | null;
   searchableSelection: {
@@ -140,6 +143,8 @@ export interface ExecutionTraceConclusion {
     ownershipRetained: boolean | null;
   } | null;
   nativeReattach: NativeReattachObservation | null;
+  unsavedStateRisk: 'possible_unsaved_file_selections' | null;
+  stateRiskAcknowledged: boolean | null;
   targetState: {
     visible: boolean | null;
     enabled: boolean | null;
@@ -166,6 +171,8 @@ export interface BrowserExecutionTraceSummary {
   operationId: string;
   agentId: string | null;
   command: BrowserCommandName | 'recover';
+  declaredIntent: BrowserActionIntent | null;
+  stateRiskAcknowledgementRequested: boolean | null;
   manager: BrowserActionManager | 'recovery_manager';
   durationMs: number;
   outcome: BrowserExecutionTrace['outcome'];
@@ -182,6 +189,8 @@ export interface BrowserExecutionTrace {
   operationId: string;
   agentId: string | null;
   command: BrowserCommandName | 'recover';
+  declaredIntent: BrowserActionIntent | null;
+  stateRiskAcknowledgementRequested: boolean | null;
   manager: BrowserActionManager | 'recovery_manager';
   phaseSystem: BrowserPhaseSystem;
   dispatchBoundary: BrowserCommandContract['dispatch'];

@@ -12,6 +12,7 @@ export const navigationHistoryOperations = {
     const beforeUrl = page.url();
     let response: Response | null = null;
     let dispatchError: unknown = null;
+    let stateRisk: BrowserCommandOutput<'navigateHistory'>['stateRisk'] = null;
     let mainFrameNavigated = false;
     const onFrameNavigated = (frame: Frame): void => {
       if (frame === page.mainFrame()) mainFrameNavigated = true;
@@ -27,6 +28,12 @@ export const navigationHistoryOperations = {
           details: { reason: 'selected_page_closed', actionDispatched: false },
         });
       }
+      stateRisk = this.pageStateRiskManager.preflightNavigation(
+        page,
+        input.acknowledgeStateRisk ?? false,
+        'navigation',
+      );
+      await this.persistNativePageStateRisk(page);
       phases.enter('prepare');
       this.discardAllObservedSnapshots();
       this.discardAllControlInspections();
@@ -102,6 +109,7 @@ export const navigationHistoryOperations = {
       phases.beginFinalization();
       const result = {
         page: await this.pageSummary(page, undefined, remainingUntil(phases.deadlineAtMs)),
+        stateRisk,
         action: input.action,
         actionDispatched,
         beforeUrl: this.safeObservedUrl(beforeUrl),

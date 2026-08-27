@@ -20,6 +20,8 @@ describe('privacy-safe execution telemetry', () => {
       operationId: 'operation-telemetry-fixture',
       agentId: 'youtube-agent',
       command: 'selectOption',
+      declaredIntent: 'form_edit',
+      stateRiskAcknowledgementRequested: false,
       startedAt: new Date(startedAtMs).toISOString(),
       completedAt: new Date(startedAtMs + 100).toISOString(),
       durationMs: 100,
@@ -121,6 +123,8 @@ describe('privacy-safe execution telemetry', () => {
       },
       manager: 'form_manager',
       agentId: 'youtube-agent',
+      declaredIntent: 'form_edit',
+      stateRiskAcknowledgementRequested: false,
       phaseSystem: 'action_phases',
       dispatchBoundary: 'element_input',
       replayPolicy: 'never_after_possible_dispatch',
@@ -314,6 +318,7 @@ describe('privacy-safe execution telemetry', () => {
       popupOwnership: null,
       controlRecovery: null,
       controlRevealInteraction: null,
+      controlRevealReconciliation: null,
       selectionReconciliation: null,
       selectionInteraction: null,
       searchableSelection: null,
@@ -321,6 +326,8 @@ describe('privacy-safe execution telemetry', () => {
       profileOwnership: null,
       handoffRelease: null,
       nativeReattach: null,
+      unsavedStateRisk: null,
+      stateRiskAcknowledged: null,
       targetState: null,
     });
   });
@@ -558,6 +565,7 @@ describe('privacy-safe execution telemetry', () => {
         inspection: {
           reveal: {
             revealInteraction: 'keyboard',
+            revealReconciliation: 'stabilized',
             associationProof: 'agent_declared',
             renderedPopupCount: 1,
             popupOwnership: {
@@ -588,6 +596,7 @@ describe('privacy-safe execution telemetry', () => {
 
     expect(trace.conclusion).toMatchObject({
       controlRevealInteraction: 'keyboard',
+      controlRevealReconciliation: 'stabilized',
       popupAssociationProof: 'agent_declared',
       renderedPopupCount: 1,
       popupOwnership: { candidateCount: 5, decision: 'tie_or_near' },

@@ -5,6 +5,10 @@ const CONTROL_REVEAL_INTERACTIONS = new Set<NonNullable<ExecutionTraceConclusion
   'keyboard',
   'pointer',
 ]);
+const CONTROL_REVEAL_RECONCILIATIONS = new Set<NonNullable<ExecutionTraceConclusion['controlRevealReconciliation']>>([
+  'immediate',
+  'stabilized',
+]);
 
 const SELECTION_INTERACTIONS = new Set<NonNullable<ExecutionTraceConclusion['selectionInteraction']>>([
   'observed_option',
@@ -44,6 +48,22 @@ export function controlRevealInteractionConclusion(
     (candidate): candidate is NonNullable<ExecutionTraceConclusion['controlRevealInteraction']> =>
       typeof candidate === 'string' &&
       CONTROL_REVEAL_INTERACTIONS.has(candidate as NonNullable<ExecutionTraceConclusion['controlRevealInteraction']>),
+  ));
+  return observed.size === 1 ? [...observed][0]! : null;
+}
+
+export function controlRevealReconciliationConclusion(
+  value: unknown,
+): ExecutionTraceConclusion['controlRevealReconciliation'] {
+  const candidates = [
+    ...valuesForKey(value, 'revealReconciliation'),
+    ...valuesForKey(value, 'reveal').flatMap((candidate) =>
+      isRecord(candidate) && candidate.reconciliation !== undefined ? [candidate.reconciliation] : []),
+  ];
+  const observed = new Set(candidates.filter(
+    (candidate): candidate is NonNullable<ExecutionTraceConclusion['controlRevealReconciliation']> =>
+      typeof candidate === 'string' &&
+      CONTROL_REVEAL_RECONCILIATIONS.has(candidate as NonNullable<ExecutionTraceConclusion['controlRevealReconciliation']>),
   ));
   return observed.size === 1 ? [...observed][0]! : null;
 }
@@ -98,6 +118,25 @@ export function formFieldRebindingConclusion(
     return reboundSteps === undefined || reboundSteps === null
       ? []
       : [{ attempted: candidate.attempted, reboundSteps, failed: candidate.failed }];
+  });
+  const unique = new Map(observed.map((candidate) => [JSON.stringify(candidate), candidate]));
+  return unique.size === 1 ? [...unique.values()][0]! : null;
+}
+
+export function pageStateRiskConclusion(value: unknown): {
+  kind: NonNullable<ExecutionTraceConclusion['unsavedStateRisk']>;
+  acknowledged: boolean;
+} | null {
+  const observed = valuesForKey(value, 'stateRisk').flatMap((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      candidate.kind !== 'possible_unsaved_file_selections' ||
+      typeof candidate.acknowledgementRequired !== 'boolean'
+    ) return [];
+    const fileCount = boundedNullableInteger(candidate.fileCount, 100);
+    return fileCount === null || fileCount === undefined || fileCount < 1
+      ? []
+      : [{ kind: 'possible_unsaved_file_selections' as const, acknowledged: !candidate.acknowledgementRequired }];
   });
   const unique = new Map(observed.map((candidate) => [JSON.stringify(candidate), candidate]));
   return unique.size === 1 ? [...unique.values()][0]! : null;

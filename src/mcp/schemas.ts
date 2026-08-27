@@ -66,6 +66,7 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     postcondition: clickPostconditionSchema.nullable().default(null),
     timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
     intent: actionIntentSchema,
+    acknowledgeStateRisk: z.boolean().default(false),
     dialogResponse: dialogResponseSchema.nullable().default(null),
   }).refine(
     (value) => value.postcondition === null || value.postcondition.timeoutMs <= value.timeoutMs,
@@ -80,6 +81,7 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     postcondition: clickPostconditionSchema.nullable().default(null),
     timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
     intent: actionIntentSchema,
+    acknowledgeStateRisk: z.boolean().default(false),
     dialogResponse: dialogResponseSchema.nullable().default(null),
   }).refine(
     (value) => value.postcondition === null || value.postcondition.timeoutMs <= value.timeoutMs,
@@ -167,6 +169,7 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     optionIds: z.array(z.string().regex(/^option-[0-9a-f-]{36}$/u)).min(1).max(20).nullable().default(null),
     control: controlTargetSchema.nullable().default(null),
     options: z.array(controlOptionTargetSchema).min(1).max(20).nullable().default(null),
+    revealInteraction: z.enum(['auto', 'keyboard', 'pointer']).default('auto'),
     frameId: frameIdSchema,
     timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
     intent: actionIntentSchema,
@@ -204,6 +207,7 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     postcondition: clickPostconditionSchema.nullable().default(null),
     timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
     intent: actionIntentSchema,
+    acknowledgeStateRisk: z.boolean().default(false),
     dialogResponse: dialogResponseSchema.nullable().default(null),
   }).refine(
     (value) => value.postcondition === null || value.postcondition.timeoutMs <= value.timeoutMs,

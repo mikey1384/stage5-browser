@@ -64,6 +64,14 @@ describe('MCP file selection', () => {
           </script>
           <p id="name"></p>
           <button id="ready" hidden>Ready to post</button>
+          <a id="leave" href="/elsewhere">Leave upload</a>
+          <script>
+            document.querySelector('#leave').addEventListener('click', (event) => {
+              event.preventDefault();
+              history.pushState({}, '', '/elsewhere');
+              document.body.innerHTML = '<main><h1>Elsewhere</h1></main>';
+            });
+          </script>
         </div>
       </body></html>`);
     });
@@ -156,8 +164,140 @@ describe('MCP file selection', () => {
           state: 'completion_observed',
           evidence: 'expected_completion_visible',
         },
+        page: {
+          stateRisk: {
+            kind: 'possible_unsaved_file_selections',
+            fileCount: 1,
+            acknowledgementRequired: true,
+          },
+        },
+        warnings: [expect.objectContaining({ code: 'workflow_persistence_unverified' })],
       },
     });
     expect(JSON.stringify(selected.structuredContent)).not.toContain(temporaryRoot);
+
+    const navigationSnapshot = await client.callTool({
+      name: 'browser_snapshot',
+      arguments: { depth: 8, boxes: false, frameId: null, timeoutMs: 10_000 },
+    });
+    expect(navigationSnapshot.isError).not.toBe(true);
+    const navigationResult = (navigationSnapshot.structuredContent as {
+      result?: { snapshotId?: unknown; snapshot?: unknown };
+    } | undefined)?.result;
+    const navigationSnapshotId = navigationResult?.snapshotId;
+    const navigationText = navigationResult?.snapshot;
+    const navigationRef = typeof navigationText === 'string'
+      ? navigationText.match(/link "Leave upload" \[ref=([^\]]+)\]/u)?.[1]
+      : undefined;
+    if (typeof navigationSnapshotId !== 'string' || typeof navigationRef !== 'string') {
+      throw new Error('MCP snapshot did not expose the disposable navigation target.');
+    }
+
+    const blocked = await client.callTool({
+      name: 'browser_click_ref',
+      arguments: {
+        snapshotId: navigationSnapshotId,
+        ref: navigationRef,
+        frameId: null,
+        postcondition: null,
+        timeoutMs: 10_000,
+        intent: 'navigate',
+        acknowledgeStateRisk: false,
+      },
+    });
+    expect(blocked.isError).toBe(true);
+    const blockedOperationId = (blocked.structuredContent as { operationId?: unknown }).operationId;
+    if (typeof blockedOperationId !== 'string') throw new Error('Blocked navigation omitted its operationId.');
+    expect(blocked.structuredContent).toMatchObject({
+      operationId: blockedOperationId,
+      error: {
+        code: 'OPERATION_FAILED',
+        details: {
+          reason: 'unsaved_file_selection_navigation_requires_acknowledgement',
+          actionDispatched: false,
+          clickDispatched: false,
+          stateRisk: {
+            kind: 'possible_unsaved_file_selections',
+            fileCount: 1,
+            acknowledgementRequired: true,
+          },
+        },
+      },
+    });
+
+    const acknowledgedSnapshot = await client.callTool({
+      name: 'browser_snapshot',
+      arguments: { depth: 8, boxes: false, frameId: null, timeoutMs: 10_000 },
+    });
+    const acknowledgedResult = (acknowledgedSnapshot.structuredContent as {
+      result?: { snapshotId?: unknown; snapshot?: unknown };
+    } | undefined)?.result;
+    const acknowledgedSnapshotId = acknowledgedResult?.snapshotId;
+    const acknowledgedText = acknowledgedResult?.snapshot;
+    const acknowledgedRef = typeof acknowledgedText === 'string'
+      ? acknowledgedText.match(/link "Leave upload" \[ref=([^\]]+)\]/u)?.[1]
+      : undefined;
+    if (typeof acknowledgedSnapshotId !== 'string' || typeof acknowledgedRef !== 'string') {
+      throw new Error('Fresh MCP snapshot did not expose the disposable navigation target.');
+    }
+
+    const acknowledged = await client.callTool({
+      name: 'browser_click_ref',
+      arguments: {
+        snapshotId: acknowledgedSnapshotId,
+        ref: acknowledgedRef,
+        frameId: null,
+        postcondition: {
+          expectedUrl: { url: `http://127.0.0.1:${port}/elsewhere`, match: 'exact' },
+          expectedNewPageUrl: null,
+          expectedDownload: false,
+          expectedSelected: null,
+          expectedVisible: null,
+          expectedHidden: null,
+          satisfaction: 'all',
+          timeoutMs: 2_000,
+        },
+        timeoutMs: 10_000,
+        intent: 'navigate',
+        acknowledgeStateRisk: true,
+      },
+    });
+    expect(acknowledged.isError).not.toBe(true);
+    const acknowledgedOperationId = (acknowledged.structuredContent as { operationId?: unknown }).operationId;
+    if (typeof acknowledgedOperationId !== 'string') throw new Error('Acknowledged navigation omitted its operationId.');
+    expect(acknowledged.structuredContent).toMatchObject({
+      operationId: acknowledgedOperationId,
+      result: {
+        actionDispatched: true,
+        clickDispatched: true,
+        effectConfirmed: true,
+        stateRisk: {
+          kind: 'possible_unsaved_file_selections',
+          fileCount: 1,
+          acknowledgementRequired: false,
+        },
+      },
+    });
+
+    for (const [operationId, acknowledgedRisk] of [
+      [blockedOperationId, false],
+      [acknowledgedOperationId, true],
+    ] as const) {
+      const telemetry = await client.callTool({
+        name: 'browser_execution_traces',
+        arguments: { operationId, limit: 5, detail: 'full' },
+      });
+      expect(telemetry.structuredContent).toMatchObject({
+        traces: [{
+          operationId,
+          declaredIntent: 'navigate',
+          stateRiskAcknowledgementRequested: acknowledgedRisk,
+          conclusion: {
+            unsavedStateRisk: 'possible_unsaved_file_selections',
+            stateRiskAcknowledged: acknowledgedRisk,
+          },
+        }],
+      });
+    }
   });
 });

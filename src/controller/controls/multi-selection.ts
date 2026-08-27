@@ -3,6 +3,9 @@ import {
   type BrowserCommandOutput,
   type ControlMultiSelectionResult,
   type ControlOptionTarget,
+  type ControlRevealInteraction,
+  type ControlRevealMethod,
+  type ControlRevealReconciliation,
   type ControlTarget,
   type Frame,
   type Page,
@@ -19,6 +22,12 @@ interface RequestedSelection {
   observed: ObservedControlOption;
 }
 
+interface CustomMultiSelectionExecution {
+  selections: ControlMultiSelectionResult[];
+  revealInteraction: ControlRevealMethod | null;
+  revealReconciliation: ControlRevealReconciliation | null;
+}
+
 export const controlMultiSelectionOperations = {
   async selectOptions(
     input: BrowserCommandInput<'selectOptions'>,
@@ -31,6 +40,7 @@ export const controlMultiSelectionOperations = {
         control: requiredControl(input),
         frameId: input.frameId,
         revealOptions: true,
+        revealInteraction: input.revealInteraction ?? 'auto',
         maxOptions: 200,
         timeoutMs: Math.max(1_000, remainingUntil(deadlineAt)),
       })
@@ -59,15 +69,29 @@ export const controlMultiSelectionOperations = {
         });
       }
 
-      const selections = inspection.kind === 'native_select'
-        ? await this.selectNativeRequestedOptions(inspection, requested, deadlineAt)
-        : await this.selectCustomRequestedOptions(page, frame, inspection, requested, input.frameId, deadlineAt);
+      const custom = inspection.kind === 'native_select'
+        ? null
+        : await this.selectCustomRequestedOptions(
+          page,
+          frame,
+          inspection,
+          requested,
+          input.frameId,
+          input.revealInteraction ?? 'auto',
+          inspectionOutput?.inspection.reveal.interactionUsed ?? null,
+          inspectionOutput?.inspection.reveal.reconciliation ?? null,
+          deadlineAt,
+        );
+      const selections = custom?.selections ??
+        await this.selectNativeRequestedOptions(inspection, requested, deadlineAt);
       return {
         ...completedSelectionSummary(selections.map(({ evidence }) => evidence), inspection.multiple, true),
         page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
         frame: this.frameSummary(frame, page),
         inspectionId,
         kind: inspection.kind,
+        revealInteraction: custom?.revealInteraction ?? null,
+        revealReconciliation: custom?.revealReconciliation ?? null,
         selectedNames: selections.map(({ selectedName }) => selectedName),
         selections,
       };
@@ -103,9 +127,14 @@ export const controlMultiSelectionOperations = {
     inspection: ObservedControlInspection,
     requested: RequestedSelection[],
     frameId: string | null,
+    revealInteraction: ControlRevealInteraction,
+    initialRevealInteraction: ControlRevealMethod | null,
+    initialRevealReconciliation: ControlRevealReconciliation | null,
     deadlineAt: number,
-  ): Promise<ControlMultiSelectionResult[]> {
+  ): Promise<CustomMultiSelectionExecution> {
     const selections: ControlMultiSelectionResult[] = [];
+    let revealInteractionUsed = initialRevealInteraction;
+    let revealReconciliation = initialRevealReconciliation;
     const control: ControlTarget = {
       role: inspection.controlRole as ControlTarget['role'],
       name: inspection.controlName,
@@ -121,11 +150,17 @@ export const controlMultiSelectionOperations = {
             control,
             frameId,
             revealOptions: true,
+            revealInteraction,
             maxOptions: 200,
             timeoutMs: Math.max(1_000, remainingUntil(deadlineAt)),
           });
           currentInspection = this.consumeControlInspection(frame, fresh.inspection.inspectionId);
           ownedFreshInspection = true;
+          revealInteractionUsed ??= fresh.inspection.reveal.interactionUsed;
+          revealReconciliation = mergeRevealReconciliation(
+            revealReconciliation,
+            fresh.inspection.reveal.reconciliation,
+          );
           currentOption = uniqueObservedOption(currentInspection, selection.target);
         }
         const evidence = await this.selectCustomControlOption(
@@ -148,9 +183,18 @@ export const controlMultiSelectionOperations = {
         if (ownedFreshInspection) await this.disposeControlInspection(currentInspection);
       }
     }
-    return selections;
+    return { selections, revealInteraction: revealInteractionUsed, revealReconciliation };
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
+
+function mergeRevealReconciliation(
+  current: ControlRevealReconciliation | null,
+  next: ControlRevealReconciliation | null,
+): ControlRevealReconciliation | null {
+  return current === 'stabilized' || next === 'stabilized'
+    ? 'stabilized'
+    : current ?? next;
+}
 
 function requiredControl(input: BrowserCommandInput<'selectOptions'>) {
   if (input.control === null || input.options === null) throw invalidMultiSelectionTarget();

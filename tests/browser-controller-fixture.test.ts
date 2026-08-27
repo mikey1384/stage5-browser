@@ -71,7 +71,7 @@ describe("browser controller fixture lifecycle", () => {
       config,
       { url: null, timeoutMs: 5_000 },
     )).rejects.toBe(pending);
-    expect(requestLoginHandoff).toHaveBeenCalledTimes(3);
+    expect(requestLoginHandoff).toHaveBeenCalledTimes(4);
     expect(config.headless).toBe(true);
   });
 });

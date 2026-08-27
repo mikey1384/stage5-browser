@@ -1,13 +1,17 @@
-import { type ControlRevealMethod, type ControlTarget, type ElementHandle, type Frame, type Locator, type Page, type PostconditionResult, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
+import { type ControlRevealMethod, type ControlRevealReconciliation, type ControlTarget, type ElementHandle, type Frame, type Locator, type Page, type PostconditionResult, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { boundedValue, type ObservedControlPopupSurface, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import type { ClickActivationPolicy } from '../action/click-plan.js';
 import type { ControlPopupAssociation } from './popup-association.js';
 import { renderedControlPopupSurfaceCount } from './popup-surfaces.js';
-import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
+import { disposePopupSurfaces } from './popup-set.js';
+import { waitForRenderedControlPopup } from './popup-stabilization.js';
+
+const CONTROL_POPUP_EFFECT_STABILIZATION_MS = 750;
 
 export interface ControlPopupRevealEvidence {
   zeroRenderedSurfaceBaseline: boolean;
+  reconciliation: ControlRevealReconciliation | null;
 }
 
 export interface ControlPopupRevealResult {
@@ -105,6 +109,9 @@ export const controlRevealOperations = {
           controlLocator,
           Date.now() + Math.max(1, remainingTimeoutMs),
           evidence.zeroRenderedSurfaceBaseline,
+          true,
+          'unknown',
+          evidence,
         ),
         discardCapabilities: () => undefined,
       }),
@@ -198,6 +205,7 @@ export const controlRevealOperations = {
         evidence.zeroRenderedSurfaceBaseline,
         actionDispatched,
         false,
+        evidence,
       );
       phases.beginFinalization();
       phases.complete('succeeded');
@@ -225,6 +233,7 @@ export const controlRevealOperations = {
     allowPostDispatchUnique: boolean,
     actionDispatched: boolean | 'unknown' = true,
     clickDispatched: boolean | 'unknown' = 'unknown',
+    evidence: ControlPopupRevealEvidence | null = null,
   ): Promise<PostconditionResult> {
     let controlHandle: ElementHandle<HTMLElement> | null = null;
     let popupSurfaces: ObservedControlPopupSurface[] = [];
@@ -241,17 +250,31 @@ export const controlRevealOperations = {
         null,
       );
       if (controlHandle === null) return failPopupReveal('control_missing_after_reveal', null, actionDispatched, clickDispatched);
-      const associated = await this.associatedControlPopup(
-        frame,
-        controlHandle,
-        deadlineAt,
-        { allowUniqueRenderedAfterDispatch: allowPostDispatchUnique, requireRendered: true },
+      const stabilizationDeadlineAt = Date.now() + Math.max(
+        1,
+        Math.min(CONTROL_POPUP_EFFECT_STABILIZATION_MS, remainingUntil(deadlineAt)),
       );
-      if (associated.kind === 'ambiguous') return failPopupReveal('ambiguous_control_popup_after_reveal', null, actionDispatched, clickDispatched, associated);
-      if (associated.kind === 'missing') return failPopupReveal('control_popup_not_observed', false, actionDispatched, clickDispatched, associated);
+      const stabilized = await waitForRenderedControlPopup(
+        () => this.associatedControlPopup(
+          frame,
+          controlHandle!,
+          stabilizationDeadlineAt,
+          { allowUniqueRenderedAfterDispatch: allowPostDispatchUnique, requireRendered: true },
+        ),
+        stabilizationDeadlineAt,
+      );
+      const associated = stabilized.resolved;
+      if (associated === null) {
+        const failure = stabilized.firstAssociation ?? stabilized.lastAssociation;
+        if (failure?.kind === 'ambiguous') {
+          return failPopupReveal('ambiguous_control_popup_after_reveal', null, actionDispatched, clickDispatched, failure);
+        }
+        return failPopupReveal('control_popup_not_observed', false, actionDispatched, clickDispatched, failure);
+      }
+      if (evidence !== null) {
+        evidence.reconciliation = stabilized.attempts > 1 ? 'stabilized' : 'immediate';
+      }
       popupSurfaces = associated.surfaces;
-      const rendered = (await inspectPopupSurfaceSetRendering(popupSurfaces, deadlineAt))?.allRendered === true;
-      if (!rendered) return failPopupReveal('control_popup_not_observed', false, actionDispatched, clickDispatched, associated);
       return {
         passed: true,
         checks: [{ kind: 'visible', passed: true, expected: true, observed: true }],

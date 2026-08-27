@@ -28,6 +28,7 @@ export const observationTabModelOperations = {
       url: page.url(),
       title,
       readyState,
+      stateRisk: this.pageStateRiskManager.current(page),
     };
   },
 

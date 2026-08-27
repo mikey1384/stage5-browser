@@ -25,6 +25,7 @@ function context(overrides: Partial<BrowserMoveContext> = {}): BrowserMoveContex
     selectedPage: false,
     controlMode: 'agent',
     policyMode: 'normal',
+    pageStateRisk: null,
     capabilityCounts: EMPTY_COUNTS,
     ...rest,
     capabilityCounts: { ...EMPTY_COUNTS, ...capabilityCounts },
@@ -122,6 +123,26 @@ describe('browser available moves', () => {
     ]) {
       expect(result.moves.find((move) => move.moveId === moveId)?.availability).toBe('available');
     }
+  });
+
+  it('surfaces acknowledgement as an agent decision only on navigation-capable paths', () => {
+    const result = derive(context({
+      lifecycleState: 'running',
+      browserConnected: true,
+      livePageCount: 1,
+      selectedPage: true,
+      pageStateRisk: {
+        kind: 'possible_unsaved_file_selections',
+        fileCount: 2,
+        acknowledgementRequired: true,
+      },
+    }));
+    expect(result.moves.find(({ moveId }) => moveId === 'open:open_url')?.callerRequirements)
+      .toContain('same_page_navigation_requires_current_page_state_risk_acknowledgement');
+    expect(result.moves.find(({ moveId }) => moveId === 'clickByRole:click')?.callerRequirements)
+      .toContain('navigation_intent_requires_current_page_state_risk_acknowledgement');
+    expect(result.moves.find(({ moveId }) => moveId === 'fillByRole:fill_text')?.callerRequirements)
+      .not.toContain('acknowledge_current_page_state_risk');
   });
 
   it('exposes only the exact status and resume family during private handoff', () => {

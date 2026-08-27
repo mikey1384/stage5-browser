@@ -2,12 +2,12 @@ import { type ElementHandle, type Frame, type Locator, Stage5BrowserError, type 
 import { boundedValue, type ObservedControlInspection, type ObservedControlPopupSurface, remainingUntil } from '../model.js';
 import type { ControlPopupAssociation } from './popup-association.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
+import { waitForRenderedControlPopup } from './popup-stabilization.js';
 import { resolveUniqueControl } from './resolution.js';
 import { observeControlSelectionRepresentationsInAdaptiveScope, type ControlSelectionRepresentation } from './selection-representation.js';
 
 const RETAINED_CONTROL_PROBE_MS = 500;
 const SELECTION_BASELINE_OBSERVATION_MS = 2_000;
-const POPUP_REBIND_POLL_MS = 50;
 
 export interface CustomControlSelectionBaseline {
   capabilityRebound: boolean;
@@ -190,22 +190,12 @@ async function waitForRenderedReplacementPopup(
   controlHandle: ElementHandle<HTMLElement>,
   deadlineAt: number,
 ): Promise<Extract<ControlPopupAssociation, { kind: 'resolved' }>> {
-  let lastAssociation: ControlPopupAssociation | null = null;
-  for (;;) {
-    const associated = await input.associatePopup(controlHandle, deadlineAt);
-    lastAssociation = associated;
-    if (associated.kind === 'resolved') {
-      const rendering = await inspectPopupSurfaceSetRendering(associated.surfaces, deadlineAt);
-      if (rendering?.allRendered === true) return associated;
-      await disposePopupSurfaces(associated.surfaces);
-    }
-    if (remainingUntil(deadlineAt) <= 0) break;
-    await new Promise((resolve) => setTimeout(
-      resolve,
-      Math.min(POPUP_REBIND_POLL_MS, remainingUntil(deadlineAt)),
-    ));
-  }
-  throwPopupChanged(lastAssociation);
+  const stabilized = await waitForRenderedControlPopup(
+    () => input.associatePopup(controlHandle, deadlineAt),
+    deadlineAt,
+  );
+  if (stabilized.resolved !== null) return stabilized.resolved;
+  throwPopupChanged(stabilized.lastAssociation);
 }
 
 function throwPopupChanged(association: ControlPopupAssociation | null = null): never {

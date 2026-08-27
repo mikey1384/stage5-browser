@@ -49,6 +49,15 @@ describe('native browser control record', () => {
           occurredAt: '2026-08-24T12:01:01.000Z',
         },
       },
+      retainedPageStateRisk: {
+        selectedTargetId: 'opaque-target-1',
+        documentId: 'opaque-document-1',
+        stateRisk: {
+          kind: 'possible_unsaved_file_selections',
+          fileCount: 2,
+          acknowledgementRequired: true,
+        },
+      },
     };
 
     await writeNativeControlRecord(root, record);

@@ -6,6 +6,7 @@ import type { BrowserControllerContext } from '../runtime.js';
 import { completedControlRecovery, popupAssociationFailure, resolveInspectionTarget } from './inspection-target.js';
 import type { ControlPopupAssociation } from './popup-association.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering, popupSurfaceSetMultiple } from './popup-set.js';
+import type { ControlPopupRevealEvidence } from './reveal.js';
 import { resolveUniqueControl } from './resolution.js';
 import { type ControlSelectionRepresentation, observeControlSelectionRepresentationsInAdaptiveScope } from './selection-representation.js';
 
@@ -28,6 +29,7 @@ export const controlInspectionOperations = {
     let retained = false;
     let openerActionDispatched: boolean | 'unknown' = false;
     let revealInteractionUsed: ControlRevealMethod | null = null;
+    let revealReconciliation: BrowserCommandOutput<'inspectControl'>['inspection']['reveal']['reconciliation'] = null;
     let popupOpened = false;
     let competingPopupDismissed = false;
     let preparationActionDispatched: boolean | 'unknown' = false;
@@ -153,7 +155,10 @@ export const controlInspectionOperations = {
             popupOpened = rendered;
           } else {
             let revealError: unknown = null;
-            const revealEvidence = { zeroRenderedSurfaceBaseline: false };
+            const revealEvidence = {
+              zeroRenderedSurfaceBaseline: false,
+              reconciliation: null,
+            } satisfies ControlPopupRevealEvidence;
             revealInteractionUsed = input.revealInteraction === 'keyboard' ? 'keyboard' : 'pointer';
             try {
               const reveal = await this.revealControlPopup(
@@ -176,6 +181,7 @@ export const controlInspectionOperations = {
                 openerActionDispatched = 'unknown';
               }
             }
+            revealReconciliation = revealEvidence.reconciliation;
 
             if (frame.isDetached() || this.documentVersion(frame) !== documentVersion) {
               throwControlDocumentChanged(combinedDispatchEvidence(preparationActionDispatched, openerActionDispatched));
@@ -289,6 +295,7 @@ export const controlInspectionOperations = {
           reveal: {
             requested: input.revealOptions,
             interactionUsed: revealInteractionUsed,
+            reconciliation: revealReconciliation,
             openerActionDispatched,
             popupOpened,
             competingPopupDismissed,

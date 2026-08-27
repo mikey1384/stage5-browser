@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,6 +57,8 @@ describe('native Chromium worker handoff continuity', () => {
         <div role="dialog" aria-modal="true">
           <label for="draft">Draft</label>
           <textarea id="draft"></textarea>
+          <label for="attachment">Attachment</label>
+          <input id="attachment" type="file">
         </div>
       </body></html>`);
     });
@@ -111,6 +113,34 @@ describe('native Chromium worker handoff continuity', () => {
       timeoutMs: 5_000,
     });
     expect(await activeDraftValue(controller)).toBe(DISPOSABLE_DRAFT);
+    const attachmentPath = path.join(root, 'disposable-attachment.txt');
+    await writeFile(attachmentPath, 'disposable attachment');
+    const attachmentSnapshot = await controller.snapshot({
+      depth: 8,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    const attachmentRef = attachmentSnapshot.fileInputs[0]?.ref;
+    if (attachmentRef === undefined) throw new Error('Native handoff fixture omitted its file input.');
+    await expect(controller.setInputFiles({
+      snapshotId: attachmentSnapshot.snapshotId,
+      ref: attachmentRef,
+      paths: [attachmentPath],
+      frameId: null,
+      completion: null,
+      observationMs: 0,
+      previewDepth: 4,
+      timeoutMs: 5_000,
+    })).resolves.toMatchObject({
+      page: {
+        stateRisk: {
+          kind: 'possible_unsaved_file_selections',
+          fileCount: 1,
+          acknowledgementRequired: true,
+        },
+      },
+    });
     const lifecycleCursor = (
       await controller.pageEvents({ afterSequence: 0, limit: 100 })
     ).cursor;
@@ -121,6 +151,13 @@ describe('native Chromium worker handoff continuity', () => {
     const before = await readNativeControlRecord(config.profileDir, 'chromium');
     expect(before?.selectedTargetId).toEqual(expect.any(String));
     expect(before?.selectedDocumentId).toEqual(expect.any(String));
+    expect(before?.retainedPageStateRisk).toMatchObject({
+      stateRisk: {
+        kind: 'possible_unsaved_file_selections',
+        fileCount: 1,
+        acknowledgementRequired: true,
+      },
+    });
     const lease = await readProfileOwnershipLease(config.profileDir);
     if (lease === null) throw new Error('Worker handoff did not retain its ownership lease.');
     await writeProfileOwnershipLease(config.profileDir, {
@@ -133,6 +170,13 @@ describe('native Chromium worker handoff continuity', () => {
     await expect(controller.start()).resolves.toMatchObject({
       browserConnected: true,
       profileOwner: { classification: 'owned_active', ownership: 'proven' },
+      pages: [expect.objectContaining({
+        stateRisk: {
+          kind: 'possible_unsaved_file_selections',
+          fileCount: 1,
+          acknowledgementRequired: true,
+        },
+      })],
     });
     expect(await activeDraftValue(controller)).toBe(DISPOSABLE_DRAFT);
     const after = await readNativeControlRecord(config.profileDir, 'chromium');

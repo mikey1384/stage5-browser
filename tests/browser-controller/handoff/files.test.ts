@@ -223,4 +223,70 @@ describe("BrowserController snapshot-bound file input handoff", () => {
       details: { reason: "stale_or_unknown_snapshot" },
     });
   });
+
+  it("retains page risk when file-selection dispatch becomes ambiguous", async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end('<!doctype html><html><body><input id="attachment" type="file"></body></html>');
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "stage5-browser-upload-risk-"));
+    const attachmentPath = path.join(temporaryRoot, "disposable.txt");
+    await writeFile(attachmentPath, "disposable attachment");
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({
+      url: `http://127.0.0.1:${port}/form`,
+      newTab: false,
+      stabilizationMs: 0,
+      timeoutMs: 5_000,
+    });
+    const observed = await controller.snapshot({
+      depth: 4,
+      boxes: false,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+    const fileRef = observed.fileInputs[0]?.ref;
+    if (fileRef === undefined) throw new Error("Fixture did not expose its file input.");
+    const retained = [...(controller as unknown as {
+      observedSnapshots: Map<Frame, {
+        fileInputs: Map<string, { handle: ElementHandle<HTMLInputElement> }>;
+      }>;
+    }).observedSnapshots.values()][0]?.fileInputs.get(fileRef);
+    if (retained === undefined) throw new Error("Fixture did not retain its file capability.");
+    vi.spyOn(retained.handle, "setInputFiles").mockRejectedValueOnce(
+      new Error("fixture ambiguous file-selection dispatch"),
+    );
+
+    await expect(controller.setInputFiles({
+      snapshotId: observed.snapshotId,
+      ref: fileRef,
+      paths: [attachmentPath],
+      frameId: null,
+      completion: null,
+      observationMs: 0,
+      previewDepth: 4,
+      timeoutMs: 5_000,
+    })).rejects.toMatchObject<Partial<Stage5BrowserError>>({
+      code: "OPERATION_FAILED",
+      details: {
+        reason: "file_selection_failed",
+        fileSelectionDispatched: "unknown",
+        stateRisk: {
+          kind: "possible_unsaved_file_selections",
+          fileCount: 1,
+          acknowledgementRequired: true,
+        },
+      },
+    });
+    await expect(controller.status()).resolves.toMatchObject({
+      pages: [expect.objectContaining({
+        stateRisk: {
+          kind: "possible_unsaved_file_selections",
+          fileCount: 1,
+          acknowledgementRequired: true,
+        },
+      })],
+    });
+  });
 });

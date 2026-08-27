@@ -1,4 +1,4 @@
-import type { BrowserTabSummary, PageSummary } from './browser-state.js';
+import type { BrowserTabSummary, PageStateRisk, PageSummary } from './browser-state.js';
 import type { NavigationWarning, UrlExpectation } from './controls.js';
 import type { BrowserDialogActionResult, BrowserDialogExpectation } from './dialogs.js';
 
@@ -9,12 +9,14 @@ export interface NavigateHistoryInput {
   action: BrowserHistoryAction;
   expectedUrl: UrlExpectation | null;
   stabilizationMs: number;
+  acknowledgeStateRisk?: boolean;
   timeoutMs: number;
   dialogResponse?: BrowserDialogExpectation | null;
 }
 
 export interface NavigateHistoryOutput {
   page: PageSummary;
+  stateRisk: PageStateRisk | null;
   action: BrowserHistoryAction;
   actionDispatched: boolean | 'unknown';
   beforeUrl: string;
@@ -33,4 +35,5 @@ export interface CloseTabOutput {
   actionDispatched: true;
   pages: BrowserTabSummary[];
   selectedTabId: string | null;
+  stateRisk: PageStateRisk | null;
 }

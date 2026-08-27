@@ -1,4 +1,4 @@
-import type { ClickPostcondition, Frame, Locator, Page, PostconditionResult, SanitizedActionDiagnostic, SanitizedNativeWindowActivationEvidence } from '../dependencies.js';
+import type { BrowserActionIntent, ClickPostcondition, Frame, Locator, Page, PostconditionResult, SanitizedActionDiagnostic, SanitizedNativeWindowActivationEvidence } from '../dependencies.js';
 import type { PreparedObservedClickTarget } from '../model.js';
 import type { NoDispatchRecoveryReason } from './types.js';
 
@@ -30,6 +30,8 @@ export interface ClickActionPlan {
 export interface ClickActionDefinition<Observation> {
   action: ClickActionPlan['action'];
   timeoutMs: number;
+  intent?: BrowserActionIntent;
+  acknowledgeStateRisk?: boolean;
   observe(): Promise<Observation>;
   plan(observation: Observation): ClickActionPlan | Promise<ClickActionPlan>;
   preflight(plan: ClickActionPlan): void | Promise<void>;

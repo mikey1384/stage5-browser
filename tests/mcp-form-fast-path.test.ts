@@ -278,4 +278,137 @@ describe('MCP form fast paths and telemetry', () => {
       }],
     });
   });
+
+  it('lets direct multi-selection choose keyboard reveal before a pointer-sensitive opener', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><body>
+        <button id="roles" type="button" aria-haspopup="listbox" aria-expanded="false">Ownership roles</button>
+        <div id="role-options" role="listbox" aria-multiselectable="true" hidden>
+          <button id="primary-role" type="button" role="option" aria-selected="false">Primary role</button>
+          <button id="secondary-role" type="button" role="option" aria-selected="false">Secondary role</button>
+        </div>
+        <output id="counts">pointerdowns:0 keydowns:0 option-clicks:0</output>
+        <script>
+          const state = { pointerdowns: 0, keydowns: 0, optionClicks: 0 };
+          const render = () => {
+            counts.value = 'pointerdowns:' + state.pointerdowns +
+              ' keydowns:' + state.keydowns + ' option-clicks:' + state.optionClicks;
+          };
+          const wireOpener = (control) => {
+            control.addEventListener('pointerdown', () => {
+              state.pointerdowns += 1;
+              const replacement = control.cloneNode(true);
+              control.replaceWith(replacement);
+              wireOpener(replacement);
+              render();
+            });
+            control.addEventListener('keydown', (event) => {
+              if (event.key !== 'Enter') return;
+              event.preventDefault();
+              state.keydowns += 1;
+              const replacement = control.cloneNode(true);
+              replacement.setAttribute('aria-controls', 'role-options');
+              replacement.setAttribute('aria-expanded', 'true');
+              control.replaceWith(replacement);
+              wireOpener(replacement);
+              roleOptions.hidden = false;
+              replacement.focus();
+              render();
+            });
+          };
+          const roleOptions = document.querySelector('#role-options');
+          wireOpener(document.querySelector('#roles'));
+          for (const option of roleOptions.querySelectorAll('[role="option"]')) {
+            option.addEventListener('click', () => {
+              state.optionClicks += 1;
+              option.setAttribute('aria-selected', 'true');
+              if (state.optionClicks === 1) {
+                roleOptions.hidden = true;
+                document.querySelector('#roles').setAttribute('aria-expanded', 'false');
+              }
+              render();
+            });
+          }
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-mcp-multi-reveal-'));
+    const projectRoot = path.resolve('.');
+    client = new Client({ name: 'mcp-multi-reveal-test', version: STAGE5_BROWSER_VERSION });
+    await client.connect(new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(projectRoot, 'dist', 'launcher.js')],
+      cwd: projectRoot,
+      stderr: 'pipe',
+      env: {
+        ...getDefaultEnvironment(),
+        PLAYWRIGHT_BROWSERS_PATH: path.join(projectRoot, '.playwright-browsers'),
+        STAGE5_BROWSER_PROFILES_DIR: path.join(temporaryRoot, 'profiles'),
+        STAGE5_BROWSER_PROFILE_DIR: path.join(temporaryRoot, 'profile'),
+        STAGE5_BROWSER_ARTIFACTS_DIR: path.join(temporaryRoot, 'artifacts'),
+        STAGE5_LOUNGE_DIR: path.join(temporaryRoot, 'lounge'),
+        STAGE5_BROWSER_HEADLESS: '1',
+        STAGE5_BROWSER_OPERATION_TIMEOUT_MS: '10000',
+        STAGE5_BROWSER_NAVIGATION_TIMEOUT_MS: '10000',
+      },
+    }));
+    await client.callTool({
+      name: 'lounge_join',
+      arguments: {
+        agentId: 'mcp-multi-reveal-test',
+        displayName: 'MCP Multi Reveal Test',
+        provider: 'test',
+        room: 'stage5-lounge',
+      },
+    });
+    await client.callTool({ name: 'browser_start', arguments: { browser: 'chromium' } });
+    await client.callTool({
+      name: 'browser_open',
+      arguments: { url: `http://127.0.0.1:${port}/form`, newTab: false, stabilizationMs: 0, timeoutMs: 10_000 },
+    });
+
+    const selected = await client.callTool({
+      name: 'browser_select_options',
+      arguments: {
+        control: { role: 'button', name: 'Ownership roles', exact: true },
+        options: [
+          { name: 'Primary role', exact: true },
+          { name: 'Secondary role', exact: true },
+        ],
+        revealInteraction: 'keyboard',
+        frameId: null,
+        timeoutMs: 10_000,
+      },
+    });
+    expect(selected.isError).not.toBe(true);
+    expect(selected.structuredContent).toMatchObject({
+      result: {
+        selectionSucceeded: true,
+        popupOpen: true,
+        nextAction: 'select_more_or_dismiss_popup',
+        selectedNames: ['Primary role', 'Secondary role'],
+      },
+    });
+    const operationId = structured(selected).operationId;
+    if (typeof operationId !== 'string') throw new Error('Multi-selection omitted its operationId.');
+    const telemetry = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: { operationId, limit: 5, detail: 'full' },
+    });
+    expect(telemetry.structuredContent).toMatchObject({
+      traces: [{
+        command: 'selectOptions',
+        conclusion: {
+          controlRevealInteraction: 'keyboard',
+          controlRevealReconciliation: 'immediate',
+          selectionInteraction: 'observed_option',
+          selectionEffectObserved: true,
+        },
+      }],
+    });
+    const status = await client.callTool({ name: 'browser_snapshot', arguments: { frameId: null } });
+    expect(JSON.stringify(status.structuredContent)).toContain('pointerdowns:0 keydowns:2 option-clicks:2');
+  });
 });

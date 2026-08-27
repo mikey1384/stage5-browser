@@ -7,6 +7,7 @@ export const observationTabCloseOperations = {
     const phases = this.actionPhases.begin('close_tab', input.timeoutMs);
     let page: Page | null = null;
     let wasSelected = false;
+    let stateRisk: BrowserCommandOutput<'closeTab'>['stateRisk'] = null;
     try {
       phases.enter('observe');
       page = this.observedTab(input.tabId, context);
@@ -19,6 +20,12 @@ export const observationTabCloseOperations = {
           details: { reason: 'tab_closed_before_dispatch', actionDispatched: false },
         });
       }
+      stateRisk = this.pageStateRiskManager.preflightNavigation(
+        page,
+        input.acknowledgeStateRisk ?? false,
+        'tab_close',
+      );
+      await this.persistNativePageStateRisk(page);
       phases.enter('prepare');
       phases.beginDispatch();
       await page.close({ runBeforeUnload: false });
@@ -46,6 +53,7 @@ export const observationTabCloseOperations = {
         actionDispatched: true as const,
         pages,
         selectedTabId: selected === undefined ? null : this.tabId(selected),
+        stateRisk,
       };
       phases.complete('succeeded');
       return result;

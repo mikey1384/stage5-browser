@@ -56,6 +56,11 @@ export const lifecycleContextOperations = {
     page.on('download', (download) => this.downloadManager.capture(download));
     page.on('dialog', (dialog) => this.dialogManager.handle(dialog));
     page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) {
+        const hadStateRisk = this.pageStateRiskManager.current(page) !== null;
+        this.pageStateRiskManager.clear(page);
+        if (hadStateRisk) void this.persistNativePageStateRisk(page);
+      }
       this.frameDocumentVersions.set(frame, this.documentVersion(frame) + 1);
       this.discardObservedSnapshot(frame);
       this.discardControlInspectionsForFrame(frame);
@@ -68,6 +73,7 @@ export const lifecycleContextOperations = {
       this.removePageFrames(page);
     });
     page.on('close', () => {
+      this.pageStateRiskManager.clear(page);
       this.recoverActivePageAfterLoss(page);
       this.discardObservedTab(page);
       this.removePageFrames(page);

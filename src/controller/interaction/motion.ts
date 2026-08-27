@@ -44,6 +44,7 @@ export const interactionMotionOperations = {
     let dispatch: BrowserMotionDispatchEvidence | null = null;
     let pagesBeforeDispatch: ReadonlySet<Page> = new Set();
     let downloadCursorBeforeDispatch = 0;
+    let stateRisk: BrowserCommandOutput<'motion'>['stateRisk'] = null;
     this.pageDiagnostics.beginAction(page, startedAt);
     try {
       phases.enter('observe');
@@ -81,6 +82,12 @@ export const interactionMotionOperations = {
         });
       }
       phases.enter('preflight');
+      stateRisk = this.pageStateRiskManager.preflightAction(
+        page,
+        input.intent,
+        input.acknowledgeStateRisk ?? false,
+      );
+      await this.persistNativePageStateRisk(page);
       const activation = await this.primeSelectedPageForTargetPreparation(
         page,
         actionDeadlineAt,
@@ -225,6 +232,7 @@ export const interactionMotionOperations = {
       });
       const result = {
         page: await this.pageSummary(page, undefined, remainingUntil(deadlineAt)),
+        stateRisk,
         frame: this.frameSummary(frame, page),
         motion: input.motion.kind,
         dispatch,

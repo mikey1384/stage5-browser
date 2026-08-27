@@ -203,6 +203,7 @@ export function registerBrowserReadTools(server: McpServer, context: McpHostCont
         operationId: operationIdSchema.optional(),
         url: z.string().min(1),
         newTab: z.boolean().default(false),
+        acknowledgeStateRisk: z.boolean().default(false),
         stabilizationMs: z.number().int().min(0).max(5_000).default(750),
         timeoutMs: z.number().int().min(1_000).max(60_000).default(config.navigationTimeoutMs),
         dialogResponse: dialogResponseSchema.nullable().default(null),

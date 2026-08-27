@@ -9,6 +9,13 @@ export interface PageSummary {
   url: string;
   title: string;
   readyState: string;
+  stateRisk: PageStateRisk | null;
+}
+
+export interface PageStateRisk {
+  kind: 'possible_unsaved_file_selections';
+  fileCount: number;
+  acknowledgementRequired: boolean;
 }
 
 export interface BrowserTabSummary extends PageSummary {
