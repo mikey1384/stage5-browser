@@ -95,11 +95,11 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 | `browser_dialog_status` | Read sanitized expected/unexpected JavaScript-dialog history without retaining dialog text or prompt values |
 | `browser_fill_by_role` | Fill one unique role/name target in the main document or an observed frame |
 | `browser_fill_ref` | Fill one fresh snapshot-bound textbox/contenteditable, including unnamed active editors, with privacy-safe input/value-match evidence |
-| `browser_form_summary` | Inspect a bounded redacted form schema, required/valid state, and value presence without exposing values |
-| `browser_apply_form_plan` | Apply a staged sequence of exact authorized field operations, stopping at the first unconfirmed effect without replay |
+| `browser_form_summary` | Inspect a bounded redacted form schema, required/valid state, value presence, and native-select option/selection labels without exposing free-form values |
+| `browser_apply_form_plan` | Apply exact authorized field steps and uniquely rebind only untouched fields inside the retained form after same-document framework replacement, stopping at the first unconfirmed effect without replay |
 | `browser_set_checked` | Reconcile one exact checkbox/switch/radio to its requested state without blindly toggling |
 | `browser_inspect_control` | Inspect one exact select/autocomplete/custom control and its bounded options; an agent may explicitly resolve a current semantic owner tie, including a surviving composite owner when the requested node disappeared, only inside Stage5's structural gate |
-| `browser_select_option` | Set one exact native or custom option selected or unselected and prove the requested state |
+| `browser_select_option` | Set one exact native/custom option, or atomically type and Enter an exact active option in an editable search control, then prove the requested label and popup state |
 | `browser_select_options` | Select several exact multi-select options, refreshing capabilities between physical inputs and preserving completed evidence |
 | `browser_navigate_history` | Perform bounded back, forward, or reload navigation with document-capability invalidation |
 | `browser_scroll` | Scroll the document or an observed nested container vertically or horizontally, optionally wait for article growth/loading completion, and distinguish confirmed ends from stalled feeds |
@@ -191,6 +191,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-native-same-process-handoff.md` — exact native-CDP handoff without process exit, form loss, or private-state replay in 0.19.6
 - `docs/dogfooding-2026-08-27-native-target-settle.md` — bounded exact native-target discovery settling plus privacy-safe fresh-host telemetry in 0.19.7
 - `docs/dogfooding-2026-08-27-hand-contract-and-fast-reconciliation.md` — upstream-authorized exact input, replacement-aware bounded selection proof, and compact pull-based observations in 0.20.0
+- `docs/dogfooding-2026-08-27-form-fast-paths.md` — atomic searchable selection, untouched-field React rebinding, compact action success, and categorical telemetry in 0.21.0
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15

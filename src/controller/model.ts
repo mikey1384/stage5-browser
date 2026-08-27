@@ -103,6 +103,7 @@ export interface ObservedFormField {
   observation: FormFieldObservation;
   locator: Locator;
   handle: ElementHandle<HTMLElement>;
+  ownerFormHandle: ElementHandle<HTMLElement> | null;
 }
 
 export interface ObservedFormInspection {

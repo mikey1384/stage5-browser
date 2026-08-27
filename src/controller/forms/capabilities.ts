@@ -55,7 +55,10 @@ export const formCapabilityOperations = {
   },
 
   async disposeFormInspection(inspection: ObservedFormInspection): Promise<void> {
-    await Promise.allSettled([...inspection.fields.values()].map(({ handle }) => handle.dispose()));
+    await Promise.allSettled([...inspection.fields.values()].flatMap(({ handle, ownerFormHandle }) => [
+      handle.dispose(),
+      ...(ownerFormHandle === null ? [] : [ownerFormHandle.dispose()]),
+    ]));
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
 

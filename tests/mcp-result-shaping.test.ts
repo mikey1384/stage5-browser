@@ -3,10 +3,66 @@ import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 
 import { errorResult, textResult } from '../src/mcp/context.js';
+import { compactSuccessfulActionResult } from '../src/mcp/action-result.js';
 import { MAX_MCP_RESULT_BYTES } from '../src/mcp/result-shaping.js';
 import { SupervisedOperationError } from '../src/supervisor/model.js';
 
 describe('bounded MCP result shaping', () => {
+  it('returns only decision-critical selection state on success while retaining the operation identity', () => {
+    const full = {
+      operationId: 'operation-compact-selection',
+      result: {
+        outcome: 'succeeded',
+        selectionSucceeded: true,
+        interactionUsed: 'searchable_keyboard',
+        actionDispatched: true,
+        selectedName: 'United States',
+        selected: true,
+        currentState: { requestedSelected: true, popupOpen: false, multiple: false },
+        nextAction: 'continue',
+        viableNextMoves: ['continue'],
+        page: { index: 0, url: 'https://example.test/form', title: 'Application', readyState: 'complete' },
+        frame: { id: 'frame-1', parentId: null, name: '', url: 'https://example.test/form', isMainFrame: true },
+        evidence: {
+          actionDispatched: true,
+          inputEventObserved: true,
+          changeEventObserved: false,
+          selectionEffectObserved: true,
+          selectedRepresentationObserved: true,
+          selectedState: null,
+          popupClosed: true,
+          reconciliation: { targetResolution: 'retained_exact', attempts: 1, durationMs: 31, terminalProof: 'representation_change' },
+          searchableCommit: {
+            queryActionDispatched: true,
+            activeOptionProof: 'aria_activedescendant',
+            commitActionDispatched: true,
+            selectionProof: 'value_and_popup_closed',
+          },
+        },
+      },
+      recovery: 'not_needed',
+      runtimeTransition: null,
+    };
+
+    const compact = compactSuccessfulActionResult(full, 'selectOption');
+
+    expect(compact).toEqual({
+      operationId: 'operation-compact-selection',
+      result: {
+        selectionSucceeded: true,
+        interactionUsed: 'searchable_keyboard',
+        actionDispatched: true,
+        selectedName: 'United States',
+        selected: true,
+        popupOpen: false,
+        multiple: false,
+        nextAction: 'continue',
+      },
+    });
+    expect(Buffer.byteLength(JSON.stringify(compact), 'utf8'))
+      .toBeLessThan(Buffer.byteLength(JSON.stringify(full), 'utf8') * 0.25);
+  });
+
   it('puts a concise action outcome and current state before implementation evidence', () => {
     const result = textResult({
       result: {

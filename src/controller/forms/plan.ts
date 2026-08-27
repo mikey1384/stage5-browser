@@ -1,10 +1,28 @@
-import { type BrowserCommandInput, type BrowserCommandOutput, type FormPlanStepResult, Stage5BrowserError } from '../dependencies.js';
+import { type BrowserCommandInput, type BrowserCommandOutput, type FormFieldRebindingSummary, type FormPlanStepResult, Stage5BrowserError } from '../dependencies.js';
 import { remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 
 function aggregateDispatch(results: FormPlanStepResult[]): boolean | 'unknown' {
   if (results.some(({ actionDispatched }) => actionDispatched === 'unknown')) return 'unknown';
   return results.some(({ actionDispatched }) => actionDispatched === true);
+}
+
+function aggregateDispatchWith(
+  results: FormPlanStepResult[],
+  current: boolean | 'unknown',
+): boolean | 'unknown' {
+  if (current === 'unknown' || results.some(({ actionDispatched }) => actionDispatched === 'unknown')) return 'unknown';
+  return current || results.some(({ actionDispatched }) => actionDispatched === true);
+}
+
+function rebindingSummary(
+  results: FormPlanStepResult[],
+  currentRebound = false,
+  failed = false,
+): FormFieldRebindingSummary {
+  const reboundSteps = results.filter(({ fieldResolution }) =>
+    fieldResolution.resolution === 'rebound_exact').length + (currentRebound ? 1 : 0);
+  return { attempted: reboundSteps > 0 || failed, reboundSteps, failed };
 }
 
 export const formPlanOperations = {
@@ -50,9 +68,17 @@ export const formPlanOperations = {
 
       for (const [index, step] of input.steps.entries()) {
         workflow.beginStep(index);
-        const field = inspection.fields.get(step.fieldId);
-        if (field === undefined) throw new Error('The preflighted form field disappeared from the retained plan.');
+        const originalField = inspection.fields.get(step.fieldId);
+        if (originalField === undefined) throw new Error('The preflighted form field disappeared from the retained plan.');
+        let resolved: Awaited<ReturnType<BrowserControllerContext['resolveCurrentFormField']>> | null = null;
         try {
+          resolved = await this.resolveCurrentFormField(
+            frame,
+            inspection,
+            originalField,
+            Date.now() + Math.max(1, workflow.remainingMs()),
+          );
+          const field = resolved.field;
           const evidence = step.kind === 'fill'
             ? await this.fillObservedFormField(page, field, step.value, Math.max(1, workflow.remainingMs()))
             : step.kind === 'select'
@@ -62,6 +88,7 @@ export const formPlanOperations = {
             index,
             fieldId: step.fieldId,
             kind: step.kind,
+            fieldResolution: resolved.fieldResolution,
             ...evidence,
           };
           completedSteps.push(result);
@@ -80,6 +107,11 @@ export const formPlanOperations = {
           }
         } catch (error) {
           const raw = error instanceof Stage5BrowserError ? error.details?.actionDispatched : null;
+          const actionDispatched = raw === true || raw === false || raw === 'unknown' ? raw : false;
+          const failedRebind = error instanceof Stage5BrowserError &&
+            typeof error.details?.reason === 'string' &&
+            error.details.reason.startsWith('form_field_rebind_');
+          const currentRebound = resolved?.fieldResolution.resolution === 'rebound_exact';
           throw new Stage5BrowserError(
             error instanceof Stage5BrowserError ? error.code : 'OPERATION_FAILED',
             error instanceof Error ? error.message : 'The staged form plan did not complete.',
@@ -89,17 +121,9 @@ export const formPlanOperations = {
                 ...(error instanceof Stage5BrowserError ? error.details : {}),
                 failedStep: index,
                 completedSteps,
-                actionDispatched: raw === true || raw === false || raw === 'unknown'
-                  ? (completedSteps.length === 0 ? raw : aggregateDispatch([...completedSteps, {
-                    index,
-                    fieldId: step.fieldId,
-                    kind: step.kind,
-                    actionDispatched: raw,
-                    alreadySatisfied: false,
-                    before: field.observation,
-                    after: field.observation,
-                  }]))
-                  : aggregateDispatch(completedSteps),
+                actionDispatched: aggregateDispatchWith(completedSteps, actionDispatched),
+                fieldRebinding: rebindingSummary(completedSteps, currentRebound, failedRebind),
+                ...(resolved === null ? {} : { fieldResolution: resolved.fieldResolution }),
                 suggestedAction: raw === false && completedSteps.length === 0
                   ? 'Take one fresh form summary before a corrected plan; no staged input was dispatched.'
                   : 'Inspect authoritative form state. Do not replay completed or possibly dispatched plan steps.',
@@ -107,6 +131,8 @@ export const formPlanOperations = {
               cause: error,
             },
           );
+        } finally {
+          await resolved?.dispose();
         }
       }
       workflow.finish('succeeded');
@@ -116,6 +142,7 @@ export const formPlanOperations = {
         formId: input.formId,
         completedSteps,
         actionDispatched: aggregateDispatch(completedSteps),
+        fieldRebinding: rebindingSummary(completedSteps),
         requiresFreshSummary: true,
       };
     } catch (error) {

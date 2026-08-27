@@ -87,7 +87,7 @@ export interface PostconditionResult {
 }
 
 export type ControlKind = 'custom_popup' | 'native_select';
-export type ControlPopupAssociationProof = 'explicit' | 'structural' | 'focused' | 'expanded' | 'spatial' | 'agent_declared' | 'post_dispatch_unique';
+export type ControlPopupAssociationProof = 'active_descendant' | 'explicit' | 'structural' | 'focused' | 'expanded' | 'spatial' | 'agent_declared' | 'post_dispatch_unique';
 export type ControlPopupSurfaceProof = 'semantic_role' | 'positioned_option_group';
 export interface ControlPopupOwnershipEvidence {
   proofTier: 'expanded' | 'focused' | 'spatial' | 'structural' | 'none';
@@ -177,6 +177,18 @@ export interface ControlSelectionEvidence {
   selectedState: boolean | null;
   popupClosed: boolean | null;
   reconciliation: ControlSelectionReconciliationEvidence;
+  searchableCommit?: SearchableSelectionEvidence;
+}
+
+export type ControlSelectionInteraction = 'auto' | 'observed_option' | 'type_and_enter';
+export type ControlSelectionMethod = 'observed_option' | 'searchable_keyboard';
+export type SearchableActiveOptionProof = 'aria_activedescendant' | 'focused_linked_option';
+
+export interface SearchableSelectionEvidence {
+  queryActionDispatched: boolean | 'unknown';
+  activeOptionProof: SearchableActiveOptionProof | null;
+  commitActionDispatched: boolean | 'unknown';
+  selectionProof: 'selected_state' | 'value_and_popup_closed';
 }
 
 export interface ControlSelectionReconciliationEvidence {
@@ -189,6 +201,7 @@ export interface ControlSelectionReconciliationEvidence {
 export interface ControlSelectionSummary {
   outcome: 'succeeded';
   selectionSucceeded: true;
+  interactionUsed: ControlSelectionMethod;
   actionDispatched: boolean | 'unknown';
   currentState: {
     requestedSelected: boolean;

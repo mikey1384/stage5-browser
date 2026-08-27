@@ -5,6 +5,7 @@ import { BrowserSupervisor, SupervisedOperationError } from '../supervisor.js';
 import { buildStampUrlFor, MCP_TOOL_COUNT, RuntimeArtifactMonitor, TOOL_CATALOG_VERSION } from '../runtime-info.js';
 import { createMcpSchemas, type McpSchemas } from './schemas.js';
 import { shapeMcpResult } from './result-shaping.js';
+import { compactSuccessfulActionResult, type CompactActionCommand } from './action-result.js';
 
 export interface McpHostContext {
   config: Stage5BrowserConfig;
@@ -73,6 +74,7 @@ export async function safelySupervised<T>(
   context: McpHostContext,
   operation: () => Promise<T>,
   requireCurrentContract = false,
+  transform?: (value: T) => unknown,
 ) {
   try {
     if (requireCurrentContract) context.runtimeMonitor.assertCurrent();
@@ -83,7 +85,7 @@ export async function safelySupervised<T>(
     if (typeof operationId === 'string') {
       await context.supervisor.markOperationResponseCreated(operationId);
     }
-    return textResult(value);
+    return textResult(transform === undefined ? value : transform(value));
   } catch (error) {
     if (error instanceof SupervisedOperationError) {
       await context.supervisor.markOperationResponseCreated(error.operationId);
@@ -94,4 +96,17 @@ export async function safelySupervised<T>(
 
 export async function safelyCurrent<T>(context: McpHostContext, operation: () => Promise<T>) {
   return safelySupervised(context, operation, true);
+}
+
+export async function safelyCurrentAction<T>(
+  context: McpHostContext,
+  command: CompactActionCommand,
+  operation: () => Promise<T>,
+) {
+  return safelySupervised(
+    context,
+    operation,
+    true,
+    (value) => compactSuccessfulActionResult(value, command),
+  );
 }

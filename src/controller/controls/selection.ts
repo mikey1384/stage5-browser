@@ -43,6 +43,8 @@ export const controlSelectionOperations = {
           details: { reason: 'invalid_selection_target', actionDispatched: false },
         });
       }
+      const searchable = await this.selectSearchableOptionIfEligible(input, page, frame, deadlineAt);
+      if (searchable !== null) return searchable;
       const observed = await this.inspectControl({
         control: input.control,
         frameId: input.frameId,

@@ -1,9 +1,10 @@
-import type { ControlSelectionEvidence, ControlSelectionSummary } from '../dependencies.js';
+import type { ControlSelectionEvidence, ControlSelectionMethod, ControlSelectionSummary } from '../dependencies.js';
 
 export function completedSelectionSummary(
   evidence: readonly ControlSelectionEvidence[],
   multiple: boolean,
   requestedSelected: boolean,
+  interactionUsed: ControlSelectionMethod = 'observed_option',
 ): ControlSelectionSummary {
   const actionDispatched = evidence.some((item) => item.actionDispatched === 'unknown')
     ? 'unknown'
@@ -23,6 +24,7 @@ export function completedSelectionSummary(
   return {
     outcome: 'succeeded',
     selectionSucceeded: true,
+    interactionUsed,
     actionDispatched,
     currentState: { requestedSelected, popupOpen, multiple },
     nextAction: popupOpen ? (multiple ? 'select_more_or_dismiss_popup' : 'dismiss_popup') : 'continue',

@@ -43,6 +43,7 @@ import { controlOptionOperations, type ControlOptionOperations } from './control
 import { controlPopupAssociationOperations, type ControlPopupAssociationOperations } from './controls/popup-association.js';
 import { controlInspectionOperations, type ControlInspectionOperations } from './controls/inspection.js';
 import { controlSelectionOperations, type ControlSelectionOperations } from './controls/selection.js';
+import { searchableSelectionOperations, type SearchableSelectionOperations } from './controls/searchable-selection.js';
 import { observationTabActivationOperations, type ObservationTabActivationOperations } from './observation/tab-activation.js';
 import { interactionMotionTargetOperations, type InteractionMotionTargetOperations } from './interaction/motion-target.js';
 import { interactionMotionProbeOperations, type InteractionMotionProbeOperations } from './interaction/motion-probe.js';
@@ -55,6 +56,7 @@ import { formFieldFillOperations, type FormFieldFillOperations } from './forms/f
 import { formFieldSelectOperations, type FormFieldSelectOperations } from './forms/field-select.js';
 import { formFieldCheckOperations, type FormFieldCheckOperations } from './forms/field-check.js';
 import { formPlanOperations, type FormPlanOperations } from './forms/plan.js';
+import { formFieldRebindOperations, type FormFieldRebindOperations } from './forms/rebind.js';
 import { FormWorkflowManager } from './forms/workflow-manager.js';
 import { privateFieldHandoffOperations, type PrivateFieldHandoffOperations } from './handoff/private-field.js';
 import { BrowserActionPolicyManager } from './policy/manager.js';
@@ -111,6 +113,7 @@ export interface BrowserControllerContext extends
   ControlPopupAssociationOperations,
   ControlInspectionOperations,
   ControlSelectionOperations,
+  SearchableSelectionOperations,
   ControlMultiSelectionOperations,
   ObservationTabActivationOperations,
   InteractionMotionTargetOperations,
@@ -123,6 +126,7 @@ export interface BrowserControllerContext extends
   FormFieldFillOperations,
   FormFieldSelectOperations,
   FormFieldCheckOperations,
+  FormFieldRebindOperations,
   FormPlanOperations,
   PrivateFieldHandoffOperations,
   ActionPolicyOperations,
@@ -250,6 +254,7 @@ export interface BrowserController extends
   ControlOptionOperations,
   ControlInspectionOperations,
   ControlSelectionOperations,
+  SearchableSelectionOperations,
   ControlMultiSelectionOperations,
   ObservationTabActivationOperations,
   InteractionMotionTargetOperations,
@@ -262,6 +267,7 @@ export interface BrowserController extends
   FormFieldFillOperations,
   FormFieldSelectOperations,
   FormFieldCheckOperations,
+  FormFieldRebindOperations,
   FormPlanOperations,
   PrivateFieldHandoffOperations,
   ActionPolicyOperations,
@@ -415,6 +421,7 @@ for (const operations of [
   controlPopupAssociationOperations,
   controlInspectionOperations,
   controlSelectionOperations,
+  searchableSelectionOperations,
   controlMultiSelectionOperations,
   observationTabActivationOperations,
   interactionMotionTargetOperations,
@@ -427,6 +434,7 @@ for (const operations of [
   formFieldFillOperations,
   formFieldSelectOperations,
   formFieldCheckOperations,
+  formFieldRebindOperations,
   formPlanOperations,
   privateFieldHandoffOperations,
   actionPolicyOperations,

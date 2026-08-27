@@ -23,12 +23,24 @@ import {
   profileOwnershipConclusion,
 } from './execution-telemetry/lifecycle-conclusions.js';
 import { normalizeTrace, privacyContract, summarizeTrace, type ExecutionTraceFilters } from './execution-telemetry/query.js';
+import {
+  formFieldRebindingConclusion,
+  searchableSelectionConclusion,
+  selectionInteractionConclusion,
+} from './execution-telemetry/interaction-conclusions.js';
+import {
+  boundedNullableInteger,
+  isRecord,
+  nullableBoolean,
+  valuesForKey,
+} from './execution-telemetry/value-readers.js';
 
 const MAX_TELEMETRY_BYTES = 4 * 1_024 * 1_024;
 const RETAINED_TELEMETRY_BYTES = 2 * 1_024 * 1_024;
 const SAFE_REASON = /^[a-z][a-z0-9_]{0,99}$/u;
 const CHECK_KINDS = new Set<PostconditionCheck['kind']>(['download', 'new_page_url', 'popup_closed', 'selected', 'selection_representation', 'url', 'visible']);
 const POPUP_ASSOCIATION_PROOFS = new Set<ExecutionTraceConclusion['popupAssociationProof']>([
+  'active_descendant',
   'explicit',
   'structural',
   'focused',
@@ -263,6 +275,9 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     popupOwnership: popupOwnershipConclusion(combined),
     controlRecovery: controlRecoveryConclusion(combined),
     selectionReconciliation: selectionReconciliationConclusion(combined),
+    selectionInteraction: selectionInteractionConclusion(combined),
+    searchableSelection: searchableSelectionConclusion(combined),
+    formFieldRebinding: formFieldRebindingConclusion(combined),
     profileOwnership: profileOwnershipConclusion(result, error),
     handoffRelease: handoffReleaseConclusion(result, error),
     nativeReattach: nativeReattachConclusion(result, error),
@@ -439,15 +454,6 @@ function controlRecoveryConclusion(value: unknown): ExecutionTraceConclusion['co
   return unique.size === 1 ? [...unique.values()][0]! : null;
 }
 
-function boundedNullableInteger(value: unknown, maximum: number): number | null | undefined {
-  if (value === null) return null;
-  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum ? Number(value) : undefined;
-}
-
-function nullableBoolean(value: unknown): boolean | null | undefined {
-  return value === null || typeof value === 'boolean' ? value : undefined;
-}
-
 function targetStateConclusion(value: unknown): ExecutionTraceConclusion['targetState'] {
   const states = valuesForKey(value, 'targetState').filter(isRecord);
   if (states.length === 0) return null;
@@ -467,21 +473,6 @@ function targetStateConclusion(value: unknown): ExecutionTraceConclusion['target
   };
 }
 
-function valuesForKey(value: unknown, key: string, depth = 0, ancestors = new WeakSet<object>()): unknown[] {
-  if (depth > 8 || value === null || typeof value !== 'object' || ancestors.has(value)) return [];
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) return value.flatMap((candidate) => valuesForKey(candidate, key, depth + 1, ancestors));
-    const record = value as Record<string, unknown>;
-    return [
-      ...(record[key] === undefined ? [] : [record[key]]),
-      ...Object.values(record).flatMap((candidate) => valuesForKey(candidate, key, depth + 1, ancestors)),
-    ];
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
 function phaseDuration(startedAtMs: number, nextAtMs: number | undefined, completedAtMs: number | null): number | null {
   const endedAtMs = nextAtMs ?? completedAtMs;
   return endedAtMs === null || endedAtMs === undefined ? null : Math.max(0, endedAtMs - startedAtMs);
@@ -489,8 +480,4 @@ function phaseDuration(startedAtMs: number, nextAtMs: number | undefined, comple
 
 function safeReason(value: unknown): string | null {
   return typeof value === 'string' && SAFE_REASON.test(value) ? value : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

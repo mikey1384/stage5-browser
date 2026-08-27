@@ -146,6 +146,7 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     control: controlTargetSchema.nullable().default(null),
     option: controlOptionTargetSchema.nullable().default(null),
     selected: z.boolean().default(true),
+    interaction: z.enum(['auto', 'observed_option', 'type_and_enter']).default('auto'),
     frameId: frameIdSchema,
     timeoutMs: z.number().int().min(1_000).max(60_000).default(config.operationTimeoutMs),
     intent: actionIntentSchema,
@@ -154,6 +155,10 @@ export function createMcpSchemas(config: Stage5BrowserConfig) {
     (value) => (value.inspectionId !== null && value.optionId !== null && value.control === null && value.option === null) ||
       (value.inspectionId === null && value.optionId === null && value.control !== null && value.option !== null),
     { message: 'Supply either inspectionId plus optionId, or one exact control plus option target.' },
+  ).refine(
+    (value) => value.interaction !== 'type_and_enter' ||
+      (value.inspectionId === null && value.control !== null && value.option !== null),
+    { message: 'type_and_enter requires one direct control plus option target.' },
   );
   const selectOptionsInputSchema = z.object({
     operationId: operationIdSchema.optional(),

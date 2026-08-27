@@ -151,10 +151,11 @@ export const formFieldCheckOperations = {
           readOnly: false,
           multiple: false,
           optionNames: [],
+          selectedOptionNames: [],
           optionsComplete: true,
           ...await this.observeFormFieldState(temporaryHandle),
         };
-        field = { observation, locator, handle: temporaryHandle };
+        field = { observation, locator, handle: temporaryHandle, ownerFormHandle: null };
       } else {
         throw new Stage5BrowserError('OPERATION_FAILED', 'Set checked requires either one form field capability or one exact semantic control.', {
           details: { reason: 'invalid_set_checked_target', actionDispatched: false },

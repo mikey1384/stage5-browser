@@ -5,7 +5,7 @@ import type { RuntimeProcessInfo } from '../runtime-info.js';
 import type { SanitizedPageActivationEvidence } from '../page-diagnostics.js';
 import type { AuthenticationStatus } from './authentication.js';
 import type { AvailableBrowsers, BrowserStatus, BrowserTabSummary, FrameSummary, PageSummary } from './browser-state.js';
-import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlPopupAgentAssociation, ControlSelectionEvidence, ControlSelectionSummary, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
+import type { ClickPostcondition, ControlMultiSelectionResult, ControlOptionsInspection, ControlOptionTarget, ControlPopupAgentAssociation, ControlSelectionEvidence, ControlSelectionInteraction, ControlSelectionSummary, ControlTarget, FileInputObservation, FillRefEvidence, NavigationWarning, PostconditionResult, RedirectHop, SupportedAriaRole, UrlExpectation, VisibleElementExpectation } from './controls.js';
 import type { ScrollContainerObservation, ScrollDirection, ScrollEndState, ScrollPosition, ScrollWaitCondition, ScrollWaitResult } from './scroll.js';
 import type { BrowserMotionInput, BrowserMotionOutput } from './motions.js';
 import type { CloseTabOutput, NavigateHistoryInput, NavigateHistoryOutput } from './navigation.js';
@@ -307,6 +307,7 @@ export interface BrowserCommandMap {
       control: ControlTarget | null;
       option: ControlOptionTarget | null;
       selected?: boolean;
+      interaction?: ControlSelectionInteraction;
       frameId: string | null;
       timeoutMs: number;
       intent?: BrowserActionIntent;
@@ -315,8 +316,8 @@ export interface BrowserCommandMap {
     output: ControlSelectionSummary & {
       page: PageSummary;
       frame: FrameSummary;
-      inspectionId: string;
-      optionId: string;
+      inspectionId: string | null;
+      optionId: string | null;
       selectedName: string;
       selected: boolean;
       kind: ControlOptionsInspection['kind'];

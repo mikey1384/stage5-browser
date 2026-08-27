@@ -34,7 +34,20 @@ export interface FormFieldObservation extends FormFieldState {
   readOnly: boolean;
   multiple: boolean;
   optionNames: string[];
+  selectedOptionNames: string[];
   optionsComplete: boolean;
+}
+
+export interface FormFieldResolutionEvidence {
+  resolution: 'rebound_exact' | 'retained_exact';
+  basis: 'stable_role_name_kind' | 'retained_handle_identity';
+  rebindAttempts: 0 | 1;
+}
+
+export interface FormFieldRebindingSummary {
+  attempted: boolean;
+  reboundSteps: number;
+  failed: boolean;
 }
 
 export interface FormActionObservation {
@@ -77,6 +90,7 @@ export interface FormPlanStepResult {
   kind: FormPlanStep['kind'];
   actionDispatched: boolean | 'unknown';
   alreadySatisfied: boolean;
+  fieldResolution: FormFieldResolutionEvidence;
   before: FormFieldState;
   after: FormFieldState;
   inputEvidence?: FillRefEvidence;
@@ -97,6 +111,7 @@ export interface ApplyFormPlanOutput {
   formId: string;
   completedSteps: FormPlanStepResult[];
   actionDispatched: boolean | 'unknown';
+  fieldRebinding: FormFieldRebindingSummary;
   requiresFreshSummary: true;
   dialog?: BrowserDialogActionResult;
 }

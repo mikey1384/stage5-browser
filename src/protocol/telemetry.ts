@@ -6,8 +6,11 @@ import type {
   ControlPopupSurfaceProof,
   ControlRecoveryEvidence,
   ControlSelectionReconciliationEvidence,
+  ControlSelectionMethod,
   PostconditionCheck,
+  SearchableActiveOptionProof,
 } from './controls.js';
+import type { FormFieldRebindingSummary } from './forms.js';
 import type { NativeReattachObservation } from './browser-state.js';
 
 export interface ViewportPreparationTelemetry {
@@ -84,6 +87,14 @@ export interface ExecutionTraceConclusion {
   popupOwnership: ControlPopupOwnershipEvidence | null;
   controlRecovery: ControlRecoveryEvidence | null;
   selectionReconciliation: ControlSelectionReconciliationEvidence | null;
+  selectionInteraction: ControlSelectionMethod | null;
+  searchableSelection: {
+    activeOptionProof: SearchableActiveOptionProof | null;
+    queryActionDispatched: boolean | 'unknown' | null;
+    commitActionDispatched: boolean | 'unknown' | null;
+    selectionProof: 'selected_state' | 'unresolved' | 'value_and_popup_closed' | null;
+  } | null;
+  formFieldRebinding: FormFieldRebindingSummary | null;
   profileOwnership: {
     classification:
       | 'abandoned'

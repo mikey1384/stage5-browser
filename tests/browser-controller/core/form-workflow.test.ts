@@ -61,6 +61,8 @@ describe('BrowserController form workflow manager', () => {
       valuePresence: 'not_observed_private',
     });
     expect(summary.actions).toContainEqual({ role: 'button', name: 'Save and continue', disabled: false });
+    expect(summary.fields.find(({ name }) => name === 'Use of account')?.selectedOptionNames)
+      .toEqual(['Business operations']);
 
     const field = (name: string) => {
       const observed = summary.fields.find((candidate) => candidate.name === name);
@@ -99,6 +101,130 @@ describe('BrowserController form workflow manager', () => {
     const after = await controller?.formSummary({ frameId: null, maxFields: 20, maxActions: 20, timeoutMs: 5_000 });
     expect(after?.fields.find(({ name }) => name === 'Legal name')?.valuePresence).toBe('present');
     expect(after?.fields.find(({ name }) => name === 'Information is accurate')?.selected).toBe(true);
+    expect(after?.fields.find(({ name }) => name === 'Use of account')?.selectedOptionNames)
+      .toEqual(['Treasury management']);
+  });
+
+  it('re-resolves an undispatched field by stable semantics after a React-style sibling replacement', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><body>
+        <label for="state">State</label><input id="state">
+        <label for="zip">ZIP code</label><input id="zip">
+        <output id="counts">state:0 zip:0 replacements:0</output>
+        <script>
+          let stateInputs = 0;
+          let zipInputs = 0;
+          let replacements = 0;
+          const render = () => { counts.value = 'state:' + stateInputs + ' zip:' + zipInputs + ' replacements:' + replacements; };
+          const wireZip = (field) => field.addEventListener('input', () => { zipInputs += 1; render(); });
+          wireZip(zip);
+          state.addEventListener('input', () => {
+            stateInputs += 1;
+            if (replacements === 0) {
+              const replacement = zip.cloneNode(true);
+              zip.replaceWith(replacement);
+              wireZip(replacement);
+              replacements += 1;
+            }
+            render();
+          });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-form-rebind-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({ url: `http://127.0.0.1:${port}/form`, newTab: false, stabilizationMs: 0, timeoutMs: 5_000 });
+
+    const summary = await controller.formSummary({ frameId: null, maxFields: 20, maxActions: 20, timeoutMs: 5_000 });
+    const field = (name: string) => {
+      const observed = summary.fields.find((candidate) => candidate.name === name);
+      if (observed === undefined) throw new Error(`Missing replacement fixture field ${name}.`);
+      return observed.fieldId;
+    };
+    const result = await controller.applyFormPlan({
+      formId: summary.formId,
+      frameId: null,
+      steps: [
+        { kind: 'fill', fieldId: field('State'), value: 'Wyoming' },
+        { kind: 'fill', fieldId: field('ZIP code'), value: '82001' },
+      ],
+      timeoutMs: 10_000,
+    });
+
+    expect(result.completedSteps.map(({ fieldResolution }) => fieldResolution.resolution))
+      .toEqual(['retained_exact', 'rebound_exact']);
+    expect(result.fieldRebinding).toEqual({ attempted: true, reboundSteps: 1, failed: false });
+    const page = (controller as unknown as { activePage: { locator: (selector: string) => {
+      inputValue: () => Promise<string>;
+      textContent: () => Promise<string | null>;
+    } } }).activePage;
+    expect(await page.locator('#state').inputValue()).toBe('Wyoming');
+    expect(await page.locator('#zip').inputValue()).toBe('82001');
+    expect(await page.locator('#counts').textContent()).toContain('state:1 zip:1 replacements:1');
+  });
+
+  it('never rebinds a pending field to a different form with the same semantics', async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><html><body>
+        <form id="primary">
+          <label for="state">State</label><input id="state">
+          <label for="primary-zip">ZIP code</label><input id="primary-zip">
+        </form>
+        <form id="secondary">
+          <label for="secondary-zip">ZIP code</label><input id="secondary-zip">
+        </form>
+        <output id="counts">state:0 secondary:0</output>
+        <script>
+          let stateInputs = 0;
+          let secondaryInputs = 0;
+          const render = () => { counts.value = 'state:' + stateInputs + ' secondary:' + secondaryInputs; };
+          state.addEventListener('input', () => {
+            stateInputs += 1;
+            document.querySelector('#primary-zip').remove();
+            render();
+          });
+          document.querySelector('#secondary-zip').addEventListener('input', () => {
+            secondaryInputs += 1;
+            render();
+          });
+        </script>
+      </body></html>`);
+    });
+    const port = await listen(server);
+    temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-form-owner-'));
+    controller = new BrowserController(browserConfig(temporaryRoot));
+    await controller.open({ url: `http://127.0.0.1:${port}/form`, newTab: false, stabilizationMs: 0, timeoutMs: 5_000 });
+
+    const summary = await controller.formSummary({ frameId: null, maxFields: 20, maxActions: 20, timeoutMs: 5_000 });
+    const stateId = summary.fields.find(({ name }) => name === 'State')?.fieldId;
+    const zipId = summary.fields.find(({ name }) => name === 'ZIP code')?.fieldId;
+    if (stateId === undefined || zipId === undefined) throw new Error('Cross-form fixture fields were not summarized.');
+
+    await expect(controller.applyFormPlan({
+      formId: summary.formId,
+      frameId: null,
+      steps: [
+        { kind: 'fill', fieldId: stateId, value: 'Wyoming' },
+        { kind: 'fill', fieldId: zipId, value: '82001' },
+      ],
+      timeoutMs: 10_000,
+    })).rejects.toMatchObject({
+      details: {
+        reason: 'form_field_rebind_missing',
+        failedStep: 1,
+        actionDispatched: true,
+        fieldRebinding: { attempted: true, reboundSteps: 0, failed: true },
+      },
+    });
+    const page = (controller as unknown as { activePage: { locator: (selector: string) => {
+      inputValue: () => Promise<string>;
+      textContent: () => Promise<string | null>;
+    } } }).activePage;
+    expect(await page.locator('#secondary-zip').inputValue()).toBe('');
+    expect(await page.locator('#counts').textContent()).toContain('state:1 secondary:0');
   });
 
   it('sets checked state idempotently through an exact semantic target', async () => {

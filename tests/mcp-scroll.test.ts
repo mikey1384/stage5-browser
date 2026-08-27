@@ -437,8 +437,35 @@ describe('MCP nested scrolling', () => {
       },
     });
     expect(clicked.isError).not.toBe(true);
+    expect(clicked.structuredContent).toMatchObject({
+      result: {
+        actionDispatched: true,
+        clickDispatched: true,
+        effectConfirmed: true,
+        newPageCount: 0,
+        newDownloadCount: 0,
+      },
+    });
+    expect((clicked.structuredContent as { result?: Record<string, unknown> }).result)
+      .not.toHaveProperty('viewportPreparation');
     const clickOperationId = (clicked.structuredContent as { operationId?: unknown }).operationId;
     if (typeof clickOperationId !== 'string') throw new Error('Click result did not expose its operationId.');
+    const fullClick = await client.callTool({
+      name: 'browser_operation_status',
+      arguments: { operationId: clickOperationId, includeResult: true },
+    });
+    expect(fullClick.structuredContent).toMatchObject({
+      operation: {
+        operationId: clickOperationId,
+        resultAvailable: true,
+        result: {
+          dispatch: { actionDispatched: true, clickDispatched: true },
+        },
+      },
+    });
+    expect((fullClick.structuredContent as {
+      operation?: { result?: Record<string, unknown> };
+    }).operation?.result).toHaveProperty('viewportPreparation');
     const clickTelemetry = await client.callTool({
       name: 'browser_execution_traces',
       arguments: { operationId: clickOperationId, limit: 10, detail: 'full' },

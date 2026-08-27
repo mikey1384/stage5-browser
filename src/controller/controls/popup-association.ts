@@ -25,6 +25,7 @@ interface PopupCandidate {
   locator: Locator | null;
   handle: ElementHandle<HTMLElement>;
   surfaceProof: ControlPopupSurfaceProof;
+  activeDescendantRelated: boolean;
   explicit: boolean;
   structurallyRelated: boolean;
   rendered: boolean;
@@ -111,6 +112,7 @@ export async function observeOpenPopupOwnerCandidates(
       if (isRendered) {
         rendered.push({
           ...surface,
+          activeDescendantRelated: false,
           explicit: false,
           structurallyRelated: false,
           rendered: true,
@@ -207,7 +209,12 @@ export const controlPopupAssociationOperations = {
             const labelledBy = (popup.getAttribute('aria-labelledby') ?? '')
               .split(/\s+/)
               .filter(Boolean);
+            const activeDescendantId = control.getAttribute('aria-activedescendant');
+            const activeDescendant = activeDescendantId === null
+              ? null
+              : control.ownerDocument.getElementById(activeDescendantId);
             return {
+              activeDescendantRelated: activeDescendant !== null && popup.contains(activeDescendant),
               explicit: popup.id.length > 0 && [
                 ...(control.getAttribute('aria-controls') ?? '').split(/\s+/),
                 ...(control.getAttribute('aria-owns') ?? '').split(/\s+/),
@@ -230,6 +237,9 @@ export const controlPopupAssociationOperations = {
       const explicit = candidates.filter(
         (candidate) => candidate.explicit && (!policy.requireRendered || candidate.rendered),
       );
+      const activeDescendant = candidates.filter(
+        (candidate) => candidate.activeDescendantRelated && candidate.rendered,
+      );
       const activeExplicit = explicit.some(({ rendered }) => rendered)
         ? explicit.filter(({ rendered }) => rendered)
         : explicit;
@@ -246,12 +256,17 @@ export const controlPopupAssociationOperations = {
         : null;
       const oneLogicalSurfaceSet = renderedRoots.length === 1 || positionedEnvelope !== null;
       const selected = new Set<PopupCandidate>();
-      let selectedProof: ControlPopupAssociationProof | null = activeExplicit.length > 0
-        ? 'explicit'
-        : structural.length > 0
-          ? 'structural'
-          : null;
-      for (const candidate of activeExplicit.length > 0 ? activeExplicit : structural) {
+      let selectedProof: ControlPopupAssociationProof | null = activeDescendant.length > 0
+        ? 'active_descendant'
+        : activeExplicit.length > 0
+          ? 'explicit'
+          : structural.length > 0
+            ? 'structural'
+            : null;
+      const directlyAssociated = activeDescendant.length > 0
+        ? activeDescendant
+        : activeExplicit.length > 0 ? activeExplicit : structural;
+      for (const candidate of directlyAssociated) {
         selected.add(candidate);
       }
 

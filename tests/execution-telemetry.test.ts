@@ -32,6 +32,7 @@ describe('privacy-safe execution telemetry', () => {
         },
         selectedName: 'Private choice name',
         selected: false,
+        interactionUsed: 'searchable_keyboard',
         suppliedValue: 'Never persist this form value',
         dispatch: { actionDispatched: true, clickDispatched: true },
         postcondition: {
@@ -56,6 +57,12 @@ describe('privacy-safe execution telemetry', () => {
             durationMs: 117,
             terminalProof: 'selected_state',
             privateOptionName: 'Never persist this reconciliation value',
+          },
+          searchableCommit: {
+            queryActionDispatched: true,
+            activeOptionProof: 'aria_activedescendant',
+            commitActionDispatched: true,
+            selectionProof: 'selected_state',
           },
         },
       },
@@ -153,6 +160,13 @@ describe('privacy-safe execution telemetry', () => {
           durationMs: 117,
           terminalProof: 'selected_state',
         },
+        selectionInteraction: 'searchable_keyboard',
+        searchableSelection: {
+          activeOptionProof: 'aria_activedescendant',
+          queryActionDispatched: true,
+          commitActionDispatched: true,
+          selectionProof: 'selected_state',
+        },
       },
       privacy: {
         urls: 'omitted',
@@ -203,6 +217,41 @@ describe('privacy-safe execution telemetry', () => {
     });
     expect(summary.traces[0]).not.toHaveProperty('host');
     expect(summary.traces[0]?.actions[0]).not.toHaveProperty('phases');
+  });
+
+  it('records framework field rebinding categorically without field labels or values', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-form-rebind-fixture',
+      agentId: 'finance-agent',
+      command: 'applyFormPlan',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(40).toISOString(),
+      durationMs: 40,
+      outcome: 'succeeded',
+      error: null,
+      result: {
+        fieldRebinding: { attempted: true, reboundSteps: 1, failed: false },
+        completedSteps: [{
+          fieldId: 'field-opaque',
+          privateLabel: 'Private ZIP label',
+          suppliedValue: 'Never retain this ZIP value',
+          fieldResolution: {
+            resolution: 'rebound_exact',
+            basis: 'stable_role_name_kind',
+            rebindAttempts: 1,
+          },
+          actionDispatched: true,
+        }],
+      },
+      workerRuntime: null,
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion.formFieldRebinding)
+      .toEqual({ attempted: true, reboundSteps: 1, failed: false });
+    const serialized = JSON.stringify(trace);
+    expect(serialized).not.toContain('Private ZIP label');
+    expect(serialized).not.toContain('Never retain this ZIP value');
   });
 
   it('retains canonical reconciliation checks after partial input fails closed', () => {
@@ -264,6 +313,9 @@ describe('privacy-safe execution telemetry', () => {
       popupOwnership: null,
       controlRecovery: null,
       selectionReconciliation: null,
+      selectionInteraction: null,
+      searchableSelection: null,
+      formFieldRebinding: null,
       profileOwnership: null,
       handoffRelease: null,
       nativeReattach: null,

@@ -3,7 +3,8 @@ import * as z from 'zod/v4';
 
 import { RESERVABLE_OPERATION_COMMANDS } from '../operations/types.js';
 import { BROWSER_HISTORY_ACTIONS, SCROLL_DIRECTIONS, SUPPORTED_ARIA_ROLES } from '../protocol.js';
-import { safely as safelyOperation, safelyCurrent as safelyCurrentOperation, type McpHostContext } from './context.js';
+import { safely as safelyOperation, safelyCurrent as safelyCurrentOperation, safelyCurrentAction as safelyCurrentActionOperation, type McpHostContext } from './context.js';
+import type { CompactActionCommand } from './action-result.js';
 import { MCP_TOOL_NAMES as TOOL } from './tool-names.js';
 
 export function registerBrowserActionTools(server: McpServer, context: McpHostContext): void {
@@ -11,6 +12,8 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
   const { operationIdSchema, frameIdSchema, tabIdSchema, urlExpectationSchema, visibleElementExpectationSchema, clickByRoleInputSchema, clickRefInputSchema, setInputFilesInputSchema, scrollWaitSchema, scrollTargetSchema, inspectControlInputSchema, selectOptionInputSchema, selectOptionsInputSchema, motionInputSchema, applyFormPlanInputSchema, setCheckedInputSchema, dialogResponseSchema } = context.schemas;
   const safely = <T>(operation: () => Promise<T>) => safelyOperation(operation);
   const safelyCurrent = <T>(operation: () => Promise<T>) => safelyCurrentOperation(context, operation);
+  const safelyCurrentAction = <T>(command: CompactActionCommand, operation: () => Promise<T>) =>
+    safelyCurrentActionOperation(context, command, operation);
   server.registerTool(
     TOOL.browserReserveOperation,
     {
@@ -38,7 +41,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('clickByRole',
       () => supervisor.execute('clickByRole', input, undefined, operationId),
     ),
   );
@@ -55,7 +58,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('clickRef',
       () => supervisor.execute('clickRef', input, undefined, operationId),
     ),
   );
@@ -99,7 +102,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('fillByRole',
       () => supervisor.execute('fillByRole', input, undefined, operationId),
     ),
   );
@@ -125,7 +128,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('fillRef',
       () => supervisor.execute('fillRef', input, undefined, operationId),
     ),
   );
@@ -163,7 +166,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('applyFormPlan',
       () => supervisor.execute('applyFormPlan', input, undefined, operationId),
     ),
   );
@@ -180,7 +183,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('setChecked',
       () => supervisor.execute('setChecked', input, undefined, operationId),
     ),
   );
@@ -214,7 +217,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('selectOption',
       () => supervisor.execute('selectOption', input, undefined, operationId),
     ),
   );
@@ -231,7 +234,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('selectOptions',
       () => supervisor.execute('selectOptions', input, undefined, operationId),
     ),
   );
@@ -255,7 +258,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('navigateHistory',
       () => supervisor.execute('navigateHistory', input, undefined, operationId),
     ),
   );
@@ -276,7 +279,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: false,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('closeTab',
       () => supervisor.execute('closeTab', input, undefined, operationId),
     ),
   );
@@ -293,7 +296,7 @@ export function registerBrowserActionTools(server: McpServer, context: McpHostCo
         openWorldHint: true,
       },
     },
-    async ({ operationId, ...input }) => safelyCurrent(
+    async ({ operationId, ...input }) => safelyCurrentAction('motion',
       () => supervisor.execute('motion', input, undefined, operationId),
     ),
   );
