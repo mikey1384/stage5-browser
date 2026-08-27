@@ -74,14 +74,33 @@ export class ProfileOwnershipLeaseController {
     browserProcess: OwnedProcessObservation;
     inspection: ProfileOwnershipLeaseInspection;
   }): Promise<boolean> {
+    return this.adoptVerifiedHandoff(input, 'human_handoff');
+  }
+
+  async adoptVerifiedNativeHandoffTransition(input: {
+    profileRoot: string;
+    identity: BrowserLaunchIdentity;
+    browserProcess: OwnedProcessObservation;
+    inspection: ProfileOwnershipLeaseInspection;
+  }): Promise<boolean> {
+    return this.adoptVerifiedHandoff(input, 'native_cdp');
+  }
+
+  private async adoptVerifiedHandoff(input: {
+    profileRoot: string;
+    identity: BrowserLaunchIdentity;
+    browserProcess: OwnedProcessObservation;
+    inspection: ProfileOwnershipLeaseInspection;
+  }, priorControlMode: 'human_handoff' | 'native_cdp'): Promise<boolean> {
     return this.enqueueMutation(async () => {
       const prior = input.inspection;
       if (
         (prior.state !== 'abandoned' && prior.state !== 'owned_orphaned')
         || prior.ownerWorkerRunning !== false
-        || prior.lease?.controlMode !== 'human_handoff'
+        || prior.lease?.controlMode !== priorControlMode
+        || (priorControlMode === 'native_cdp' && prior.lease.phase !== 'close_requested')
       ) {
-        throw new Error('Refusing to adopt a human handoff that is not owned by an exited Stage5 worker.');
+        throw new Error('Refusing to adopt a handoff that is not owned by an exited Stage5 worker.');
       }
       const [startedAt, executable] = await Promise.all([
         this.dependencies.processStartedAt(input.browserProcess.processId),

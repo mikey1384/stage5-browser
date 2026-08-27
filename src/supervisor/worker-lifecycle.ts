@@ -1,4 +1,4 @@
-import { STAGE5_BROWSER_VERSION, Stage5BrowserError, WORKER_PROTOCOL_VERSION, fileURLToPath, fork, profileDirForBrowser, readNativeControlRecord, serializeUnknownError } from './dependencies.js';
+import { STAGE5_BROWSER_VERSION, Stage5BrowserError, WORKER_PROTOCOL_VERSION, fileURLToPath, fork, profileDirForBrowser, profileOwnershipRetainsPrivateHandoff, readNativeControlRecord, readProfileOwnershipLease, serializeUnknownError } from './dependencies.js';
 import type { BrowserSupervisorContext } from './runtime.js';
 import type { RuntimeTransition } from './model.js';
 
@@ -105,7 +105,12 @@ export const workerLifecycleOperations = {
       return null;
     }
 
-    if (this.humanAuthenticationInProgress) {
+    const profileDir = profileDirForBrowser(this.config, this.selectedBrowser);
+    const ownershipLease = await readProfileOwnershipLease(profileDir);
+    if (
+      this.humanAuthenticationInProgress
+      || profileOwnershipRetainsPrivateHandoff(ownershipLease)
+    ) {
       return null;
     }
 
@@ -116,7 +121,7 @@ export const workerLifecycleOperations = {
     // the worker reconnects to its exact persistent context.
     const nativeControl = this.browserWasConnected
       ? await readNativeControlRecord(
-        profileDirForBrowser(this.config, this.selectedBrowser),
+        profileDir,
         this.selectedBrowser,
       )
       : null;

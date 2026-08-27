@@ -9,6 +9,16 @@ export type AuthenticationHandoffState =
   | 'awaiting_user'
   | 'ready_for_agent_verification';
 
+export type HandoffReleaseStrategy = 'native_same_process' | 'process_relaunch';
+
+export interface HandoffReleaseStatus {
+  strategy: HandoffReleaseStrategy;
+  phase: 'close_requested' | 'process_exited' | 'profile_unlocked' | 'human_input';
+  closeRequestCompleted: boolean | null;
+  processReused: boolean | null;
+  ownershipRetained: true;
+}
+
 export interface HumanBootstrapStatus {
   running: boolean;
   processId: number | null;
@@ -60,6 +70,7 @@ export interface AuthenticationStatus {
   page: PageSummary | null;
   verificationRequired: boolean;
   controlMode: 'human_bootstrap' | 'none' | 'playwright';
+  handoffRelease: HandoffReleaseStatus | null;
   humanBootstrap: HumanBootstrapStatus | null;
   lastHandoffOutcome: AuthenticationBoundaryOutcome | null;
 }

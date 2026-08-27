@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,10 @@ import type { BrowserStatus } from '../src/protocol.js';
 import { WORKER_PROTOCOL_VERSION, type RuntimeProcessInfo } from '../src/runtime-info.js';
 import { BrowserSupervisor, SupervisedOperationError } from '../src/supervisor.js';
 import { writeNativeControlRecord } from '../src/native-control-channel.js';
+import {
+  profilePathFingerprint,
+  writeProfileOwnershipLease,
+} from '../src/profile-ownership-lease.js';
 import { supervisorConfig as configFor } from './supervisor-fixture.js';
 
 const supervisors: BrowserSupervisor[] = [];
@@ -282,6 +287,75 @@ describe('BrowserSupervisor', () => {
       allReferencesInvalid: true,
       pageStatePreserved: true,
     });
+  });
+
+  it('defers a compatible update from a durable close-requested handoff lease', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'stage5-browser-durable-handoff-update-'));
+    temporaryRoots.push(root);
+    const config = configFor(root);
+    const environment = {
+      ...process.env,
+      STAGE5_BROWSER_TEST_MODE: '1',
+      STAGE5_BROWSER_TEST_BUILD_FINGERPRINT: 'build-1',
+    };
+    let runtime: RuntimeProcessInfo = {
+      component: 'mcp',
+      version: '0.19.5',
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      processId: 123,
+      startedAt: '2026-08-27T01:00:00.000Z',
+      buildModifiedAt: '2026-08-27T01:00:00.000Z',
+      artifactFingerprint: 'build-1',
+      currentArtifactFingerprint: 'build-1',
+      currentVersion: '0.19.5',
+      currentProtocolVersion: WORKER_PROTOCOL_VERSION,
+      currentToolCatalogVersion: 17,
+      compatibleUpdateAvailable: false,
+      restartRequired: false,
+      restartReason: null,
+      suggestedAction: null,
+    };
+    const supervisor = new BrowserSupervisor(config, {
+      workerUrl: new URL('./fixtures/fake-worker.mjs', import.meta.url),
+      environment,
+      expectedBuildFingerprint: 'build-1',
+      runtimeInfoProvider: () => runtime,
+    });
+    supervisors.push(supervisor);
+
+    const before = await supervisor.execute('status', {});
+    await mkdir(config.profileDir, { recursive: true });
+    const now = new Date().toISOString();
+    await writeProfileOwnershipLease(config.profileDir, {
+      version: 1,
+      leaseId: randomUUID(),
+      browser: 'chromium',
+      engine: 'chromium',
+      profileFingerprint: profilePathFingerprint(config.profileDir),
+      ownerWorkerProcessId: before.result.workerPid,
+      ownerWorkerStartedAt: now,
+      browserProcessId: before.result.workerPid,
+      browserProcessStartedAt: now,
+      browserExecutableFingerprint: 'a'.repeat(64),
+      controlMode: 'native_cdp',
+      phase: 'close_requested',
+      createdAt: now,
+      heartbeatAt: now,
+    });
+    environment.STAGE5_BROWSER_TEST_BUILD_FINGERPRINT = 'build-2';
+    runtime = {
+      ...runtime,
+      currentArtifactFingerprint: 'build-2',
+      currentVersion: '0.19.6',
+      compatibleUpdateAvailable: true,
+      suggestedAction: 'No host restart is needed.',
+    };
+
+    const guarded = await supervisor.execute('status', {});
+
+    expect(guarded.result.workerPid).toBe(before.result.workerPid);
+    expect(guarded.runtimeTransition).toBeNull();
+    expect(supervisor.workerRuntimeInfo).toMatchObject({ artifactFingerprint: 'build-1' });
   });
 
   it('kills and replaces a worker that exceeds the outer hard deadline', async () => {

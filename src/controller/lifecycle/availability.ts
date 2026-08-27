@@ -11,6 +11,7 @@ import {
   launchIdentityForTarget,
   profileBindingForBrowser,
   profileDirForBrowser,
+  profileOwnershipRetainsPrivateHandoff,
   proveExitedPlaywrightSingleton,
   resolveBrowserLaunchTarget,
   suggestedActionForReason,
@@ -67,9 +68,8 @@ export const lifecycleAvailabilityOperations = {
 
     if (lease.state === 'current_owner') {
       const privateHandoff = lease.lease?.controlMode === 'human_handoff';
-      const releasePending = lease.lease?.phase === 'close_requested'
-        || lease.lease?.phase === 'process_exited'
-        || lease.lease?.phase === 'profile_unlocked';
+      const releasePending = profileOwnershipRetainsPrivateHandoff(lease.lease)
+        && !privateHandoff;
       return {
         ...executableAvailability,
         installed: true,

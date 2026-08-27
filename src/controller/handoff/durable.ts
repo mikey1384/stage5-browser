@@ -73,6 +73,18 @@ function leaseProvesControlRecord(
     && inspection.lease.browserProcessId === record.processId;
 }
 
+function leaseProvesNativeHandoffTransition(
+  inspection: ProfileOwnershipLeaseInspection,
+  record: NativeControlRecord,
+): boolean {
+  return inspection.lease?.controlMode === 'native_cdp'
+    && inspection.lease.phase === 'close_requested'
+    && (inspection.state === 'current_owner' || inspection.state === 'owned_orphaned')
+    && inspection.ownershipProven
+    && inspection.browserProcess === 'matched'
+    && inspection.lease.browserProcessId === record.processId;
+}
+
 function durableHandoffUnavailable(reason: string): Stage5BrowserError {
   return new Stage5BrowserError(
     'AUTH_HANDOFF_REQUIRED',
@@ -110,10 +122,11 @@ export const handoffDurableOperations = {
         identity,
         this.ownershipLease.leaseId,
       );
-      if (!leasePermitsReadOnlyRestore(lease)) {
+      const nativeTransition = leaseProvesNativeHandoffTransition(lease, record);
+      if (!leasePermitsReadOnlyRestore(lease) && !nativeTransition) {
         return false;
       }
-      if (!leaseProvesControlRecord(lease, record)) {
+      if (!leaseProvesControlRecord(lease, record) || nativeTransition) {
         const owner = await this.profileOwnerInspector(profileDir, identity);
         if (!sameControlRecord(owner.handoffRecord, record)) return false;
       }
@@ -140,6 +153,8 @@ export const handoffDurableOperations = {
         session: restoreNativeHumanBrowserSession(record, identity),
         profileShutdown: null,
         shutdownOverrideOffered: false,
+        releaseStrategy: 'native_same_process',
+        releaseCloseRequestCompleted: true,
       };
       this.controlledLaunchIdentity = identity;
       this.state = 'stopped';
@@ -167,6 +182,30 @@ export const handoffDurableOperations = {
       handoff.launchIdentity,
       this.ownershipLease.leaseId,
     );
+    if (leaseProvesNativeHandoffTransition(inspection, record)) {
+      const owner = await this.profileOwnerInspector(handoff.profileDir, handoff.launchIdentity);
+      if (!sameControlRecord(owner.handoffRecord, record)) {
+        throw durableHandoffUnavailable('native_handoff_transition_unverified');
+      }
+      if (inspection.state === 'current_owner') {
+        await this.ownershipLease.establish({
+          profileRoot: handoff.profileDir,
+          identity: handoff.launchIdentity,
+          browserProcess,
+          controlMode: 'human_handoff',
+          phase: 'human_input',
+        });
+        return;
+      }
+      const adopted = await this.ownershipLease.adoptVerifiedNativeHandoffTransition({
+        profileRoot: handoff.profileDir,
+        identity: handoff.launchIdentity,
+        browserProcess,
+        inspection,
+      });
+      if (!adopted) throw durableHandoffUnavailable('native_handoff_lease_changed');
+      return;
+    }
     if (inspection.lease?.controlMode !== 'human_handoff') {
       throw durableHandoffUnavailable('native_handoff_lease_mismatch');
     }

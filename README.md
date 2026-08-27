@@ -188,6 +188,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-covered-popup-reveal-activation.md` — manager-owned native keyboard fallback for covered popup openers in compatible 0.19.1
 - `docs/dogfooding-2026-08-27-causal-popup-surface-set.md` — causal composition, complete agent-visible owner pools, disappearing composite-node recovery, and host-owned privacy-safe recovery telemetry in 0.19.2–0.19.5
 - `docs/dogfooding-2026-08-27-mcp-copy-budget.md` — actual agent-overload feedback, the measured 94.2% default-prose reduction, and outcome-first selection results in 0.19.5
+- `docs/dogfooding-2026-08-27-native-same-process-handoff.md` — exact native-CDP handoff without process exit, form loss, or private-state replay in 0.19.6
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15

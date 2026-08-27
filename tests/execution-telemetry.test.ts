@@ -224,8 +224,80 @@ describe('privacy-safe execution telemetry', () => {
       renderedPopupCount: null,
       popupOwnership: null,
       controlRecovery: null,
+      handoffRelease: null,
       targetState: null,
     });
+  });
+
+  it('retains only categorical private-handoff release proprioception', () => {
+    const trace = buildExecutionTrace({
+      operationId: 'operation-handoff-release-fixture',
+      agentId: 'finance-agent',
+      command: 'requestLoginHandoff',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(25).toISOString(),
+      durationMs: 25,
+      outcome: 'succeeded',
+      error: null,
+      result: {
+        state: 'awaiting_user',
+        handoffRelease: {
+          strategy: 'native_same_process',
+          phase: 'human_input',
+          closeRequestCompleted: true,
+          processReused: true,
+          ownershipRetained: true,
+          privateUrl: 'https://private.example/never-retain',
+          fieldValue: 'never retain this value',
+        },
+      },
+      workerRuntime: null,
+      workerTelemetry: null,
+    });
+
+    expect(trace.conclusion.handoffRelease).toEqual({
+      strategy: 'native_same_process',
+      phase: 'human_input',
+      closeRequestCompleted: true,
+      processReused: true,
+      ownershipRetained: true,
+    });
+    expect(JSON.stringify(trace)).not.toContain('private.example');
+    expect(JSON.stringify(trace)).not.toContain('never retain this value');
+
+    const pending = buildExecutionTrace({
+      operationId: 'operation-handoff-release-pending-fixture',
+      agentId: 'finance-agent',
+      command: 'requestLoginHandoff',
+      startedAt: new Date(0).toISOString(),
+      completedAt: new Date(30_000).toISOString(),
+      durationMs: 30_000,
+      outcome: 'failed',
+      error: {
+        code: 'AUTH_HANDOFF_REQUIRED',
+        message: 'Fixture release remains pending.',
+        recoverable: true,
+        details: {
+          reason: 'handoff_release_pending',
+          releaseStrategy: 'process_relaunch',
+          phase: 'close_requested',
+          closeRequestCompleted: true,
+          ownershipRetained: true,
+          profileLockFiles: ['never-retain-lock-name'],
+        },
+      },
+      result: null,
+      workerRuntime: null,
+      workerTelemetry: null,
+    });
+    expect(pending.conclusion.handoffRelease).toEqual({
+      strategy: 'process_relaunch',
+      phase: 'close_requested',
+      closeRequestCompleted: true,
+      processReused: null,
+      ownershipRetained: true,
+    });
+    expect(JSON.stringify(pending)).not.toContain('never-retain-lock-name');
   });
 
   it('records categorical popup-owner ambiguity without control or option semantics', () => {

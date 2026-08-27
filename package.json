@@ -1,6 +1,6 @@
 {
   "name": "@stage5/browser",
-  "version": "0.19.5",
+  "version": "0.19.6",
   "private": true,
   "type": "module",
   "description": "Reliability-first local browser control for AI agents.",
@@ -39,7 +39,7 @@
   },
   "stage5Browser": {
     "workerProtocolVersion": 15,
-    "hostBehaviorVersion": 8,
+    "hostBehaviorVersion": 9,
     "toolCatalogVersion": 17,
     "toolCount": 56
   }

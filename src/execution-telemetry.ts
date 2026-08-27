@@ -65,6 +65,8 @@ const POPUP_OWNER_DECISIONS = new Set<NonNullable<ExecutionTraceConclusion['cont
   'unavailable',
   'consumed',
 ]);
+const HANDOFF_RELEASE_STRATEGIES = new Set<NonNullable<ExecutionTraceConclusion['handoffRelease']>['strategy']>(['native_same_process', 'process_relaunch']);
+const HANDOFF_RELEASE_PHASES = new Set<NonNullable<ExecutionTraceConclusion['handoffRelease']>['phase']>(['close_requested', 'process_exited', 'profile_unlocked', 'human_input']);
 
 export interface BuildExecutionTraceInput {
   operationId: string;
@@ -230,7 +232,37 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     renderedPopupCount: boundedIntegerConclusion(valuesForKey(combined, 'renderedPopupCount'), 50),
     popupOwnership: popupOwnershipConclusion(combined),
     controlRecovery: controlRecoveryConclusion(combined),
+    handoffRelease: handoffReleaseConclusion(result, error),
     targetState: targetStateConclusion(combined),
+  };
+}
+
+function handoffReleaseConclusion(
+  result: unknown,
+  error: SerializedStage5BrowserError | null,
+): ExecutionTraceConclusion['handoffRelease'] {
+  const direct = isRecord(result) && isRecord(result.handoffRelease)
+    ? result.handoffRelease
+    : error?.details;
+  if (!isRecord(direct)) return null;
+  const strategy = direct.strategy ?? direct.releaseStrategy;
+  const phase = direct.phase;
+  if (
+    typeof strategy !== 'string'
+    || !HANDOFF_RELEASE_STRATEGIES.has(strategy as NonNullable<ExecutionTraceConclusion['handoffRelease']>['strategy'])
+    || typeof phase !== 'string'
+    || !HANDOFF_RELEASE_PHASES.has(phase as NonNullable<ExecutionTraceConclusion['handoffRelease']>['phase'])
+  ) return null;
+  return {
+    strategy: strategy as NonNullable<ExecutionTraceConclusion['handoffRelease']>['strategy'],
+    phase: phase as NonNullable<ExecutionTraceConclusion['handoffRelease']>['phase'],
+    closeRequestCompleted: typeof direct.closeRequestCompleted === 'boolean'
+      ? direct.closeRequestCompleted
+      : null,
+    processReused: typeof direct.processReused === 'boolean' ? direct.processReused : null,
+    ownershipRetained: typeof direct.ownershipRetained === 'boolean'
+      ? direct.ownershipRetained
+      : null,
   };
 }
 
@@ -448,6 +480,7 @@ function normalizeTrace(trace: Partial<BrowserExecutionTrace>): BrowserExecution
     conclusion: {
       ...conclusion,
       controlRecovery: isRecord(conclusion.controlRecovery) ? conclusion.controlRecovery : null,
+      handoffRelease: isRecord(conclusion.handoffRelease) ? conclusion.handoffRelease : null,
     },
   } as BrowserExecutionTrace;
 }

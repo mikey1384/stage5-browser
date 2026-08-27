@@ -126,6 +126,12 @@ export const handoffRequestOperations = {
         },
       );
     }
+    const releaseStrategy = launchTarget.engine === 'chromium'
+      && this.nativeAttachedBrowser !== undefined
+      && this.nativeControlRecord?.state === 'controlled'
+      && this.nativeControlRecord.processId === controlledBrowserProcess.processId
+      ? 'native_same_process' as const
+      : 'process_relaunch' as const;
     this.pendingHandoffRelease = {
       mode: 'human_bootstrap',
       state: 'releasing_control',
@@ -140,8 +146,12 @@ export const handoffRequestOperations = {
       beforeSemanticFingerprint,
       controlledBrowserProcess,
       closeRequestCompleted: false,
+      releaseStrategy,
     };
     await this.ownershipLease.updatePhase('close_requested');
+    if (releaseStrategy === 'native_same_process') {
+      return this.continuePendingHandoffRelease(deadlineAt);
+    }
     const closeBudgetMs = remainingHandoffWorkBudget(deadlineAt);
     const closeCompleted = closeBudgetMs > 0 && await boundedValue(
       context.close({ reason: 'Stage5 Browser released the profile for private human interaction.' })

@@ -81,6 +81,13 @@ export interface ExecutionTraceConclusion {
   renderedPopupCount: number | null;
   popupOwnership: ControlPopupOwnershipEvidence | null;
   controlRecovery: ControlRecoveryEvidence | null;
+  handoffRelease: {
+    strategy: 'native_same_process' | 'process_relaunch';
+    phase: 'close_requested' | 'process_exited' | 'profile_unlocked' | 'human_input';
+    closeRequestCompleted: boolean | null;
+    processReused: boolean | null;
+    ownershipRetained: boolean | null;
+  } | null;
   targetState: {
     visible: boolean | null;
     enabled: boolean | null;

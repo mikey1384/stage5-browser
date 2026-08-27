@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,7 +20,12 @@ import {
   readProfileOwnershipLease,
   writeProfileOwnershipLease,
 } from '../src/profile-ownership-lease.js';
-import { closeServer, listen } from './browser-controller-fixture.js';
+import {
+  closeServer,
+  listen,
+  waitForDisposableDevToolsPort,
+  waitForDisposableProcessExit,
+} from './browser-controller-fixture.js';
 
 const DISPOSABLE_DRAFT = 'disposable worker-handoff draft';
 const DEAD_WORKER_PROCESS_ID = 2_147_483_000;
@@ -34,7 +39,7 @@ afterEach(async () => {
   await controller?.stop().catch(() => undefined);
   if (browserProcess?.pid !== undefined && processIsRunning(browserProcess.pid)) {
     browserProcess.kill('SIGTERM');
-    await waitForProcessExit(browserProcess.pid, 3_000);
+    await waitForDisposableProcessExit(browserProcess.pid, 3_000);
   }
   await closeServer(server);
   if (root !== undefined) await rm(root, { recursive: true, force: true });
@@ -74,7 +79,7 @@ describe('native Chromium worker handoff continuity', () => {
     ], { stdio: 'ignore' });
     const browserProcessId = browserProcess.pid;
     if (browserProcessId === undefined) throw new Error('Disposable Chromium did not expose a PID.');
-    const devtoolsPort = await waitForDevToolsPort(config.profileDir, 5_000);
+    const devtoolsPort = await waitForDisposableDevToolsPort(config.profileDir, 5_000);
     await writeNativeControlRecord(config.profileDir, {
       version: 1,
       kind: 'chromium_cdp',
@@ -167,26 +172,4 @@ function configFor(temporaryRoot: string): Stage5BrowserConfig {
 async function activeDraftValue(candidate: BrowserController): Promise<string> {
   const page = (candidate as unknown as { activePage: Page }).activePage;
   return page.locator('#draft').inputValue();
-}
-
-async function waitForDevToolsPort(profileDir: string, timeoutMs: number): Promise<number> {
-  const deadlineAt = Date.now() + timeoutMs;
-  while (Date.now() < deadlineAt) {
-    try {
-      const [portLine] = (await readFile(path.join(profileDir, 'DevToolsActivePort'), 'utf8')).split('\n');
-      const port = Number.parseInt(portLine ?? '', 10);
-      if (Number.isSafeInteger(port) && port > 0 && port <= 65_535) return port;
-    } catch {
-      // Chromium creates the file only after the loopback endpoint is ready.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error('Disposable Chromium did not publish its DevTools port.');
-}
-
-async function waitForProcessExit(processId: number, timeoutMs: number): Promise<void> {
-  const deadlineAt = Date.now() + timeoutMs;
-  while (processIsRunning(processId) && Date.now() < deadlineAt) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
 }

@@ -124,6 +124,19 @@ process.on('message', (message) => {
       controlMode: 'human_bootstrap',
       authenticated: 'unknown',
       userActionRequired: true,
+      ...(process.env.STAGE5_BROWSER_TEST_HANDOFF_RELEASE_TELEMETRY === '1'
+        ? {
+            handoffRelease: {
+              strategy: 'native_same_process',
+              phase: 'human_input',
+              closeRequestCompleted: true,
+              processReused: true,
+              ownershipRetained: true,
+              privateUrl: 'https://private.invalid/never-retain',
+              fieldValue: 'never retain this value',
+            },
+          }
+        : {}),
     });
     return;
   }

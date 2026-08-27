@@ -85,7 +85,7 @@ function escapeHtml(value: string): string {
 
 export function stage5HandoffMarkerUrl(label: string): string {
   const safeLabel = escapeHtml(label.slice(0, 200));
-  const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="stage5-browser-handoff" content="true"><title>${safeLabel}</title><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;margin:0;display:grid;place-items:center;min-height:100vh}main{max-width:42rem;padding:3rem}h1{font-size:2rem}p{color:#cbd5e1;line-height:1.5}</style></head><body><main><h1>${safeLabel}</h1><p>This marker identifies the dedicated Stage5 private-interaction window. Complete only the private step in the adjacent tab, then follow the agent’s backend-specific resume instruction.</p></main></body></html>`;
+  const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="stage5-browser-handoff" content="true"><title>${safeLabel}</title><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#f8fafc;margin:0;display:grid;place-items:center;min-height:100vh}main{max-width:42rem;padding:3rem}h1{font-size:2rem}p{color:#cbd5e1;line-height:1.5}</style></head><body><main><h1>${safeLabel}</h1><p>This marker identifies the dedicated Stage5 private-interaction window. Complete only the private step on the requested page in this exact application, then follow the agent’s backend-specific resume instruction.</p></main></body></html>`;
   return `${HANDOFF_MARKER_PREFIX}${encodeURIComponent(document)}`;
 }
 

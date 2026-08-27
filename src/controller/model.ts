@@ -182,6 +182,8 @@ export interface AuthenticationHandoff {
   session: HumanBrowserSession;
   profileShutdown: ProfileShutdownDecision | null;
   shutdownOverrideOffered: boolean;
+  releaseStrategy: import('../protocol.js').HandoffReleaseStrategy;
+  releaseCloseRequestCompleted: boolean;
 }
 
 export interface PendingHandoffRelease {
@@ -198,6 +200,7 @@ export interface PendingHandoffRelease {
   beforeSemanticFingerprint: string | null;
   controlledBrowserProcess: OwnedProcessObservation;
   closeRequestCompleted: boolean;
+  releaseStrategy: import('../protocol.js').HandoffReleaseStrategy;
 }
 
 export interface ControlledStartBoundaryObservation {

@@ -41,6 +41,23 @@ export const handoffHelpersOperations = {
         : connected
           ? 'playwright'
           : 'none',
+      handoffRelease: pendingRelease !== null
+        ? {
+            strategy: pendingRelease.releaseStrategy,
+            phase: 'close_requested',
+            closeRequestCompleted: pendingRelease.closeRequestCompleted,
+            processReused: null,
+            ownershipRetained: true,
+          }
+        : handoff !== null
+          ? {
+              strategy: handoff.releaseStrategy,
+              phase: 'human_input',
+              closeRequestCompleted: handoff.releaseCloseRequestCompleted,
+              processReused: handoff.releaseStrategy === 'native_same_process',
+              ownershipRetained: true,
+            }
+          : null,
       humanBootstrap: handoff === null || processState === null
         ? null
         : {

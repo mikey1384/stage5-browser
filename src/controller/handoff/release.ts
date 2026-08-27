@@ -1,8 +1,10 @@
-import { type BrowserCommandOutput, type HumanBrowserSession, inspectProfile, inspectProfileOwnershipLease, inspectProfileShutdown, launchFailureDiagnostic, type OwnedProcessObservation, ownershipProfileUnlocked, processIsRunning, processStartedAtToken, type Request, sameLaunchIdentity, Stage5BrowserError, waitForProfileUnlock } from '../dependencies.js';
+import { type BrowserCommandOutput, type HumanBrowserSession, inspectProfile, inspectProfileOwnershipLease, inspectProfileShutdown, launchFailureDiagnostic, type OwnedProcessObservation, ownershipProfileUnlocked, processIsRunning, processStartedAtToken, type ProfileStorageInspection, type Request, sameLaunchIdentity, Stage5BrowserError, waitForProfileUnlock } from '../dependencies.js';
 import { boundedValue, type PendingHandoffRelease, remainingHandoffWorkBudget } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import { nativeHandoffReleaseOperations } from './native-release.js';
 
 export const handoffReleaseOperations = {
+  ...nativeHandoffReleaseOperations,
   async continuePendingHandoffRelease(
     deadlineAt: number,
   ): Promise<BrowserCommandOutput<'requestLoginHandoff'>> {
@@ -15,6 +17,11 @@ export const handoffReleaseOperations = {
           suggestedAction: 'Request the private interaction handoff from the exact page that needs user input.',
         },
       });
+    }
+
+    if (pending.releaseStrategy === 'native_same_process') {
+      const continued = await this.continueNativeSameProcessHandoff(pending, deadlineAt);
+      if (continued !== null) return continued;
     }
 
     const processBudgetMs = remainingHandoffWorkBudget(deadlineAt);
@@ -104,20 +111,59 @@ export const handoffReleaseOperations = {
       );
     }
 
+    return this.completeHumanHandoff(
+      pending,
+      session,
+      beforeStorage,
+      beforeProfileShutdown,
+    );
+  },
+
+  async completeHumanHandoff(
+    pending: PendingHandoffRelease,
+    session: HumanBrowserSession,
+    beforeStorage: ProfileStorageInspection,
+    beforeProfileShutdown: Awaited<ReturnType<typeof inspectProfileShutdown>>,
+  ): Promise<BrowserCommandOutput<'requestLoginHandoff'>> {
     const humanLaunchIdentity = session.identity();
+    if (!sameLaunchIdentity(pending.launchIdentity, humanLaunchIdentity)) {
+      throw new Stage5BrowserError(
+        'AUTH_NOT_PERSISTED',
+        'The native private-interaction browser did not retain the controlled browser identity.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'auth_launch_identity_mismatch',
+            controlledIdentity: pending.launchIdentity,
+            humanIdentity: humanLaunchIdentity,
+            suggestedAction: 'Do not enter private information. Leave the exact dedicated browser untouched and correct the configured backend identity first.',
+          },
+        },
+      );
+    }
     const humanProcessState = session.state();
     const humanProcessStartedAt = humanProcessState.processId === null
       ? null
       : await processStartedAtToken(humanProcessState.processId);
-    if (humanProcessState.processId === null || humanProcessStartedAt === null) {
+    const nativeProcessIdentityRetained = pending.releaseStrategy !== 'native_same_process'
+      || (
+        humanProcessState.processId === pending.controlledBrowserProcess.processId
+        && humanProcessStartedAt === pending.controlledBrowserProcess.startedAt
+      );
+    if (
+      humanProcessState.processId === null
+      || humanProcessStartedAt === null
+      || !nativeProcessIdentityRetained
+    ) {
       throw new Stage5BrowserError(
         'BROWSER_NOT_READY',
-        'The private browser launched, but Stage5 could not establish its exact durable ownership identity.',
+        'Stage5 could not establish the private browser\'s exact durable process identity.',
         {
           recoverable: true,
           details: {
             reason: 'ownership_unverified',
-            suggestedAction: `Do not enter private information. Close only the newly opened ${humanLaunchIdentity.applicationName} normally, wait for it to exit, then request the handoff once.`,
+            releaseStrategy: pending.releaseStrategy,
+            suggestedAction: 'Do not enter private information. Leave the exact dedicated browser untouched and inspect sanitized ownership diagnostics first.',
           },
         },
       );
@@ -152,33 +198,21 @@ export const handoffReleaseOperations = {
       session,
       profileShutdown: null,
       shutdownOverrideOffered: false,
+      releaseStrategy: pending.releaseStrategy,
+      releaseCloseRequestCompleted: pending.closeRequestCompleted,
     };
     this.pendingHandoffRelease = null;
+    this.controlledLaunchIdentity = humanLaunchIdentity;
     this.state = 'stopped';
 
-    if (!sameLaunchIdentity(pending.launchIdentity, humanLaunchIdentity)) {
-      throw new Stage5BrowserError(
-        'AUTH_NOT_PERSISTED',
-        'The native private-interaction browser did not launch with the controlled browser identity.',
-        {
-          recoverable: true,
-          details: {
-            reason: 'auth_launch_identity_mismatch',
-            controlledIdentity: pending.launchIdentity,
-            humanIdentity: humanLaunchIdentity,
-            suggestedAction: 'Do not enter private information. Quit only the newly opened browser normally and correct the configured backend before requesting another handoff.',
-          },
-        },
-      );
-    }
-
     const continuousAttachment = session.controlChannel?.()?.kind === 'chromium_cdp';
+    const windowKind = pending.releaseStrategy === 'native_same_process' ? 'existing' : 'newly opened';
     return {
       ...(await this.authenticationStatus(undefined)),
       userActionRequired: true,
       instructions: continuousAttachment
-        ? `Use only the newly opened ${humanLaunchIdentity.applicationName} window identified as “${pending.handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${pending.targetOrigin ?? 'the requested page'}. Complete only the private step yourself—such as a password, passkey, OTP, EIN, identity document, or selfie—then leave that exact browser application open and tell the agent to call browser_resume_after_login. Never send private values or documents to the agent.`
-        : `Use only the newly opened ${humanLaunchIdentity.applicationName} window identified as “${pending.handoffLabel}”. It uses the Stage5 ${humanLaunchIdentity.browser} profile partition “${humanLaunchIdentity.profile.profileDirectory ?? 'profile root'}” for ${pending.targetOrigin ?? 'the requested page'}. Complete only the private step yourself—such as a password, passkey, OTP, EIN, identity document, or selfie—then quit ${humanLaunchIdentity.applicationName} normally so its process exits. On macOS, use Cmd-Q in that exact application; closing only a tab or window may leave it running. Never send private values or documents to the agent. After it exits, tell the agent to call browser_resume_after_login.`,
+        ? `Use only the ${windowKind} ${humanLaunchIdentity.applicationName} application identified by its Stage5 marker tab “${pending.handoffLabel}”. Complete only the private step yourself, leave that exact application open, then tell the agent to call browser_resume_after_login. Never send private values or documents to the agent.`
+        : `Use only the ${windowKind} ${humanLaunchIdentity.applicationName} application identified by its Stage5 marker tab “${pending.handoffLabel}”. Complete only the private step yourself, then quit that application normally so its process exits. Never send private values or documents to the agent; after it exits, tell the agent to call browser_resume_after_login.`,
     };
   },
 
@@ -225,6 +259,7 @@ export const handoffReleaseOperations = {
         recoverable: true,
         details: {
           reason: 'handoff_release_pending',
+          releaseStrategy: activePending?.releaseStrategy ?? null,
           phase,
           closeRequestCompleted: activePending?.closeRequestCompleted ?? null,
           profileLockFiles,

@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import type { BrowserController } from "../src/browser-controller.js";
 import { resolveBrowserLaunchTarget } from "../src/browser-provider.js";
 import type { Stage5BrowserConfig } from "../src/config.js";
 import { Stage5BrowserError } from "../src/errors.js";
+import { processIsRunning } from "../src/native-control-channel.js";
 import type {
   HumanBrowserLaunchInput,
   HumanBrowserLauncher,
@@ -23,6 +24,34 @@ import {
 const DEFAULT_TEST_CLEANUP_GRACE_MS = 8_000;
 const EXACT_PROCESS_EXIT_GRACE_MS = 2_000;
 const MAX_RETAINED_RELEASE_CONTINUATIONS = 2;
+
+export async function waitForDisposableDevToolsPort(
+  profileDir: string,
+  timeoutMs: number,
+): Promise<number> {
+  const deadlineAt = Date.now() + timeoutMs;
+  while (Date.now() < deadlineAt) {
+    try {
+      const [portLine] = (await readFile(path.join(profileDir, "DevToolsActivePort"), "utf8")).split("\n");
+      const port = Number.parseInt(portLine ?? "", 10);
+      if (Number.isSafeInteger(port) && port > 0 && port <= 65_535) return port;
+    } catch {
+      // Chromium creates this file only after the disposable endpoint is ready.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Disposable Chromium did not publish its DevTools port.");
+}
+
+export async function waitForDisposableProcessExit(
+  processId: number,
+  timeoutMs: number,
+): Promise<void> {
+  const deadlineAt = Date.now() + timeoutMs;
+  while (processIsRunning(processId) && Date.now() < deadlineAt) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
