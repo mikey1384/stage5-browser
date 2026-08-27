@@ -6,6 +6,7 @@ let browser = 'chromium';
 let humanAuthenticationInProgress = false;
 let browserRunning = false;
 let actionPolicyMode = 'normal';
+let hangingRequest = null;
 const testDocumentId = `test-document-${process.pid}`;
 const testFormValues = new Map();
 const startedAt = new Date().toISOString();
@@ -65,6 +66,7 @@ process.on('message', (message) => {
   }
 
   if (message.command === 'testHang') {
+    hangingRequest = { id: message.id, action: 'test_hang', startedAtMs: Date.now() };
     return;
   }
 
@@ -72,6 +74,15 @@ process.on('message', (message) => {
     message.command === process.env.STAGE5_BROWSER_TEST_HANG_COMMAND
     || (message.command === 'status' && process.env.STAGE5_BROWSER_TEST_HANG_STATUS === '1')
   ) {
+    hangingRequest = {
+      id: message.id,
+      action: message.command === 'selectOption'
+        ? 'select_option'
+        : message.command === 'clickByRole'
+          ? 'click_by_role'
+          : message.command,
+      startedAtMs: Date.now(),
+    };
     return;
   }
 
@@ -256,6 +267,42 @@ process.on('message', (message) => {
 
 process.on('SIGTERM', () => {
   const delay = Number.parseInt(process.env.STAGE5_BROWSER_TEST_SHUTDOWN_DELAY_MS ?? '0', 10);
-  setTimeout(() => process.exit(0), Number.isFinite(delay) ? Math.max(0, delay) : 0);
+  if (hangingRequest !== null && process.connected) {
+    const { id, action, startedAtMs } = hangingRequest;
+    process.send({
+      kind: 'response',
+      id,
+      ok: false,
+      error: {
+        code: 'WORKER_DISCONNECTED',
+        message: 'The fake worker was stopped during an in-flight action.',
+        recoverable: true,
+      },
+      telemetry: {
+        actionPhases: [{
+          action,
+          startedAtMs,
+          deadlineAtMs: startedAtMs + 60_000,
+          transitions: [
+            { phase: 'observe', enteredAtMs: startedAtMs, attempt: 1 },
+            { phase: 'plan', enteredAtMs: startedAtMs + 1, attempt: 1 },
+            { phase: 'preflight', enteredAtMs: startedAtMs + 2, attempt: 1 },
+            { phase: 'prepare', enteredAtMs: startedAtMs + 3, attempt: 1 },
+            { phase: 'dispatch', enteredAtMs: startedAtMs + 4, attempt: 1 },
+          ],
+          dispatchState: 'possibly_dispatched',
+          dispatchAttempts: 1,
+          recovery: null,
+          viewportPreparation: null,
+          terminalOutcome: null,
+          completedAtMs: null,
+        }],
+      },
+    });
+  }
+  setTimeout(
+    () => process.exit(0),
+    (Number.isFinite(delay) ? Math.max(0, delay) : 0) + (hangingRequest === null ? 0 : 20),
+  );
 });
 process.on('disconnect', () => process.exit(0));

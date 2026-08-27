@@ -92,5 +92,28 @@ describe('MCP terminal response delivery', () => {
         },
       },
     });
+
+    const traces = await client.callTool({
+      name: 'browser_execution_traces',
+      arguments: { operationId, limit: 10 },
+    });
+    expect(traces.isError).not.toBe(true);
+    expect(traces.structuredContent).toMatchObject({
+      operationId,
+      traces: [{
+        operationId,
+        command: 'clickByRole',
+        outcome: 'timed_out',
+        actions: [{
+          action: 'click_by_role',
+          dispatchState: 'possibly_dispatched',
+          terminalOutcome: null,
+          phases: expect.arrayContaining([
+            expect.objectContaining({ phase: 'dispatch', attempt: 1 }),
+          ]),
+        }],
+        conclusion: { actionDispatched: 'unknown' },
+      }],
+    });
   }, 15_000);
 });

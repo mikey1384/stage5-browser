@@ -22,6 +22,13 @@ export class ActionPhaseManager {
     return this.completed.splice(0, this.completed.length);
   }
 
+  snapshotAll(): Array<ReturnType<ActionPhaseSession['snapshot']>> {
+    return [
+      ...this.completed,
+      ...Array.from(this.active.values(), (session) => session.snapshot()),
+    ];
+  }
+
   snapshot(actionId: string) {
     return this.active.get(actionId)?.snapshot() ?? null;
   }

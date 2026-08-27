@@ -1,5 +1,5 @@
 import { type BrowserActionPolicyMode, type BrowserProduct, type ChildProcess, ExecutionTelemetryJournal, OperationRegistry, type RuntimeProcessInfo, SerialQueue, type Stage5BrowserConfig, type WorkerCommandTelemetry } from './dependencies.js';
-import { type BrowserSupervisorOptions, type PendingRequest } from './model.js';
+import { type BrowserSupervisorOptions, type LateTelemetryRequest, type PendingRequest } from './model.js';
 import { executeOperations, type ExecuteOperations } from './execute.js';
 import { workerLifecycleOperations, type WorkerLifecycleOperations } from './worker-lifecycle.js';
 import { transportOperations, type TransportOperations } from './transport.js';
@@ -24,6 +24,7 @@ export interface BrowserSupervisorContext extends
   expectedBuildFingerprint: string | null;
   runtimeInfoProvider: (() => RuntimeProcessInfo) | undefined;
   pending: Map<string, PendingRequest>;
+  lateTelemetryByRequest: Map<string, LateTelemetryRequest>;
   child: ChildProcess | undefined;
   workerRuntime: RuntimeProcessInfo | null;
   selectedBrowser: BrowserProduct;
@@ -59,6 +60,7 @@ export class BrowserSupervisor {
   private expectedBuildFingerprint: string | null;
   private readonly runtimeInfoProvider: (() => RuntimeProcessInfo) | undefined;
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly lateTelemetryByRequest = new Map<string, LateTelemetryRequest>();
   private child: ChildProcess | undefined;
   private workerRuntime: RuntimeProcessInfo | null = null;
   private selectedBrowser: BrowserProduct;

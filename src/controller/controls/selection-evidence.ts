@@ -14,13 +14,21 @@ export interface ControlSelectionReconciliation {
   selectedState: boolean | null;
 }
 
+interface ControlRepresentationEvaluator {
+  evaluate<Result>(
+    pageFunction: (element: HTMLElement, requestedName: string) => Result,
+    requestedName: string,
+  ): Promise<Result>;
+}
+
 export async function observeControlSelectionRepresentation(
-  control: Locator,
+  control: Locator | ElementHandle<HTMLElement>,
   optionName: string,
   deadlineAt: number,
 ): Promise<ControlSelectionRepresentation | null> {
+  const evaluator = control as unknown as ControlRepresentationEvaluator;
   return boundedValue(
-    control.evaluate((element, requestedName) => {
+    evaluator.evaluate((element, requestedName) => {
       const normalize = (value: string | null | undefined): string =>
         (value ?? '').replaceAll(/\s+/gu, ' ').trim().toLocaleLowerCase();
       const requested = normalize(requestedName);

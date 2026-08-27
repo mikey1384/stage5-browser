@@ -322,8 +322,18 @@ export class BrowserController {
   }
 
   drainActionPhaseTelemetry(): WorkerCommandTelemetry {
+    return this.actionPhaseTelemetry(this.actionPhases.drainCompleted());
+  }
+
+  snapshotActionPhaseTelemetry(): WorkerCommandTelemetry {
+    return this.actionPhaseTelemetry(this.actionPhases.snapshotAll());
+  }
+
+  private actionPhaseTelemetry(
+    snapshots: ReturnType<ActionPhaseManager['snapshotAll']>,
+  ): WorkerCommandTelemetry {
     return {
-      actionPhases: this.actionPhases.drainCompleted().map((snapshot) => ({
+      actionPhases: snapshots.map((snapshot) => ({
         action: snapshot.action,
         startedAtMs: snapshot.startedAtMs,
         deadlineAtMs: snapshot.deadlineAtMs,

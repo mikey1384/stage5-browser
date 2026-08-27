@@ -34,6 +34,12 @@ export interface PendingRequest {
   reject: (reason: Stage5BrowserError) => void;
 }
 
+export interface LateTelemetryRequest {
+  child: ChildProcess;
+  telemetryOperationId: string;
+  timer: NodeJS.Timeout;
+}
+
 export interface BrowserSupervisorOptions {
   workerUrl?: URL;
   environment?: NodeJS.ProcessEnv;

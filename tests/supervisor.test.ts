@@ -4,31 +4,14 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { Stage5BrowserConfig } from '../src/config.js';
 import type { BrowserStatus } from '../src/protocol.js';
 import { WORKER_PROTOCOL_VERSION, type RuntimeProcessInfo } from '../src/runtime-info.js';
 import { BrowserSupervisor, SupervisedOperationError } from '../src/supervisor.js';
 import { writeNativeControlRecord } from '../src/native-control-channel.js';
+import { supervisorConfig as configFor } from './supervisor-fixture.js';
 
 const supervisors: BrowserSupervisor[] = [];
 const temporaryRoots: string[] = [];
-
-function configFor(root: string, overrides: Partial<Stage5BrowserConfig> = {}): Stage5BrowserConfig {
-  return {
-    browser: 'chromium',
-    browserExecutablePath: null,
-    profilesDir: path.join(root, 'profiles'),
-    profileDir: path.join(root, 'profile'),
-    artifactsDir: path.join(root, 'artifacts'),
-    headless: true,
-    operationTimeoutMs: 500,
-    navigationTimeoutMs: 500,
-    readinessTimeoutMs: 250,
-    workerStartupTimeoutMs: 1_000,
-    workerShutdownGraceMs: 100,
-    ...overrides,
-  };
-}
 
 function isProcessAlive(pid: number): boolean {
   try {

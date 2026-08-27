@@ -14,6 +14,7 @@ import {
 let controller: BrowserController | undefined;
 let commandTail: Promise<void> = Promise.resolve();
 let shuttingDown = false;
+let activeRequestId: string | null = null;
 const runtimeMonitor = new RuntimeArtifactMonitor('worker', buildStampUrlFor(import.meta.url));
 
 function send(message: BrowserWorkerResponse): void {
@@ -177,6 +178,7 @@ function isWorkerRequest(message: unknown): message is BrowserWorkerRequest {
 }
 
 async function handleRequest(request: BrowserWorkerRequest): Promise<void> {
+  activeRequestId = request.id;
   controller?.drainActionPhaseTelemetry();
   try {
     const result = await dispatch(request);
@@ -185,6 +187,8 @@ async function handleRequest(request: BrowserWorkerRequest): Promise<void> {
   } catch (error) {
     const telemetry = controller?.drainActionPhaseTelemetry();
     send({ kind: 'response', id: request.id, ok: false, error: serializeUnknownError(error), ...(telemetry === undefined ? {} : { telemetry }) });
+  } finally {
+    if (activeRequestId === request.id) activeRequestId = null;
   }
 }
 
@@ -201,6 +205,20 @@ async function shutdown(): Promise<void> {
     return;
   }
   shuttingDown = true;
+  const interruptedRequestId = activeRequestId;
+  if (interruptedRequestId !== null && controller !== undefined) {
+    send({
+      kind: 'response',
+      id: interruptedRequestId,
+      ok: false,
+      error: serializeUnknownError(new Stage5BrowserError(
+        'WORKER_DISCONNECTED',
+        'The browser worker was stopped while the operation was still in flight.',
+        { recoverable: true },
+      )),
+      telemetry: controller.snapshotActionPhaseTelemetry(),
+    });
+  }
   try {
     await controller?.detachForWorkerShutdown();
   } catch {

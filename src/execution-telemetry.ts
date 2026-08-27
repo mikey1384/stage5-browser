@@ -169,16 +169,21 @@ export function buildExecutionTrace(input: BuildExecutionTraceInput): BrowserExe
         durationMs: phaseDuration(transition.enteredAtMs, transitions[index + 1]?.enteredAtMs, action.completedAtMs),
       })),
     })),
-    conclusion: conclusionFrom(input.result, input.error),
+    conclusion: conclusionFrom(input.result, input.error, input.workerTelemetry),
     privacy: privacyContract(),
   };
 }
 
-function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | null): ExecutionTraceConclusion {
+function conclusionFrom(
+  result: unknown,
+  error: SerializedStage5BrowserError | null,
+  workerTelemetry: WorkerCommandTelemetry | null,
+): ExecutionTraceConclusion {
   const combined = { result, error };
   const checks = checkSummaries(combined);
+  const explicitActionDispatched = dispatchConclusion(valuesForKey(combined, 'actionDispatched'));
   return {
-    actionDispatched: dispatchConclusion(valuesForKey(combined, 'actionDispatched')),
+    actionDispatched: explicitActionDispatched ?? phaseDispatchConclusion(workerTelemetry),
     clickDispatched: dispatchConclusion(valuesForKey(combined, 'clickDispatched')),
     postconditionPassed: postconditionPassed(combined),
     checks,
@@ -194,6 +199,15 @@ function conclusionFrom(result: unknown, error: SerializedStage5BrowserError | n
     popupOwnership: popupOwnershipConclusion(combined),
     targetState: targetStateConclusion(combined),
   };
+}
+
+function phaseDispatchConclusion(
+  telemetry: WorkerCommandTelemetry | null,
+): true | 'unknown' | null {
+  const states = telemetry?.actionPhases.map((phase) => phase.dispatchState) ?? [];
+  if (states.includes('dispatched')) return true;
+  if (states.includes('possibly_dispatched')) return 'unknown';
+  return null;
 }
 
 function checkSummaries(value: unknown): ExecutionTraceConclusion['checks'] {

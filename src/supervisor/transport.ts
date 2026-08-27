@@ -28,6 +28,17 @@ export const transportOperations = {
           return;
         }
         this.pending.delete(id);
+        if (entry.telemetryOperationId !== null) {
+          const lateTimer = setTimeout(() => {
+            this.lateTelemetryByRequest.delete(id);
+          }, Math.max(5_000, this.config.workerShutdownGraceMs + 1_000));
+          lateTimer.unref?.();
+          this.lateTelemetryByRequest.set(id, {
+            child,
+            telemetryOperationId: entry.telemetryOperationId,
+            timer: lateTimer,
+          });
+        }
         reject(
           new Stage5BrowserError('OPERATION_TIMEOUT', `The ${command} operation exceeded its hard deadline.`, {
             recoverable: true,
@@ -69,7 +80,17 @@ export const transportOperations = {
       return;
     }
     const entry = this.pending.get(message.id);
-    if (entry === undefined || entry.child !== child) {
+    if (entry === undefined) {
+      const late = this.lateTelemetryByRequest.get(message.id);
+      if (late === undefined || late.child !== child) return;
+      this.lateTelemetryByRequest.delete(message.id);
+      clearTimeout(late.timer);
+      if (message.telemetry !== undefined) {
+        this.captureWorkerTelemetry(late.telemetryOperationId, message.telemetry);
+      }
+      return;
+    }
+    if (entry.child !== child) {
       return;
     }
 

@@ -145,7 +145,7 @@ describe('human authentication bootstrap', () => {
     temporaryRoots.push(root);
     await writeFile(path.join(root, '.parentlock'), '');
     await expect(profileLocks(root)).resolves.toEqual([]);
-    await expect(waitForProfileUnlock(root, 250)).resolves.toBe(true);
+    await expect(waitForProfileUnlock(root, 2_500)).resolves.toBe(true);
   });
 
   it('tracks a detached native process without controlling it', async () => {

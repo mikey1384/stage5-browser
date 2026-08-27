@@ -108,4 +108,22 @@ describe('ActionPhaseManager', () => {
     ]);
     expect(manager.drainCompleted()).toEqual([]);
   });
+
+  it('snapshots an in-flight dispatch without draining or finalizing it', () => {
+    const manager = new ActionPhaseManager();
+    const session = manager.begin('select_option', 1_000);
+    advanceToPreparation(session);
+    session.beginDispatch();
+    session.concludeDispatch({ actionDispatched: 'unknown' });
+
+    expect(manager.snapshotAll()).toEqual([
+      expect.objectContaining({
+        action: 'select_option',
+        dispatchState: 'possibly_dispatched',
+        terminalOutcome: null,
+      }),
+    ]);
+    expect(manager.activeCount).toBe(1);
+    expect(manager.drainCompleted()).toEqual([]);
+  });
 });

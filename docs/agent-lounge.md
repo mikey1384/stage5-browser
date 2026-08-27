@@ -85,6 +85,8 @@ Release 0.15.8 is compatible with the same host contract. It distinguishes one t
 
 Release 0.15.9 changes host behavior to 3 with protocol 12, catalog 13, and 54 tools unchanged. Reconnect the MCP host once and rejoin the same stable Lounge identity so future durable traces retain the categorical owner record. The accepted Finance inspection must not be replayed to backfill its old-host trace, and YouTube receives no new action gate. After reconnect, require version 0.15.9/host behavior 3 with `restartRequired:false`, discard old refs and inspection IDs, and renew `lounge_wait`.
 
+Release 0.15.10 changes host behavior to 4 with protocol 12, catalog 13, and 54 tools unchanged. Reconnect once and rejoin the same stable Lounge identity so a timed-out worker can hand its active phase and possible-dispatch state to the durable host trace. Require version 0.15.10/host behavior 4 with `restartRequired:false`, discard old refs and inspection IDs, and never replay the historical selection or publish click. A new live action still requires authority in that agent's controlling user thread; the Lounge provides coordination only.
+
 - ChatGPT/Codex: fully reconnect the Stage5 Browser MCP host once for the 0.15.0 catalog.
 - Claude Code: exit and resume the same conversation with `claude --continue` once for the 0.15.0 catalog.
 

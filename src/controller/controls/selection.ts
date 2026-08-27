@@ -12,6 +12,8 @@ interface NativeSelectEventRecord {
   changeListener: EventListener;
 }
 
+const CONTROL_SELECTION_BASELINE_OBSERVATION_MS = 500;
+
 export function controlOptionMatches(
   candidate: ControlOptionObservation,
   requested: NonNullable<BrowserCommandInput<'selectOption'>['option']>,
@@ -264,11 +266,29 @@ export const controlSelectionOperations = {
       });
     }
     const popupHandle = inspection.popupHandle;
-    const beforeRepresentation = await observeControlSelectionRepresentation(
-      inspection.controlLocator,
-      option.observation.name,
-      deadlineAt,
+    const baselineDeadlineAt = Date.now() + Math.max(
+      1,
+      Math.min(CONTROL_SELECTION_BASELINE_OBSERVATION_MS, remainingUntil(deadlineAt)),
     );
+    const beforeRepresentation = await observeControlSelectionRepresentation(
+      inspection.controlHandle,
+      option.observation.name,
+      baselineDeadlineAt,
+    );
+    if (beforeRepresentation === null) {
+      throw new Stage5BrowserError(
+        'OPERATION_FAILED',
+        'The exact inspected control could not be observed before the selection dispatch gate.',
+        {
+          recoverable: true,
+          details: {
+            reason: 'control_selection_baseline_unavailable',
+            actionDispatched: false,
+            suggestedAction: 'Inspect the control once more before deciding whether a new selection is safe.',
+          },
+        },
+      );
+    }
     if (beforeRepresentation?.controlRepresentsOption === true) {
       return {
         actionDispatched: false,
@@ -280,10 +300,7 @@ export const controlSelectionOperations = {
         popupClosed: null,
       };
     }
-    const baselineRepresentation = beforeRepresentation ?? {
-      controlRepresentsOption: false,
-      localExactRepresentationCount: 0,
-    };
+    const baselineRepresentation = beforeRepresentation;
     const result = await this.executeClickAction({
       action: 'select_option',
       timeoutMs: Math.max(1, remainingUntil(deadlineAt)),
