@@ -1,6 +1,7 @@
 import { type Browser, type ClickPostcondition, inspectTargetState, type Locator, type Page, type SafeTargetState, type SanitizedActionDiagnostic, type SanitizedNativeWindowActivationEvidence, type SanitizedPageActivationEvidence, sanitizeUrlForJournal, Stage5BrowserError } from '../dependencies.js';
 import { boundedValue, CLICK_REF_INCREMENTAL_SETTLE_MS, CLICK_REF_REBIND_SETTLE_MS, CLICK_ROLE_RESOLUTION_TIMEOUT_MS, type PageActivationObservation, type PreparedObservedClickTarget, remainingUntil, SCREENSHOT_MIN_COMPRESSED_BYTES_PER_PIXEL } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import type { ClickActivationPolicy } from '../action/click-plan.js';
 
 export const inputClickTargetOperations = {
   async requireUniqueClickTarget(
@@ -100,6 +101,9 @@ export const inputClickTargetOperations = {
     postcondition: ClickPostcondition | null,
     activationAttemptCount = 1,
     priorNativeWindow?: SanitizedNativeWindowActivationEvidence,
+    activationPolicy: ClickActivationPolicy = postcondition === null
+      ? 'pointer_only'
+      : 'postconditioned_native_keyboard',
   ): Promise<PreparedObservedClickTarget> {
     let lastTargetState = await this.requireUniqueClickTarget(
       page,
@@ -192,8 +196,10 @@ export const inputClickTargetOperations = {
         handle,
         actionDeadlineAt,
         postcondition,
+        activationPolicy,
+        targetState.receivesPointerEvents,
       );
-      const postconditionedKeyboardActivation = activation !== 'pointer' && postcondition !== null;
+      const postconditionedKeyboardActivation = activation !== 'pointer';
       const failure = !targetState.visible || (!targetState.inViewport && !postconditionedKeyboardActivation)
         ? { diagnostic: 'not_visible' as const }
         : !targetState.enabled

@@ -87,6 +87,7 @@ export const clickExecutorOperations = {
           (priorActivation?.attemptCount ?? 0) + 1,
           actionStartedAt,
           actionDeadlineAt,
+          plan.activationPolicy,
         );
         if (preparedTarget.viewportPreparation !== null) {
           phases.recordViewportPreparation(preparedTarget.viewportPreparation);

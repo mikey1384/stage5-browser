@@ -1,6 +1,7 @@
 import { type BrowserCommandInput, type BrowserCommandOutput, type ElementHandle, type FormFieldObservation, type Frame, type Page, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedFormField, type ObservedFormInspection } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import type { ClickActivationPolicy } from '../action/click-plan.js';
 import type { FormFieldMutationEvidence } from './field-fill.js';
 
 export const formFieldCheckOperations = {
@@ -47,6 +48,7 @@ export const formFieldCheckOperations = {
       observe: async () => ({ page, frame }),
       plan: ({ frame }) => ({
         action: 'set_checked',
+        activationPolicy: 'postconditioned_native_keyboard',
         page,
         frame,
         postcondition,
@@ -55,6 +57,7 @@ export const formFieldCheckOperations = {
           activationAttemptCount: number,
           actionStartedAt: string,
           actionDeadlineAt: number,
+          activationPolicy: ClickActivationPolicy,
         ) => {
           const pageActivation = await this.primeSelectedPageForTargetPreparation(
             page,
@@ -81,6 +84,7 @@ export const formFieldCheckOperations = {
             postcondition,
             pageActivation,
             borrowed,
+            activationPolicy,
           );
         },
         reconciliationLocator: () => field.locator,

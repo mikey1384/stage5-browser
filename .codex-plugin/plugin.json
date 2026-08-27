@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.19.0",
+  "version": "0.19.1",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -50,6 +50,7 @@
       "Deadline-safe shared click engine",
       "React-safe popup activation",
       "Postconditioned native-button keyboard activation",
+      "Manager-owned covered-control keyboard fallback",
       "Postconditioned off-viewport keyboard reach",
       "Unique geometric portal-popup ownership",
       "Uniquely nearest popup-anchor ownership",

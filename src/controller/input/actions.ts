@@ -1,6 +1,7 @@
 import { type BrowserCommandInput, type BrowserCommandOutput, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import type { ObservedSnapshot } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import type { ClickActivationPolicy } from '../action/click-plan.js';
 
 export const inputActionsOperations = {
   async clickByRole(
@@ -20,6 +21,9 @@ export const inputActionsOperations = {
         });
         return {
           action: 'click_by_role',
+          activationPolicy: input.postcondition === null
+            ? 'pointer_only'
+            : 'postconditioned_native_keyboard',
           page,
           frame,
           postcondition: input.postcondition,
@@ -28,6 +32,7 @@ export const inputActionsOperations = {
             activationAttemptCount: number,
             actionStartedAt: string,
             actionDeadlineAt: number,
+            activationPolicy: ClickActivationPolicy,
           ) => this.prepareRoleClickTarget(
             page,
             locator,
@@ -38,6 +43,7 @@ export const inputActionsOperations = {
             input.postcondition,
             activationAttemptCount,
             priorNativeActivation ?? undefined,
+            activationPolicy,
           ),
           reconciliationLocator: () => locator,
           discardCapabilities: () => this.discardObservedSnapshot(frame),
@@ -60,6 +66,9 @@ export const inputActionsOperations = {
       },
       plan: ({ page, frame, observed }) => ({
         action: 'click_by_ref',
+        activationPolicy: input.postcondition === null
+          ? 'pointer_only'
+          : 'postconditioned_native_keyboard',
         page,
         frame,
         postcondition: input.postcondition,
@@ -68,6 +77,7 @@ export const inputActionsOperations = {
           activationAttemptCount: number,
           actionStartedAt: string,
           actionDeadlineAt: number,
+          activationPolicy: ClickActivationPolicy,
         ) => {
           const retained = observed as ObservedSnapshot;
           const capability = await this.retainObservedReferenceCapability(
@@ -128,6 +138,7 @@ export const inputActionsOperations = {
               input.postcondition,
               pageActivation,
               resolution.handle,
+              activationPolicy,
             );
           } catch (error) {
             await capability?.handle.dispose().catch(() => undefined);

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { type BrowserCommandInput, type BrowserCommandOutput, type ControlOptionObservation, type ControlSelectionEvidence, type Frame, type Page, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedControlInspection, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import type { ClickActivationPolicy } from '../action/click-plan.js';
 import { elementWithinPopupSurfaces, inspectPopupSurfaceSetRendering, resolveUniqueSemanticReferenceInPopupSurfaces } from './popup-set.js';
 import { observeCustomControlSelectionBaseline, type CustomControlSelectionBaseline } from './selection-baseline.js';
 import { reconcileCustomControlSelection } from './selection-evidence.js';
@@ -338,6 +339,7 @@ export const controlSelectionOperations = {
           (option.selectedRepresentationObserved === true && represented === desiredSelected);
         return {
           action: 'select_option',
+          activationPolicy: 'pointer_only',
           page,
           frame,
           postcondition: null,
@@ -371,6 +373,7 @@ export const controlSelectionOperations = {
             activationAttemptCount: number,
             actionStartedAt: string,
             actionDeadlineAt: number,
+            activationPolicy: ClickActivationPolicy,
           ) => {
             const pageActivation = await this.primeSelectedPageForTargetPreparation(
               page,
@@ -419,6 +422,7 @@ export const controlSelectionOperations = {
               null,
               pageActivation,
               handle,
+              activationPolicy,
             );
           },
           reconciliationLocator: (prepared) => prepared.locator,

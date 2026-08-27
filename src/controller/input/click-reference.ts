@@ -2,18 +2,25 @@ import { type Browser, type ClickPostcondition, type ElementHandle, type Frame, 
 import { boundedValue, CLICK_REF_ELEMENT_CANDIDATES, CLICK_REF_INCREMENTAL_SCROLL_STEPS, CLICK_REF_INCREMENTAL_SETTLE_MS, CLICK_REF_REBIND_SETTLE_MS, CLICK_REF_VIEWPORT_PREPARATION_TIMEOUT_MS, type ObservedReferenceResolution, type ObservedReferenceSemantic, type ObservedSnapshot, POPUP_OPTION_ROLES, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import type { ViewportPreparationTelemetry } from '../../protocol/telemetry.js';
+import type { ClickActivationPolicy } from '../action/click-plan.js';
 
 export const inputClickReferenceOperations = {
   async preferredObservedClickActivation(
     handle: ElementHandle<HTMLElement | SVGElement>,
     actionDeadlineAt: number,
     postcondition: ClickPostcondition | null,
+    activationPolicy: ClickActivationPolicy,
+    receivesPointerEvents: boolean | null,
   ): Promise<PreparedObservedClickTarget['activation']> {
     // A native button's keyboard semantics may act on a framework-managed
-    // active option before the exact observed button receives a click. Keep
-    // keyboard activation as a guarded, postconditioned recovery primitive;
-    // ordinary exact-target contact uses the pointer like every other target.
-    if (postcondition === null) return 'pointer';
+    // active option before the exact observed button receives a click. The
+    // responsible manager therefore declares pointer-only, postconditioned
+    // keyboard, or covered-target keyboard fallback explicitly.
+    if (activationPolicy === 'pointer_only') return 'pointer';
+    if (
+      activationPolicy === 'postconditioned_native_keyboard_fallback' &&
+      receivesPointerEvents !== false
+    ) return 'pointer';
     const useKeyboard = await boundedValue(
       handle.evaluate((element) => element instanceof HTMLButtonElement),
       Math.max(1, remainingUntil(actionDeadlineAt)),
@@ -187,6 +194,9 @@ export const inputClickReferenceOperations = {
     postcondition: ClickPostcondition | null,
     pageActivation: SanitizedPageActivationEvidence | null = null,
     retainedHandle: ElementHandle<HTMLElement | SVGElement> | null = null,
+    activationPolicy: ClickActivationPolicy = postcondition === null
+      ? 'pointer_only'
+      : 'postconditioned_native_keyboard',
   ): Promise<PreparedObservedClickTarget> {
     let preparedLocator = locator;
     let handle = retainedHandle ?? await boundedValue(
@@ -362,8 +372,10 @@ export const inputClickReferenceOperations = {
       handle,
       actionDeadlineAt,
       postcondition,
+      activationPolicy,
+      targetState.receivesPointerEvents,
     );
-    const postconditionedKeyboardActivation = activation !== 'pointer' && postcondition !== null;
+    const postconditionedKeyboardActivation = activation !== 'pointer';
     viewportPreparation.reachStrategy = postconditionedKeyboardActivation
       ? 'postconditioned_keyboard'
       : 'pointer_viewport';

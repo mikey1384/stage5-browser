@@ -1,6 +1,7 @@
 import { type BrowserCommandOutput, type ElementHandle, type Frame, type Locator, type Page, type PostconditionResult, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { boundedValue, type ObservedControlPopupSurface, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
+import type { ClickActivationPolicy } from '../action/click-plan.js';
 import type { ControlPopupAssociation } from './popup-association.js';
 import { renderedControlPopupSurfaceCount } from './popup-surfaces.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
@@ -25,6 +26,7 @@ export const controlRevealOperations = {
       observe: async () => ({ page, frame }),
       plan: () => ({
         action: 'click_by_role',
+        activationPolicy: 'postconditioned_native_keyboard_fallback',
         page,
         frame,
         postcondition: null,
@@ -33,6 +35,7 @@ export const controlRevealOperations = {
           activationAttemptCount: number,
           actionStartedAt: string,
           actionDeadlineAt: number,
+          activationPolicy: ClickActivationPolicy,
         ): Promise<PreparedObservedClickTarget> => {
           const pageActivation = await this.primeSelectedPageForTargetPreparation(
             page,
@@ -51,6 +54,7 @@ export const controlRevealOperations = {
             null,
             pageActivation,
             controlHandle,
+            activationPolicy,
           );
           const renderedSurfaceCount = await renderedControlPopupSurfaceCount(
             frame,

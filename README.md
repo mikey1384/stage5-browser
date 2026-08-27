@@ -185,6 +185,7 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-durable-lounge-work-notes.md` — revisioned per-identity handoff state, replacement-session fencing, and manager visibility in 0.17.0
 - `docs/dogfooding-2026-08-27-available-moves-and-agent-judgment.md` — current-move planning, bounded semantic judgment, explicit startup, telemetry, and Finance tie recovery in 0.18.0
 - `docs/dogfooding-2026-08-27-observed-popup-owner-candidates.md` — one-use agent-selected popup-owner candidates for composite controls in 0.19.0
+- `docs/dogfooding-2026-08-27-covered-popup-reveal-activation.md` — manager-owned native keyboard fallback for covered popup openers in compatible 0.19.1
 - `docs/dogfooding-2026-08-27-framework-popup-rebind.md` — symmetric read-only popup-capability repair with no opener replay in 0.15.13
 - `docs/dogfooding-2026-08-27-framework-popup-stabilization.md` — bounded passive popup lifecycle stabilization across framework replacement in 0.15.14
 - `docs/dogfooding-2026-08-27-checkbox-backed-option-state.md` — one authoritative nested option-state model for framework multi-selects in 0.15.15
