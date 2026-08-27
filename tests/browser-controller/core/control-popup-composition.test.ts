@@ -185,23 +185,77 @@ describe('BrowserController composite popup ownership', () => {
     await expect(page.locator('#inputs').textContent()).resolves.toBe('0');
   });
 
-  it('retains bounded ownership telemetry after one ambiguous opener input', async () => {
+  it('uses one newly rendered surface as causal ownership after one exact opener input', async () => {
     const page = await openFixture(`<!doctype html><html><head><style>
-      body { margin: 0; min-height: 240px; }
-      button, #options { position: absolute; top: 40px; height: 40px; box-sizing: border-box; }
-      #other { left: 20px; width: 100px; }
-      #options { left: 120px; width: 80px; border: 1px solid black; }
-      #target { left: 200px; width: 100px; }
+      body { margin: 0; min-height: 300px; }
+      button, #options { position: absolute; left: 20px; width: 240px; height: 40px; box-sizing: border-box; }
+      #target { top: 20px; }
+      #options { top: 60px; height: 160px; border: 1px solid black; z-index: 2; }
+      #other-exterior { top: 220px; }
+      #covered-a { top: 80px; }
+      #covered-b { top: 120px; }
+      #uncovered { top: 160px; z-index: 3; }
     </style></head><body tabindex="-1">
-      <button id="other">Other field</button>
       <button id="target">Target field</button>
       <div id="options" hidden><div role="option">Target choice</div></div>
+      <button id="other-exterior">Other exterior field</button>
+      <button id="covered-a">Covered field A</button>
+      <button id="covered-b">Covered field B</button>
+      <button id="uncovered">Uncovered field</button>
       <output id="opens">0</output>
       <script>
-        target.addEventListener('click', () => {
+        target.addEventListener('mousedown', () => {
           opens.value = String(Number(opens.value) + 1);
           options.hidden = false;
+          const replacement = target.cloneNode(true);
+          target.replaceWith(replacement);
           document.body.focus();
+        });
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Target field', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    expect(inspected?.inspection).toMatchObject({
+      options: [{ name: 'Target choice' }],
+      reveal: {
+        openerActionDispatched: true,
+        popupOpened: true,
+        associationProof: 'post_dispatch_unique',
+        renderedPopupCount: 1,
+        popupOwnership: {
+          proofTier: 'spatial',
+          candidateCount: 5,
+          exteriorCandidateCount: 2,
+          overlappingCandidateCount: 3,
+          surfaceCoveredCandidateCount: 2,
+          decision: 'tie_or_near',
+        },
+      },
+    });
+    await expect(page.locator('#opens').textContent()).resolves.toBe('1');
+  });
+
+  it('does not infer causality when a popup appears during reversible opener preparation', async () => {
+    const page = await openFixture(`<!doctype html><html><head><style>
+      body { margin: 0; min-height: 1800px; }
+      #target { position: absolute; top: 1400px; left: 20px; }
+      #other { position: fixed; top: 120px; left: 20px; }
+      #options { position: fixed; top: 20px; left: 20px; width: 200px; height: 80px; border: 1px solid black; }
+    </style></head><body>
+      <button id="target">Target field</button>
+      <button id="other" aria-controls="options">Other field</button>
+      <div id="options" role="listbox" hidden><div role="option">Autonomous choice</div></div>
+      <output id="opens">0</output>
+      <script>
+        addEventListener('scroll', () => { options.hidden = false; }, { once: true });
+        target.addEventListener('mousedown', () => {
+          opens.value = String(Number(opens.value) + 1);
         });
       </script>
     </body></html>`);
@@ -213,18 +267,13 @@ describe('BrowserController composite popup ownership', () => {
       maxOptions: 20,
       timeoutMs: 5_000,
     })).rejects.toMatchObject({
-      code: 'AMBIGUOUS_TARGET',
+      code: 'OPERATION_FAILED',
       details: {
-        reason: 'ambiguous_control_popup_after_reveal',
-        actionDispatched: true,
+        reason: 'popup_surface_present_before_reveal',
+        actionDispatched: false,
         renderedPopupCount: 1,
-        popupOwnership: {
-          proofTier: 'spatial',
-          candidateCount: 2,
-          decision: 'tie_or_near',
-        },
       },
     });
-    await expect(page.locator('#opens').textContent()).resolves.toBe('1');
+    await expect(page.locator('#opens').textContent()).resolves.toBe('0');
   });
 });

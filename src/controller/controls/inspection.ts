@@ -136,6 +136,7 @@ export const controlInspectionOperations = {
             popupOpened = rendered;
           } else {
             let revealError: unknown = null;
+            const revealEvidence = { zeroRenderedSurfaceBaseline: false };
             try {
               const reveal = await this.revealControlPopup(
                 page,
@@ -144,6 +145,7 @@ export const controlInspectionOperations = {
                 controlHandle,
                 documentVersion,
                 deadlineAt,
+                revealEvidence,
               );
               openerActionDispatched = reveal.dispatch.actionDispatched;
             } catch (error) {
@@ -173,7 +175,8 @@ export const controlInspectionOperations = {
               controlHandle,
               deadlineAt,
               {
-                allowUniqueRenderedAfterDispatch: openerActionDispatched !== false,
+                allowUniqueRenderedAfterDispatch:
+                  revealEvidence.zeroRenderedSurfaceBaseline && openerActionDispatched !== false,
                 requireRendered: true,
               },
             );

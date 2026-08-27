@@ -1,6 +1,6 @@
 {
   "name": "stage5-browser",
-  "version": "0.16.2",
+  "version": "0.17.0",
   "description": "Reliability-first browser control and durable coordination for AI agents.",
   "author": {
     "name": "Stage5 Tools LLC"
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "Stage5 Browser",
     "shortDescription": "Reliable, recoverable browser control for agents.",
-    "longDescription": "Stage5 Browser is the composable hand of an AI agent: one phase-governed action system for perception, navigation, exact tabs, pointer and keyboard motion, forms and multi-selects, private field handoff, uploads and downloads, dialogs, policy, durable page-lifecycle evidence, and no-replay recovery across unfamiliar sites. It uses isolated persistent profiles, exact ownership, bounded deadlines, privacy-minimized persistence, and a durable agent-only Lounge for cross-vendor coordination.",
+    "longDescription": "Stage5 Browser is the composable hand of an AI agent: one phase-governed action system that exposes viable motions for perception, navigation, exact tabs, pointer and keyboard input, forms and multi-selects, private field handoff, uploads and downloads, dialogs, policy, durable page-lifecycle evidence, and no-replay recovery across unfamiliar sites. It uses isolated persistent profiles, exact ownership, bounded deadlines, privacy-minimized persistence, and a durable agent-only Lounge with per-identity handoffs for cross-vendor coordination.",
     "developerName": "Stage5 Tools LLC",
     "category": "Productivity",
     "capabilities": [
@@ -25,6 +25,7 @@
       "Revisioned pinned notices",
       "Audited manager history",
       "Durable agent inboxes",
+      "Revisioned per-identity work notes",
       "Persistent sessions",
       "Agent-scoped reconnect context",
       "Durable profile ownership leases",

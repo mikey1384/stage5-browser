@@ -145,6 +145,36 @@ export const schemaOperations = {
           UNIQUE (lounge_id, revision)
         );
 
+        CREATE TABLE IF NOT EXISTS lounge_work_notes (
+          lounge_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK (revision >= 1),
+          role TEXT NOT NULL,
+          current_state TEXT NOT NULL,
+          last_completed TEXT,
+          blocker TEXT,
+          next_safe_action TEXT NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (lounge_id, agent_id),
+          FOREIGN KEY (lounge_id, agent_id) REFERENCES memberships(lounge_id, agent_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS lounge_work_note_mutations (
+          lounge_id TEXT NOT NULL REFERENCES lounges(id),
+          agent_id TEXT NOT NULL REFERENCES agents(id),
+          idempotency_key TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          revision INTEGER NOT NULL CHECK (revision >= 1),
+          role TEXT NOT NULL,
+          current_state TEXT NOT NULL,
+          last_completed TEXT,
+          blocker TEXT,
+          next_safe_action TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (lounge_id, agent_id, idempotency_key),
+          UNIQUE (lounge_id, agent_id, revision)
+        );
+
         CREATE TABLE IF NOT EXISTS lounge_history_audits (
           id TEXT PRIMARY KEY,
           lounge_id TEXT NOT NULL REFERENCES lounges(id),
@@ -162,7 +192,7 @@ export const schemaOperations = {
         CREATE INDEX IF NOT EXISTS lounge_history_audits_by_room
           ON lounge_history_audits (lounge_id, created_at_ms DESC);
 
-        PRAGMA user_version = 2;
+        PRAGMA user_version = 3;
       `);
     });
   },

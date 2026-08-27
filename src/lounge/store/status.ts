@@ -111,10 +111,17 @@ export const statusOperations = {
       }
     }
 
+    const ownWorkNote = this.currentWorkNote(session.lounge_id, session.agent_id);
+
     return {
       requestingAgentId: session.agent_id,
       members,
       recentSentMessages: [...sentById.values()],
+      workNoteRevision: ownWorkNote.workNoteRevision,
+      workNote: ownWorkNote.workNote,
+      memberWorkNotes: this.managerAgentIds.has(session.agent_id)
+        ? this.memberWorkNotes(session.lounge_id)
+        : null,
       ...this.currentNotice(session.lounge_id),
     };
   },

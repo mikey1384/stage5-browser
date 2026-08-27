@@ -32,6 +32,8 @@ function handleRequest(store: LoungeStoreDatabase, request: LoungeStoreRequest):
     case 'status': return store.status(request.input);
     case 'notice': return store.notice(request.input);
     case 'pin': return store.pin(request.input);
+    case 'workNote': return store.workNote(request.input);
+    case 'setWorkNote': return store.setWorkNote(request.input);
     case 'history': return store.history(request.input);
     case 'closeSession': return store.closeSession(request.input);
     case 'close':

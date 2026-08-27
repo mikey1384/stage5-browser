@@ -10,6 +10,7 @@ import {
   type LoungeHistoryInput,
   type LoungeJoinResult,
   type LoungeMessageKind,
+  type LoungeWorkNoteFields,
 } from './lounge-types.js';
 
 const DEFAULT_LOUNGE_ID = 'stage5-lounge';
@@ -49,6 +50,12 @@ export interface LoungeAckRequest {
 
 export interface LoungePinRequest {
   body: string | null;
+  expectedRevision: number;
+  idempotencyKey: string;
+}
+
+export interface LoungeSetWorkNoteRequest {
+  note: LoungeWorkNoteFields;
   expectedRevision: number;
   idempotencyKey: string;
 }
@@ -165,16 +172,21 @@ export class LoungeService {
           },
         );
       }
-      const notice = await this.store.notice({ sessionId: this.joined.sessionId });
+      const [notice, workNote] = await Promise.all([
+        this.store.notice({ sessionId: this.joined.sessionId }),
+        this.store.workNote({ sessionId: this.joined.sessionId }),
+      ]);
       this.lastNoticeRevision = notice.noticeRevision;
       return {
         ...this.joined,
         ...notice,
+        workNoteRevision: workNote.workNoteRevision,
+        workNote: workNote.workNote,
         managerAccess: this.isManager(this.joined.agentId),
         online: false,
         wakeable: false,
         authority: 'coordination_only',
-        nextAction: 'Call lounge_wait now and renew it after every message or timeout while collaborative work remains active.',
+        nextAction: 'Resume from the returned work note, update it after any material state change, then call lounge_wait and renew it after every message or timeout.',
       };
     }
 
@@ -187,16 +199,23 @@ export class LoungeService {
         clientInstanceId: this.clientInstanceId,
         leaseMs: CONNECTED_LEASE_MS,
       });
-      const notice = await this.store.notice({ sessionId: this.joined.sessionId });
+      const [notice, workNote] = await Promise.all([
+        this.store.notice({ sessionId: this.joined.sessionId }),
+        this.store.workNote({ sessionId: this.joined.sessionId }),
+      ]);
       this.lastNoticeRevision = notice.noticeRevision;
       return {
         ...this.joined,
         ...notice,
+        workNoteRevision: workNote.workNoteRevision,
+        workNote: workNote.workNote,
         managerAccess: this.isManager(this.joined.agentId),
         online: false,
         wakeable: false,
         authority: 'coordination_only',
-        nextAction: 'Send one readiness message, then call lounge_wait and renew it after every message or timeout.',
+        nextAction: workNote.workNote === null
+          ? 'Set the initial durable work note, send one readiness message, then call lounge_wait.'
+          : 'Resume from the durable work note, update it after any material state change, send one readiness message, then call lounge_wait.',
       };
     } catch (error) {
       throw asStage5Error(error);
@@ -360,6 +379,24 @@ export class LoungeService {
         managerAccess: true,
         authority: 'coordination_only',
         nextAction: 'The revisioned notice is durable and will wake current Lounge listeners; renew lounge_wait whenever idle.',
+      };
+    } catch (error) {
+      throw asStage5Error(error);
+    }
+  }
+
+  async setWorkNote(input: LoungeSetWorkNoteRequest): Promise<Record<string, unknown>> {
+    const joined = this.requireJoined();
+    try {
+      return {
+        ...await this.store.setWorkNote({
+          sessionId: joined.sessionId,
+          note: input.note,
+          expectedRevision: input.expectedRevision,
+          idempotencyKey: input.idempotencyKey,
+        }),
+        authority: 'coordination_only',
+        nextAction: 'Use the new revision for the next material work transition; keep the note sanitized and resume Lounge waiting whenever idle.',
       };
     } catch (error) {
       throw asStage5Error(error);

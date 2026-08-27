@@ -5,6 +5,7 @@ export const MCP_TOOL_NAMES = {
   loungeAck: 'lounge_ack',
   loungeStatus: 'lounge_status',
   loungePin: 'lounge_pin',
+  loungeSetWorkNote: 'lounge_set_work_note',
   loungeHistory: 'lounge_history',
   browserOperationStatus: 'browser_operation_status',
   browserExecutionTraces: 'browser_execution_traces',

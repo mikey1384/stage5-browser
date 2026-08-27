@@ -2,7 +2,12 @@ import { type BrowserCommandOutput, type ElementHandle, type Frame, type Locator
 import { boundedValue, type ObservedControlPopupSurface, type PreparedObservedClickTarget, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
 import type { ControlPopupAssociation } from './options.js';
+import { renderedControlPopupSurfaceCount } from './popup-surfaces.js';
 import { disposePopupSurfaces, inspectPopupSurfaceSetRendering } from './popup-set.js';
+
+export interface ControlPopupRevealEvidence {
+  zeroRenderedSurfaceBaseline: boolean;
+}
 
 export const controlRevealOperations = {
   async revealControlPopup(
@@ -12,6 +17,7 @@ export const controlRevealOperations = {
     controlHandle: ElementHandle<HTMLElement>,
     documentVersion: number,
     deadlineAt: number,
+    evidence: ControlPopupRevealEvidence,
   ): Promise<BrowserCommandOutput<'clickByRole'>> {
     return await this.executeClickAction({
       action: 'click_by_role',
@@ -36,7 +42,7 @@ export const controlRevealOperations = {
             activationAttemptCount,
             priorNativeActivation ?? undefined,
           );
-          return this.prepareObservedClickTarget(
+          const prepared = await this.prepareObservedClickTarget(
             page,
             frame,
             controlLocator,
@@ -46,12 +52,37 @@ export const controlRevealOperations = {
             pageActivation,
             controlHandle,
           );
+          const renderedSurfaceCount = await renderedControlPopupSurfaceCount(
+            frame,
+            actionDeadlineAt,
+          );
+          if (renderedSurfaceCount !== 0) {
+            await prepared.handle.dispose().catch(() => undefined);
+            throw new Stage5BrowserError(
+              renderedSurfaceCount === null ? 'AMBIGUOUS_TARGET' : 'OPERATION_FAILED',
+              'The popup environment changed during reversible opener preparation.',
+              {
+                recoverable: true,
+                details: {
+                  reason: renderedSurfaceCount === null
+                    ? 'popup_surface_baseline_unknown_before_reveal'
+                    : 'popup_surface_present_before_reveal',
+                  actionDispatched: false,
+                  renderedPopupCount: renderedSurfaceCount,
+                  suggestedAction: 'Inspect the current control state passively. No opener input was dispatched.',
+                },
+              },
+            );
+          }
+          evidence.zeroRenderedSurfaceBaseline = true;
+          return prepared;
         },
         reconciliationLocator: (prepared) => prepared.locator,
         reconcile: (_prepared, remainingTimeoutMs) => this.reconcileControlPopupReveal(
           frame,
           controlLocator,
           Date.now() + Math.max(1, remainingTimeoutMs),
+          evidence.zeroRenderedSurfaceBaseline,
         ),
         discardCapabilities: () => undefined,
       }),
@@ -74,6 +105,7 @@ export const controlRevealOperations = {
     frame: Frame,
     controlLocator: Locator,
     deadlineAt: number,
+    allowPostDispatchUnique: boolean,
   ): Promise<PostconditionResult> {
     let controlHandle: ElementHandle<HTMLElement> | null = null;
     let popupSurfaces: ObservedControlPopupSurface[] = [];
@@ -94,7 +126,7 @@ export const controlRevealOperations = {
         frame,
         controlHandle,
         deadlineAt,
-        { allowUniqueRenderedAfterDispatch: true, requireRendered: true },
+        { allowUniqueRenderedAfterDispatch: allowPostDispatchUnique, requireRendered: true },
       );
       if (associated.kind === 'ambiguous') return failPopupReveal('ambiguous_control_popup_after_reveal', null, associated);
       if (associated.kind === 'missing') return failPopupReveal('control_popup_not_observed', false, associated);

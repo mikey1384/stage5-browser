@@ -24,6 +24,15 @@ export type LoungePresenceState = LoungeSessionState;
 export type LoungeAcknowledgementState = 'seen' | 'acted';
 export type LoungeDeliveryState = 'pending' | 'delivered' | LoungeAcknowledgementState;
 
+export const LOUNGE_WORK_NOTE_LIMITS = {
+  role: 200,
+  currentState: 1_000,
+  lastCompleted: 1_000,
+  blocker: 1_000,
+  nextSafeAction: 1_000,
+  totalBytes: 8 * 1024,
+} as const;
+
 export interface LoungeJoinInput {
   loungeId: string;
   agentId: string;
@@ -55,6 +64,44 @@ export interface LoungeNoticeState {
   loungeId: string;
   noticeRevision: number;
   pinnedNotice: LoungePinnedNotice | null;
+}
+
+export interface LoungeWorkNoteFields {
+  role: string;
+  currentState: string;
+  lastCompleted: string | null;
+  blocker: string | null;
+  nextSafeAction: string;
+}
+
+export interface LoungeWorkNote extends LoungeWorkNoteFields {
+  revision: number;
+  updatedAtMs: number;
+}
+
+export interface LoungeWorkNoteState {
+  loungeId: string;
+  agentId: string;
+  workNoteRevision: number;
+  workNote: LoungeWorkNote | null;
+}
+
+export type LoungeMemberWorkNoteState = LoungeWorkNoteState;
+
+export interface LoungeWorkNoteInput {
+  sessionId: string;
+}
+
+export interface LoungeSetWorkNoteInput {
+  sessionId: string;
+  note: LoungeWorkNoteFields;
+  expectedRevision: number;
+  idempotencyKey: string;
+  nowMs?: number;
+}
+
+export interface LoungeSetWorkNoteResult extends LoungeWorkNoteState {
+  duplicate: boolean;
 }
 
 export interface LoungeHeartbeatInput {
@@ -176,6 +223,9 @@ export interface LoungeStatusResult {
   requestingAgentId: string;
   members: LoungeMemberStatus[];
   recentSentMessages: LoungeSentMessageStatus[];
+  workNoteRevision: number;
+  workNote: LoungeWorkNote | null;
+  memberWorkNotes: LoungeMemberWorkNoteState[] | null;
   noticeRevision: number;
   pinnedNotice: LoungePinnedNotice | null;
 }
@@ -271,6 +321,8 @@ export type LoungeStoreOperation =
   | 'status'
   | 'notice'
   | 'pin'
+  | 'workNote'
+  | 'setWorkNote'
   | 'history'
   | 'closeSession'
   | 'close';
@@ -284,6 +336,8 @@ export type LoungeStoreRequest =
   | { id: string; operation: 'status'; input: LoungeStatusInput }
   | { id: string; operation: 'notice'; input: LoungeNoticeInput }
   | { id: string; operation: 'pin'; input: LoungePinInput }
+  | { id: string; operation: 'workNote'; input: LoungeWorkNoteInput }
+  | { id: string; operation: 'setWorkNote'; input: LoungeSetWorkNoteInput }
   | { id: string; operation: 'history'; input: LoungeHistoryInput }
   | { id: string; operation: 'closeSession'; input: LoungeCloseSessionInput }
   | { id: string; operation: 'close'; input: Record<string, never> };

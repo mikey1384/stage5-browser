@@ -199,7 +199,6 @@ export const controlOptionOperations = {
       }
       if (
         selected.size === 0 &&
-        !ownershipAmbiguous &&
         policy.allowUniqueRenderedAfterDispatch === true &&
         rendered.length === 1
       ) {

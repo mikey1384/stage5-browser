@@ -1,6 +1,6 @@
 import { type ControlPopupSurfaceProof, type ElementHandle, type Frame, type Locator } from '../dependencies.js';
 import { boundedValue, CONTROL_POPUP_OPTION_SELECTOR, CONTROL_POPUP_SELECTOR, MAX_CONTROL_POPUP_OPTION_CANDIDATES, remainingUntil } from '../model.js';
-import { popupRendered } from './rendering.js';
+import { popupRendered, popupRenderedState } from './rendering.js';
 
 const MAX_POPUP_SURFACES = 50;
 const MAX_POPUP_ANCESTORS = 16;
@@ -179,6 +179,25 @@ export async function discoverControlPopupSurfaces(
   } catch {
     await disposeSurfaces(surfaces);
     return { kind: 'unbounded', surfaces: [] };
+  }
+}
+
+export async function renderedControlPopupSurfaceCount(
+  frame: Frame,
+  deadlineAt: number,
+): Promise<number | null> {
+  const discovery = await discoverControlPopupSurfaces(frame, deadlineAt);
+  if (discovery.kind === 'unbounded') return null;
+  try {
+    let renderedCount = 0;
+    for (const { handle } of discovery.surfaces) {
+      const rendered = await popupRenderedState(handle, deadlineAt);
+      if (rendered === null) return null;
+      if (rendered) renderedCount += 1;
+    }
+    return renderedCount;
+  } finally {
+    await disposeSurfaces(discovery.surfaces);
   }
 }
 

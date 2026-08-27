@@ -24,11 +24,15 @@ import {
   type LoungePinResult,
   type LoungeSendInput,
   type LoungeSendResult,
+  type LoungeSetWorkNoteInput,
+  type LoungeSetWorkNoteResult,
   type LoungeStatusInput,
   type LoungeStatusResult,
   type LoungeStoreOperation,
   type LoungeStoreRequest,
   type LoungeStoreResponse,
+  type LoungeWorkNoteInput,
+  type LoungeWorkNoteState,
 } from './lounge-types.js';
 
 export interface LoungeStoreClientOptions {
@@ -155,6 +159,14 @@ export class LoungeStoreClient {
 
   pin(input: LoungePinInput): Promise<LoungePinResult> {
     return this.request('pin', input);
+  }
+
+  workNote(input: LoungeWorkNoteInput): Promise<LoungeWorkNoteState> {
+    return this.request('workNote', input);
+  }
+
+  setWorkNote(input: LoungeSetWorkNoteInput): Promise<LoungeSetWorkNoteResult> {
+    return this.request('setWorkNote', input);
   }
 
   history(input: LoungeHistoryInput): Promise<LoungeHistoryResult> {

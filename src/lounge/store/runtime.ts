@@ -5,6 +5,7 @@ import { messagesOperations, type MessagesOperations } from './messages.js';
 import { statusOperations, type StatusOperations } from './status.js';
 import { noticesOperations, type NoticesOperations } from './notices.js';
 import { historyOperations, type HistoryOperations } from './history.js';
+import { workNoteOperations, type WorkNoteOperations } from './work-notes.js';
 import { authorizationOperations, type AuthorizationOperations } from './authorization.js';
 import { schemaOperations, type SchemaOperations } from './schema.js';
 export interface LoungeStoreContext extends
@@ -13,6 +14,7 @@ export interface LoungeStoreContext extends
   StatusOperations,
   NoticesOperations,
   HistoryOperations,
+  WorkNoteOperations,
   AuthorizationOperations,
   SchemaOperations {
   database: DatabaseSync;
@@ -25,6 +27,7 @@ export interface LoungeStoreDatabase extends
   StatusOperations,
   NoticesOperations,
   HistoryOperations,
+  WorkNoteOperations,
   AuthorizationOperations,
   SchemaOperations {}
 
@@ -76,6 +79,7 @@ for (const operations of [
   statusOperations,
   noticesOperations,
   historyOperations,
+  workNoteOperations,
   authorizationOperations,
   schemaOperations,
 ]) {

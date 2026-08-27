@@ -35,6 +35,7 @@ export const MCP_TOOL_CONTRACTS = {
   [TOOL.loungeAck]: lounge(),
   [TOOL.loungeStatus]: lounge(),
   [TOOL.loungePin]: lounge(),
+  [TOOL.loungeSetWorkNote]: lounge(),
   [TOOL.loungeHistory]: lounge(),
   [TOOL.browserOperationStatus]: recovery(),
   [TOOL.browserExecutionTraces]: host('telemetry_manager', 'host_supervisor'),

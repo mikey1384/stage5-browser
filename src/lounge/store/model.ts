@@ -1,4 +1,4 @@
-import { type LoungeDeliveryState, type LoungeInboxMessage, type LoungePresenceState, type LoungeSendInput, type LoungeSessionState, LoungeStoreError, type LoungeStoreErrorShape, createHash } from './dependencies.js';
+import { LOUNGE_WORK_NOTE_LIMITS, type LoungeDeliveryState, type LoungeInboxMessage, type LoungePresenceState, type LoungeSendInput, type LoungeSessionState, type LoungeWorkNoteFields, LoungeStoreError, type LoungeStoreErrorShape, createHash } from './dependencies.js';
 
 export const DEFAULT_SESSION_LEASE_MS = 120_000;
 export const MIN_SESSION_LEASE_MS = 1_000;
@@ -6,6 +6,7 @@ export const MAX_SESSION_LEASE_MS = 300_000;
 export const MAX_MESSAGE_BODY_BYTES = 16 * 1024;
 export const MAX_INBOX_CLAIM = 50;
 export const MAX_RECENT_SENT_MESSAGES = 50;
+export const MAX_WORK_NOTE_MUTATIONS_PER_IDENTITY = 256;
 export const MAX_HISTORY_MESSAGES = 100;
 export const MAX_PINNED_NOTICE_CHARACTERS = 4_000;
 export const MAX_PINNED_NOTICE_BYTES = 8 * 1024;
@@ -82,6 +83,22 @@ export interface NoticeMutationRow {
   body: string | null;
   actor_agent_id: string;
   created_at_ms: number;
+}
+
+export interface WorkNoteRow {
+  lounge_id: string;
+  agent_id: string;
+  revision: number;
+  role: string;
+  current_state: string;
+  last_completed: string | null;
+  blocker: string | null;
+  next_safe_action: string;
+  updated_at_ms: number;
+}
+
+export interface WorkNoteMutationRow extends WorkNoteRow {
+  payload_hash: string;
 }
 
 export interface HistoryMessageRow {
@@ -196,6 +213,51 @@ export function messagePayloadHash(input: {
 }
 
 export function noticePayloadHash(input: { body: string | null; expectedRevision: number }): string {
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
+}
+
+export function normalizedWorkNote(note: LoungeWorkNoteFields): LoungeWorkNoteFields {
+  const normalized = {
+    role: note.role.trim(),
+    currentState: note.currentState.trim(),
+    lastCompleted: note.lastCompleted?.trim() ?? null,
+    blocker: note.blocker?.trim() ?? null,
+    nextSafeAction: note.nextSafeAction.trim(),
+  };
+  assertBoundedText(normalized.role, 'note.role', LOUNGE_WORK_NOTE_LIMITS.role);
+  assertBoundedText(
+    normalized.currentState,
+    'note.currentState',
+    LOUNGE_WORK_NOTE_LIMITS.currentState,
+  );
+  if (normalized.lastCompleted !== null) {
+    assertBoundedText(
+      normalized.lastCompleted,
+      'note.lastCompleted',
+      LOUNGE_WORK_NOTE_LIMITS.lastCompleted,
+    );
+  }
+  if (normalized.blocker !== null) {
+    assertBoundedText(normalized.blocker, 'note.blocker', LOUNGE_WORK_NOTE_LIMITS.blocker);
+  }
+  assertBoundedText(
+    normalized.nextSafeAction,
+    'note.nextSafeAction',
+    LOUNGE_WORK_NOTE_LIMITS.nextSafeAction,
+  );
+  if (Buffer.byteLength(JSON.stringify(normalized), 'utf8') > LOUNGE_WORK_NOTE_LIMITS.totalBytes) {
+    throw new LoungeStoreError(
+      'INVALID_ARGUMENT',
+      `note must be no larger than ${LOUNGE_WORK_NOTE_LIMITS.totalBytes} UTF-8 bytes.`,
+    );
+  }
+  return normalized;
+}
+
+export function workNotePayloadHash(input: {
+  note: LoungeWorkNoteFields;
+  expectedRevision: number;
+}): string {
   return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }
 
