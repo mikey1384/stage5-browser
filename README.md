@@ -177,6 +177,8 @@ Key implementation files:
 - `docs/dogfooding-2026-08-27-popup-owner-telemetry-host.md` — fresh-host durable owner-telemetry contract and host-behavior 3 reconnect in 0.15.9
 - `docs/dogfooding-2026-08-27-timeout-phase-handoff.md` — exact-handle selection baseline, timeout-surviving action phases, and late-transition guidance in 0.15.10
 - `docs/dogfooding-2026-08-27-open-multiselect-reconciliation.md` — field-local selected-representation proof for intentionally open multi-select popups in 0.15.11
+- `docs/dogfooding-2026-08-27-framework-control-rebind.md` — phase-managed exact stale-opener rebind and zero-input failure telemetry in 0.15.12
+- `docs/dogfooding-2026-08-27-late-site-navigation.md` — telemetry-based distinction between bounded open stabilization and later autonomous site navigation
 - `docs/dogfooding-2026-08-24-x-timeline.md` — X timeline bottlenecks and the generic 0.4 remedies
 - `docs/dogfooding-2026-08-24-x-login-handoff.md` — X login diagnostics and the compatible 0.4.1–0.4.6 remedies
 - `docs/dogfooding-2026-08-24-x-upload.md` — X attachment, consumed-input, active-tab, selected-state, and dynamic-feed regressions plus the 0.5.0–0.5.1 remedies

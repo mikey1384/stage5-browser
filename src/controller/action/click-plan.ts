@@ -14,6 +14,7 @@ export interface ClickActionPlan {
   ): Promise<PreparedObservedClickTarget>;
   reconciliationLocator(prepared: PreparedObservedClickTarget): Locator;
   reconcile?(prepared: PreparedObservedClickTarget, remainingTimeoutMs: number): Promise<PostconditionResult | null>;
+  satisfiedWithoutDispatch?: { postcondition: PostconditionResult | null };
   discardCapabilities(): void;
 }
 

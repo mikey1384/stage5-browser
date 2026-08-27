@@ -60,6 +60,7 @@ describe('BrowserController custom selection baseline deadline', () => {
     });
     const intended = inspected.inspection.options[0];
     if (intended === undefined) throw new Error('The custom control fixture exposed no option.');
+    controller.drainActionPhaseTelemetry();
     const retained = (
       controller as unknown as {
         controlInspections: Map<string, { controlHandle: { evaluate: (...args: unknown[]) => Promise<unknown> } }>;
@@ -93,6 +94,18 @@ describe('BrowserController custom selection baseline deadline', () => {
         actionDispatched: false,
       },
     });
+    expect(controller.drainActionPhaseTelemetry().actionPhases).toEqual([
+      expect.objectContaining({
+        action: 'select_option',
+        dispatchState: 'not_attempted',
+        dispatchAttempts: 0,
+        terminalOutcome: 'failed',
+        transitions: [
+          expect.objectContaining({ phase: 'observe' }),
+          expect.objectContaining({ phase: 'finalize' }),
+        ],
+      }),
+    ]);
     const page = (
       controller as unknown as { activePage: { locator: (selector: string) => { textContent: () => Promise<string | null> } } }
     ).activePage;

@@ -4,6 +4,10 @@ import type { BrowserControllerContext } from '../runtime.js';
 import type { ViewportPreparationTelemetry } from '../../protocol/telemetry.js';
 import type { ClickActionDefinition, ClickActionPlan } from './click-plan.js';
 
+type ClickActionExecutionResult = Omit<BrowserCommandOutput<'clickByRole'>, 'dispatch'> & {
+  dispatch: { actionDispatched: boolean | 'unknown'; clickDispatched: boolean | 'unknown' };
+};
+
 function dispatchConclusion(error: unknown): boolean | 'unknown' {
   if (!(error instanceof Stage5BrowserError)) return 'unknown';
   const dispatched = error.details?.actionDispatched;
@@ -35,7 +39,7 @@ function viewportPreparationFromError(error: unknown): ViewportPreparationTeleme
 export const clickExecutorOperations = {
   async executeClickAction<Observation>(
     definition: ClickActionDefinition<Observation>,
-  ): Promise<BrowserCommandOutput<'clickByRole'>> {
+  ): Promise<ClickActionExecutionResult> {
     const phases = this.actionPhases.begin(definition.action, definition.timeoutMs);
     let plan: ClickActionPlan | null = null;
     let preparedTarget: PreparedObservedClickTarget | null = null;
@@ -52,6 +56,23 @@ export const clickExecutorOperations = {
       plan = await definition.plan(observation);
       phases.enter('preflight');
       await definition.preflight(plan);
+      if (plan.satisfiedWithoutDispatch !== undefined) {
+        phases.beginFinalization();
+        this.lastKnownUrl = plan.page.url();
+        const result = {
+          page: await this.pageSummary(plan.page, undefined, remainingUntil(deadlineAt)),
+          frame: this.frameSummary(plan.frame, plan.page),
+          postcondition: plan.satisfiedWithoutDispatch.postcondition,
+          viewportPreparation: null,
+          dispatch: { actionDispatched: false as const, clickDispatched: false as const },
+          newPage: null,
+          newPageCount: 0,
+          newDownload: null,
+          newDownloadCount: 0,
+        };
+        phases.complete('succeeded');
+        return result;
+      }
       this.pageDiagnostics.beginAction(plan.page, actionStartedAt);
 
       let priorActivation: SanitizedPageActivationEvidence | null = null;

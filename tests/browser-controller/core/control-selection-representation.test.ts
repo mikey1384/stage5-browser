@@ -109,6 +109,135 @@ describe('BrowserController custom selection representation', () => {
     expect(await page.locator('#clicks').textContent()).toBe('1');
   });
 
+  it('read-only rebinds a framework-replaced control before one exact option dispatch', async () => {
+    await openFixture(`<!doctype html><html><body>
+      <section id="funding-field">
+        <div id="selected-values"></div>
+        <button id="funding" aria-haspopup="listbox" aria-controls="funding-options" aria-expanded="false">
+          Funding source
+        </button>
+      </section>
+      <div id="funding-options" role="listbox" aria-label="Funding source choices" aria-multiselectable="true" hidden>
+        <div id="company-funds" role="option">Proprietary funds</div>
+      </div>
+      <output id="clicks">0</output>
+      <script>
+        funding.addEventListener('click', () => {
+          funding.setAttribute('aria-expanded', 'true');
+          document.querySelector('#funding-options').hidden = false;
+        });
+        document.querySelector('#company-funds').addEventListener('click', () => {
+          clicks.value = String(Number(clicks.value) + 1);
+          document.querySelector('#selected-values').innerHTML = '<span class="chip">Proprietary funds</span>';
+        });
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const intended = inspected?.inspection.options[0];
+    if (inspected === undefined || intended === undefined) {
+      throw new Error('The replacement fixture did not expose its exact option.');
+    }
+    const page = (
+      controller as unknown as {
+        activePage: {
+          evaluate: (callback: () => void) => Promise<void>;
+          locator: (selector: string) => { textContent: () => Promise<string | null> };
+        };
+      }
+    ).activePage;
+    await page.evaluate(() => {
+      const original = document.querySelector('#funding');
+      if (original === null) throw new Error('Missing disposable control.');
+      original.replaceWith(original.cloneNode(true));
+    });
+
+    const selected = await controller?.selectOption({
+      inspectionId: inspected.inspection.inspectionId,
+      optionId: intended.optionId,
+      control: null,
+      option: null,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+
+    expect(selected?.evidence).toMatchObject({
+      actionDispatched: true,
+      selectionEffectObserved: true,
+      selectedRepresentationObserved: true,
+      selectedState: null,
+      popupClosed: false,
+    });
+    expect(await page.locator('#clicks').textContent()).toBe('1');
+  });
+
+  it('finishes through the action phases without dispatch when the control already represents the option', async () => {
+    await openFixture(`<!doctype html><html><body>
+      <button id="funding" aria-label="Funding source" aria-haspopup="listbox" aria-controls="funding-options" aria-expanded="false">
+        Proprietary funds
+      </button>
+      <div id="funding-options" role="listbox" aria-label="Funding source choices" hidden>
+        <div id="company-funds" role="option">Proprietary funds</div>
+      </div>
+      <output id="clicks">0</output>
+      <script>
+        funding.addEventListener('click', () => {
+          funding.setAttribute('aria-expanded', 'true');
+          document.querySelector('#funding-options').hidden = false;
+        });
+        document.querySelector('#company-funds').addEventListener('click', () => {
+          clicks.value = String(Number(clicks.value) + 1);
+        });
+      </script>
+    </body></html>`);
+
+    const inspected = await controller?.inspectControl({
+      control: { role: 'button', name: 'Funding source', exact: true },
+      frameId: null,
+      revealOptions: true,
+      maxOptions: 20,
+      timeoutMs: 5_000,
+    });
+    const intended = inspected?.inspection.options[0];
+    if (inspected === undefined || intended === undefined || controller === undefined) {
+      throw new Error('The already-represented fixture did not expose its exact option.');
+    }
+    controller.drainActionPhaseTelemetry();
+
+    const selected = await controller.selectOption({
+      inspectionId: inspected.inspection.inspectionId,
+      optionId: intended.optionId,
+      control: null,
+      option: null,
+      frameId: null,
+      timeoutMs: 5_000,
+    });
+
+    expect(selected.evidence).toMatchObject({
+      actionDispatched: false,
+      selectionEffectObserved: true,
+      selectedRepresentationObserved: true,
+    });
+    expect(controller.drainActionPhaseTelemetry().actionPhases).toEqual([
+      expect.objectContaining({
+        action: 'select_option',
+        dispatchState: 'not_attempted',
+        dispatchAttempts: 0,
+        terminalOutcome: 'succeeded',
+      }),
+    ]);
+    const page = (controller as unknown as {
+      activePage: { locator: (selector: string) => { textContent: () => Promise<string | null> } };
+    }).activePage;
+    expect(await page.locator('#clicks').textContent()).toBe('0');
+  });
+
   it('does not mistake a same-text change in another field for the intended selection', async () => {
     await openFixture(`<!doctype html><html><body>
       <section id="funding-field">

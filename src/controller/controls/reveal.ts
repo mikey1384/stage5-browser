@@ -12,7 +12,7 @@ export const controlRevealOperations = {
     documentVersion: number,
     deadlineAt: number,
   ): Promise<BrowserCommandOutput<'clickByRole'>> {
-    return this.executeClickAction({
+    return await this.executeClickAction({
       action: 'click_by_role',
       timeoutMs: Math.max(1, remainingUntil(deadlineAt)),
       observe: async () => ({ page, frame }),
@@ -66,7 +66,7 @@ export const controlRevealOperations = {
           });
         }
       },
-    });
+    }) as BrowserCommandOutput<'clickByRole'>;
   },
 
   async reconcileControlPopupReveal(

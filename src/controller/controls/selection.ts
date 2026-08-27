@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { type BrowserCommandInput, type BrowserCommandOutput, type ControlOptionObservation, type ControlSelectionEvidence, type Frame, type Page, type SanitizedNativeWindowActivationEvidence, Stage5BrowserError } from '../dependencies.js';
 import { type ObservedControlInspection, type ObservedControlOption, remainingUntil } from '../model.js';
 import type { BrowserControllerContext } from '../runtime.js';
-import { observeControlSelectionRepresentation, reconcileCustomControlSelection, resolveControlSelectionRepresentationScope } from './selection-evidence.js';
+import { observeCustomControlSelectionBaseline, type CustomControlSelectionBaseline } from './selection-baseline.js';
+import { reconcileCustomControlSelection } from './selection-evidence.js';
 
 interface NativeSelectEventRecord {
   inputEventObserved: boolean;
@@ -11,8 +12,6 @@ interface NativeSelectEventRecord {
   inputListener: EventListener;
   changeListener: EventListener;
 }
-
-const CONTROL_SELECTION_BASELINE_OBSERVATION_MS = 500;
 
 export function controlOptionMatches(
   candidate: ControlOptionObservation,
@@ -265,70 +264,43 @@ export const controlSelectionOperations = {
         details: { reason: 'control_popup_capability_missing', actionDispatched: false },
       });
     }
-    const popupHandle = inspection.popupHandle;
-    const baselineDeadlineAt = Date.now() + Math.max(
-      1,
-      Math.min(CONTROL_SELECTION_BASELINE_OBSERVATION_MS, remainingUntil(deadlineAt)),
-    );
-    const representationScope = inspection.representationScopeHandle ??
-      await resolveControlSelectionRepresentationScope(inspection.controlHandle, popupHandle, baselineDeadlineAt);
-    if (representationScope === null) {
-      throw new Stage5BrowserError(
-        'OPERATION_FAILED',
-        'The exact inspected field scope could not be retained before the selection dispatch gate.',
-        {
-          recoverable: true,
-          details: {
-            reason: 'control_selection_scope_unavailable',
-            actionDispatched: false,
-            suggestedAction: 'Inspect the control once more before deciding whether a new selection is safe.',
-          },
-        },
-      );
-    }
-    inspection.representationScopeHandle = representationScope;
-    const beforeRepresentation = await observeControlSelectionRepresentation(
-      inspection.controlHandle,
-      representationScope,
-      popupHandle,
-      option.observation.name,
-      baselineDeadlineAt,
-    );
-    if (beforeRepresentation === null) {
-      throw new Stage5BrowserError(
-        'OPERATION_FAILED',
-        'The exact inspected control could not be observed before the selection dispatch gate.',
-        {
-          recoverable: true,
-          details: {
-            reason: 'control_selection_baseline_unavailable',
-            actionDispatched: false,
-            suggestedAction: 'Inspect the control once more before deciding whether a new selection is safe.',
-          },
-        },
-      );
-    }
-    if (beforeRepresentation?.controlRepresentsOption === true) {
-      return {
-        actionDispatched: false,
-        inputEventObserved: false,
-        changeEventObserved: false,
-        selectionEffectObserved: true,
-        selectedRepresentationObserved: true,
-        selectedState: option.observation.selected,
-        popupClosed: null,
-      };
-    }
-    const baselineRepresentation = beforeRepresentation;
+    let observedBaseline: CustomControlSelectionBaseline | null = null;
     const result = await this.executeClickAction({
       action: 'select_option',
       timeoutMs: Math.max(1, remainingUntil(deadlineAt)),
-      observe: async () => ({ page, frame }),
-      plan: () => ({
+      observe: async () => {
+        observedBaseline = await observeCustomControlSelectionBaseline({
+          associatePopup: (controlHandle, associationDeadlineAt) =>
+            this.associatedControlPopup(frame, controlHandle, associationDeadlineAt),
+          deadlineAt,
+          frame,
+          inspection,
+          optionName: option.observation.name,
+        });
+        return observedBaseline;
+      },
+      plan: (baseline) => ({
         action: 'select_option',
         page,
         frame,
         postcondition: null,
+        ...(baseline.representation.controlRepresentsOption
+          ? { satisfiedWithoutDispatch: {
+              postcondition: {
+                passed: true,
+                checks: [
+                  { kind: 'selection_representation', passed: true, expected: true, observed: true },
+                  {
+                    kind: 'selected',
+                    passed: option.observation.selected === true,
+                    expected: true,
+                    observed: option.observation.selected,
+                  },
+                  { kind: 'popup_closed', passed: false, expected: true, observed: null },
+                ],
+              },
+            } }
+          : {}),
         prepare: async (
           priorNativeActivation: SanitizedNativeWindowActivationEvidence | null,
           activationAttemptCount: number,
@@ -346,11 +318,11 @@ export const controlSelectionOperations = {
           let locator = option.locator;
           let handle = option.handle;
           const inside = await handle.evaluate((target, root) =>
-            target.isConnected && root.isConnected && root.contains(target), popupHandle).catch(() => false);
+            target.isConnected && root.isConnected && root.contains(target), baseline.popupHandle).catch(() => false);
           if (!inside) {
             const resolved = await this.resolveUniqueSemanticReferenceInScope(
               frame,
-              popupHandle,
+              baseline.popupHandle,
               { role: option.observation.role, name: option.observation.name, url: null },
               actionDeadlineAt,
             );
@@ -384,14 +356,14 @@ export const controlSelectionOperations = {
         reconciliationLocator: (prepared) => prepared.locator,
         reconcile: async (prepared, remainingTimeoutMs) => {
           const reconciliation = await reconcileCustomControlSelection({
-            before: baselineRepresentation,
-            control: inspection.controlHandle,
+            before: baseline.representation,
+            control: baseline.controlHandle,
             deadlineAt: Date.now() + Math.max(1, remainingTimeoutMs),
             option: prepared.locator,
             optionName: option.observation.name,
-            owner: representationScope,
+            owner: baseline.representationScope,
             page,
-            popup: popupHandle,
+            popup: baseline.popupHandle,
             requireSelected: requireSelected || inspection.multiple,
             selectedState: (locator) => this.selectedState(locator),
           });
@@ -400,7 +372,11 @@ export const controlSelectionOperations = {
         discardCapabilities: () => undefined,
       }),
       preflight: async () => {
-        const connected = await popupHandle.evaluate((popup) => popup.isConnected).catch(() => false);
+        const baseline = observedBaseline;
+        const connected = baseline === null
+          ? false
+          : await baseline.popupHandle.evaluate((popup, control) =>
+              popup.isConnected && control.isConnected, baseline.controlHandle).catch(() => false);
         if (!connected || inspection.documentVersion !== this.documentVersion(frame)) {
           throw new Stage5BrowserError('TARGET_NOT_FOUND', 'The inspected popup document changed before selection.', {
             recoverable: true,

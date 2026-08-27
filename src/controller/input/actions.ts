@@ -6,7 +6,7 @@ export const inputActionsOperations = {
   async clickByRole(
     input: BrowserCommandInput<'clickByRole'>,
   ): Promise<BrowserCommandOutput<'clickByRole'>> {
-    return this.executeClickAction({
+    return await this.executeClickAction({
       action: 'click_by_role',
       timeoutMs: input.timeoutMs,
       observe: async () => {
@@ -44,13 +44,13 @@ export const inputActionsOperations = {
         };
       },
       preflight: () => undefined,
-    });
+    }) as BrowserCommandOutput<'clickByRole'>;
   },
 
   async clickRef(
     input: BrowserCommandInput<'clickRef'>,
   ): Promise<BrowserCommandOutput<'clickRef'>> {
-    return this.executeClickAction({
+    return await this.executeClickAction({
       action: 'click_by_ref',
       timeoutMs: input.timeoutMs,
       observe: async () => {
@@ -178,7 +178,7 @@ export const inputActionsOperations = {
           );
         }
       },
-    });
+    }) as BrowserCommandOutput<'clickRef'>;
   },
 } satisfies Record<string, unknown> & ThisType<BrowserControllerContext>;
 

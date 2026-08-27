@@ -24,7 +24,7 @@ interface PopupCandidate {
   rendered: boolean;
 }
 
-type ControlPopupAssociation =
+export type ControlPopupAssociation =
   | {
       kind: 'resolved';
       locator: Locator | null;
