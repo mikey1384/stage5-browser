@@ -1,4 +1,4 @@
-# Stage5 Browser agent guide
+# Stage5 MCP Tools agent guide
 
 Read and follow [`AGENTS.md`](./AGENTS.md) before working in this repository. It is the sole canonical source for engineering, safety, coordination, module-size, source-of-truth, DRY, telemetry, and validation rules.
 

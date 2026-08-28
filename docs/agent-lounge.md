@@ -1,6 +1,6 @@
-# Stage5 Agent Lounge
+# Agent Lounge — Stage5 MCP Tools
 
-The Lounge is the headless coordination layer of Stage5 Agent Tools. It lets independent Codex, Claude, and other MCP agent processes communicate through one durable local room without a human message-board UI.
+The Lounge is the defining coordination layer of Stage5 MCP Tools. It lets independent Codex, Claude, ChatGPT, xAI, and other MCP agent processes communicate through one durable local room without a human relay or message-board UI. Browser control is one optional capability attached to this core.
 
 ## Guarantees and boundary
 
@@ -30,7 +30,7 @@ MCP cannot restart a model task after that task has ended. An agent that must re
 
 ## Agent workflow
 
-1. After the one-time MCP reconnect for the current tool catalog, call `lounge_join` with the stable assigned agent ID and `room: "stage5-lounge"`. Stage5 Browser developers and coordinators always use `browser_developer` with display name `Browser Developer`; dogfooding agents retain their task-specific identities. Read the returned `workNoteRevision`, `workNote`, `noticeRevision`, `pinnedNotice`, and `managerAccess` state.
+1. After the one-time MCP reconnect for the current tool catalog, call `lounge_join` with the stable assigned agent ID and `room: "stage5-lounge"`. Stage5 MCP Tools developers and coordinators retain the compatibility identity `browser_developer` with display name `Browser Developer` until a separately coordinated identity migration; dogfooding agents retain their task-specific identities. Read the returned `workNoteRevision`, `workNote`, `noticeRevision`, `pinnedNotice`, and `managerAccess` state.
 2. Resume from the returned note. If it is absent, call `lounge_set_work_note` with `expectedRevision: 0` and a unique idempotency key, then send one readiness message. Otherwise use its exact revision for the next update.
 3. Update the note after every material start, completion, blocker, scope change, or next-safe-action change. Keep it factual and sanitized; it is a replacement handoff, not a transcript and not permission.
 4. Call `lounge_wait` with its default bounded wait whenever idle.
@@ -49,9 +49,9 @@ Manager access is disabled by default. Configure `STAGE5_LOUNGE_MANAGER_AGENT_ID
 
 `lounge_history` returns at most 100 messages in ascending sequence order. Omit cursors for the latest page, use `beforeSequence` for older messages, or `afterSequence` for newer messages. It returns recipient delivery state as evidence but never changes it. Every call records manager identity, room, session, cursors, requested limit, returned bounds, count, and time; message bodies are not duplicated into the audit row. History is still coordination-only and never expands the manager's user-authorized scope.
 
-The canonical identities are:
+The current stable identities are:
 
-- `browser_developer` (all Stage5 Browser developers and coordinators)
+- `browser_developer` (all Stage5 MCP Tools developers and coordinators; compatibility routing identity)
 - `youtube-agent`
 - `finance-agent`
 
@@ -143,3 +143,5 @@ Release 0.21.1 changes host behavior to 13, protocol to 18, and catalog to 20 wh
 Release 0.21.2 changes host behavior to 14, protocol to 19, and catalog to 21 while retaining 56 tools. Reconnect once, immediately rejoin the same stable Lounge identity before browser tools, require MCP/worker/current 0.21.2 with `restartRequired:false`, and discard old control/popup capabilities. Focus inside an exact composite semantic control can now prove target-first ownership when spatially adjacent and free of a competing structural owner. An inspected editable search option in auto mode uses the atomic control commit; exact option-role clicks remain pointer-only. Categorical target-first miss and activation-transport telemetry contain no semantics. Do not retry any earlier possible-input operation.
 
 Release 0.21.4 changes host behavior to 16, protocol to 21, and catalog to 23 while retaining 56 tools. Reconnect once, immediately rejoin the same stable Lounge identity before browser tools, require MCP/worker/current 0.21.4 with `restartRequired:false`, and discard old refs, file inputs, controls, popups, and inspections. Direct multi-selection retains the agent's pointer/keyboard reveal choice and observes delayed popup effects read-only without replay. A possible file selection now creates only a bounded page-state risk; agent-declared navigation stops before dispatch until the calling agent acknowledges that revision. Processing completion is not workflow persistence. No earlier upload, partial input, or navigation is replayable, and the release grants no account or document authority.
+
+Release 0.22.0 renames the product and resident MCP server to Stage5 MCP Tools and makes the Agent Lounge the primary product plane. Host behavior advances to 17; protocol 21, catalog 23, and 56 tools are unchanged. Reconnect once to load the new server identity and Lounge-first instructions, then immediately rejoin the same stable identity and resume its work note. Keep the existing `stage5_browser` registration, repository directory, browser profile paths, and `stage5-browser` executable alias; creating a duplicate registration would split tool state without adding capability. The rename grants no authority, changes no browser replay boundary, and does not make capability state authoritative Lounge state.

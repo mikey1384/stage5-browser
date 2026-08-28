@@ -141,6 +141,8 @@ describe('MCP nested scrolling', () => {
       ...tools.tools.flatMap(({ title, description }) => [title, description].filter((value): value is string => typeof value === 'string')),
     ].join(' ');
     expect(wordCount(currentDefaultProse)).toBeLessThanOrEqual(Math.floor(LEGACY_DEFAULT_MCP_PROSE_WORDS * 0.1));
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Lounge-first coordination layer');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Stage5 Browser is one capability');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('provider policy govern what the agent may enter');
     expect(MCP_SERVER_INSTRUCTIONS).not.toContain('Keep private values out of tool arguments');
     expect(tools.tools.every(({ description }) => description === undefined)).toBe(true);

@@ -13,7 +13,7 @@ if (
   typeof contract?.toolCatalogVersion !== 'number' ||
   typeof contract?.toolCount !== 'number'
 ) {
-  throw new Error('package.json must define the Stage5 Browser runtime contract.');
+  throw new Error('package.json must define the Stage5 Browser capability runtime contract.');
 }
 const outputDirectory = path.join(packageRoot, 'dist');
 await mkdir(outputDirectory, { recursive: true });

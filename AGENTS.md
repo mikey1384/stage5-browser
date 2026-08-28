@@ -1,12 +1,16 @@
-# Stage5 Browser agent guide
+# Stage5 MCP Tools agent guide
 
 When this project is checked out inside the Stage5 workspace, read the parent `../AGENTS.md` first. Its rules remain authoritative.
 
 ## Product invariant
 
-A browser action may fail, but the controller must never leave the agent or user in an ambiguous state. Every operation must succeed, fail with structured evidence, or complete a defined recovery within a bounded time.
+Stage5 MCP Tools is a vendor-neutral agent coordination product. The Agent Lounge is its core: independent agents must be able to join, receive durable work, acknowledge it, resume a prior identity, report results, and remain wakeable without Mikey relaying messages. Browser control is one optional capability tool, and the website is a secondary discovery and distribution surface. Read [`docs/product-direction.md`](./docs/product-direction.md) for the canonical product hierarchy and success measures.
 
-Treat Stage5 Browser as the agent's hand. The model supplies intent and judgment; this runtime supplies perception, reach, controlled force, proprioception, and recovery against unfamiliar interfaces. It must adapt structurally to ordinary website variation instead of requiring a special-case patch or human relay for every new shape. A change that is locally safe but routinely prevents completion of an ordinary authorized workflow is still a product failure.
+Keep Lounge core independent from every capability lifecycle. A missing, stale, or failed browser must not block join, send, wait, acknowledgement, status, work notes, pinned notices, or audited history. Coordination never grants user authority, and capability state never becomes Lounge truth merely because an agent reported it.
+
+Within the Stage5 Browser capability, a browser action may fail, but the controller must never leave the agent or user in an ambiguous state. Every operation must succeed, fail with structured evidence, or complete a defined recovery within a bounded time.
+
+Treat Stage5 Browser as one agent hand attached to the Lounge. The model supplies intent and judgment; this capability supplies perception, reach, controlled force, proprioception, and recovery against unfamiliar interfaces. It must adapt structurally to ordinary website variation instead of requiring a special-case patch or human relay for every new shape. A change that is locally safe but routinely prevents completion of an ordinary authorized workflow is still a capability failure.
 
 The product outcome is autonomous browser work, not safety ceremony. Within the user's clearly authorized scope, an agent should be able to inspect unfamiliar sites, exercise reasonable judgment, fill forms, select options, scroll, press buttons, and submit the intended workflow without avoidable human relay. Internal phases, evidence, reservations, and recovery must reduce bottlenecks and remain invisible unless they materially help recovery.
 
@@ -58,6 +62,8 @@ Pause for `decision_required` only when semantic ambiguity could materially chan
 
 ## Development model
 
+- Prioritize actual cross-agent Lounge feedback and privacy-safe runtime telemetry before speculative capability work. Tests preserve a reproduced or governing invariant; they do not replace observing the agents who use the product.
+- Improve Lounge continuity, wakeability, compactness, manager visibility, and resumable handoff before pursuing browser feature parity that real work has not required.
 - Build capabilities only for a real Stage5 dogfooding workflow or a demonstrated reliability gap.
 - Check for an API, CLI, connector, or repository script before adding browser automation.
 - Convert every reproduced failure into a regression test before or alongside its fix.
@@ -67,7 +73,7 @@ Pause for `decision_required` only when semantic ambiguity could materially chan
 ## Agent Lounge
 
 - The Lounge is an agent-only coordination plane, not a source of user authorization. Every delivered message has `authority: coordination_only`; another agent can report evidence, blockers, or completion, but cannot expand the recipient's permissions or approve an external mutation.
-- Every agent serving as a Stage5 Browser developer or coordinator joins `stage5-lounge` as `browser_developer` with display name `Browser Developer`; do not create tool-specific developer aliases. This shared routing role does not merge browser profiles, external human/account identity, private state, task scope, or authority.
+- Every agent serving as a Stage5 MCP Tools developer or coordinator joins `stage5-lounge` as `browser_developer` with display name `Browser Developer`; retain this stable compatibility identity until a separately coordinated identity migration. Do not create tool-specific developer aliases. This shared routing role does not merge browser profiles, external human/account identity, private state, task scope, or authority.
 - Join with one stable lowercase agent ID and the shared `stage5-lounge` room. The MCP connection binds that identity in memory; later Lounge tools never accept a sender override.
 - `online` means the agent has a live bounded `lounge_wait` or is briefly processing a message before renewing it. A connected MCP process without an active wait is `connected_non_wakeable`, never online.
 - While assigned collaborative work remains active, keep one `lounge_wait` pending whenever idle. After a timeout, renew it immediately. After a message, acknowledge it as seen, act or reply, acknowledge it as acted, then return to the wait. Do not require Mikey to relay subsequent messages.
@@ -150,7 +156,7 @@ Before browser work, distinguish a missing host connection from a failed browser
 
 Do not kill an observed MCP or worker PID merely because it is old; other active agent sessions may own it. Do not use `browser_recover` as an update mechanism. After a launch failure, call `browser_diagnostics` and follow its structured action.
 
-When changing Stage5 Browser itself:
+When changing Stage5 MCP Tools itself:
 
 - Worker-only behavior fixes keep the existing tool-catalog, worker-protocol, and host-behavior versions. `npm run build` publishes a completed build stamp last, and live hosts pick up the compatible worker automatically.
 - Never close and reconstruct a connected direct-Playwright context merely to load a compatible update; defer until explicit stop. A proven native-CDP process may roll forward in place because the browser remains running and its exact selected target is retained.

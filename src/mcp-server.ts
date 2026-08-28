@@ -4,11 +4,12 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 
 import { createMcpHostContext } from './mcp/context.js';
 import { createServer } from './mcp/server.js';
+import { STAGE5_MCP_TOOLS_PRODUCT_NAME } from './product-info.js';
 
 const context = createMcpHostContext(import.meta.url);
 const handle = serveStdio(() => createServer(context), {
   onerror: (error) => {
-    process.stderr.write(`Stage5 Browser MCP transport error: ${error.name}\n`);
+    process.stderr.write(`${STAGE5_MCP_TOOLS_PRODUCT_NAME} transport error: ${error.name}\n`);
   },
 });
 

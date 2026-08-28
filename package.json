@@ -1,13 +1,14 @@
 {
-  "name": "@stage5/browser",
-  "version": "0.21.4",
+  "name": "@stage5/mcp-tools",
+  "version": "0.22.0",
   "private": true,
   "type": "module",
-  "description": "Reliability-first local browser control for AI agents.",
+  "description": "Durable cross-vendor Agent Lounge with composable MCP capability tools.",
   "engines": {
     "node": ">=22.5"
   },
   "bin": {
+    "stage5-mcp-tools": "./dist/launcher.js",
     "stage5-browser": "./dist/launcher.js"
   },
   "scripts": {
@@ -39,7 +40,7 @@
   },
   "stage5Browser": {
     "workerProtocolVersion": 21,
-    "hostBehaviorVersion": 16,
+    "hostBehaviorVersion": 17,
     "toolCatalogVersion": 23,
     "toolCount": 56
   }

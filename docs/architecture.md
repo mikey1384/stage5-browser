@@ -1,38 +1,94 @@
-# Architecture
+# Stage5 MCP Tools architecture
 
-## Agent Tools topology
+## Product topology
+
+Stage5 MCP Tools is organized around an independent coordination core. The Agent Lounge is the product's primary plane; Stage5 Browser is the first attached capability. A capability can fail or be absent without taking coordination offline, and the Lounge can route work to an external API, CLI, connector, in-app browser, or future Stage5 capability without owning that tool's state.
 
 ```text
-Codex or another MCP host
-          │ stdio MCP
+Codex / Claude / ChatGPT / xAI / other agents
+                       │ stdio MCP
+                       ▼
+               Stage5 MCP Tools
+                       │
+          ┌────────────┴────────────┐
+          ▼                         ▼
+   Agent Lounge core          capability tools
+          │                         │
+ identity / rooms /          Stage5 Browser (current)
+ inbox / presence /                 │
+ acknowledgements /          future demonstrated tools
+ work notes / notices
+          │
           ▼
-Stage5 Browser MCP server
-          │
-          ├── Agent Lounge service
-          │       │ worker-thread RPC
-          │       ▼
-          │   shared local SQLite WAL
-          │
-          └── browser supervisor
-                  ├── serialized operation queue
-                  ├── hard deadlines
-                  ├── privacy-minimized journal
-                  ├── privacy-safe execution telemetry
-                  └── worker lifecycle supervision
-                              │ Node IPC
-                              ▼
-                       browser worker
-                              │ Playwright protocol
-                              ▼
-                selected Playwright browser backend
-                              │
-                              ▼
-                  dedicated persistent profile
+ shared local SQLite WAL
+```
+
+The website and documentation sit outside this runtime as a secondary discovery and distribution layer. They never own membership, delivery, capability, or task state.
+
+## Phase-managed coordination system
+
+The Lounge carries collaborative work through one explicit loop:
+
+```text
+join/resume → receive → seen → validate scope → choose capability
+     ▲                                              │
+     │                                              ▼
+ wait/renew ← persist note ← acted ← report ← execute/reconcile
+```
+
+One owner governs each transition:
+
+| Phase | Owner | Durable boundary |
+| --- | --- | --- |
+| join/resume | identity and session manager | stable identity, replacement fencing, current work note |
+| receive | delivery manager | committed inbox message or notice revision |
+| seen/acted | acknowledgement manager | monotonic recipient state |
+| validate scope and choose | receiving model/provider | user-authorized semantic decision; never persisted as Lounge authority |
+| execute/reconcile | selected capability manager | canonical bounded result and replay classification |
+| report | delivery manager | idempotent result or blocker message |
+| persist note | work-note manager | compare-and-set replacement handoff |
+| wait/renew | presence manager | short truthful wakeability lease |
+```
+
+The full contract and product priority are in [`product-direction.md`](./product-direction.md). The current implementation already separates Lounge RPC/storage from browser supervision. Future extraction into separate packages or processes must preserve these boundaries rather than introduce a second state owner.
+
+### Telemetry for the primary product
+
+The Lounge store is both operational state and authoritative coordination telemetry; it does not rely on an agent's summary of what happened. Messages retain creation time and stable sequence. Every recipient delivery retains first-delivered, first-seen, first-acted, attempt-count, and latest-transition time. Sessions retain start, heartbeat, lease, state, closure, and replacement fencing. Work-note and notice mutations retain revisions, idempotency identity, and timestamps. Manager history reads create their own metadata-only audit record.
+
+Managers inspect the current presence and work-note surface through `lounge_status(detail="full")` and inspect message/delivery phase timing through bounded `lounge_history` pages. These views are sufficient to derive message-to-seen, message-to-acted, missed-wait, replacement-resume, and handoff-completion evidence without duplicating message bodies into a second telemetry journal. If a real incident cannot be localized from those owning records, add the smallest categorical event at the responsible Lounge phase and a manager-readable regression; never infer the missing phase from prose or copy private capability data into Lounge telemetry.
+
+## Current runtime topology
+
+```text
+MCP host
+  │ stdio MCP
+  ▼
+Stage5 MCP Tools MCP server
+  ├── Agent Lounge service
+  │     └── worker-thread RPC → shared local SQLite WAL
+  │
+  └── Stage5 Browser capability
+        └── browser supervisor
+              ├── serialized operation queue
+              ├── hard deadlines
+              ├── privacy-minimized journal
+              ├── privacy-safe execution telemetry
+              └── worker lifecycle supervision
+                    │ Node IPC
+                    ▼
+                 browser worker
+                    │ Playwright protocol
+                    ▼
+             selected browser backend
+                    │
+                    ▼
+           dedicated persistent profile
 ```
 
 ## Composable browser action system
 
-Stage5 Browser is the physical hand of an agent, not a collection of website scripts. The agent supplies authorized intent and semantic judgment; the runtime supplies a broad, reusable movement vocabulary, exact target binding, bounded force, proprioception, and recovery. A new site should normally be handled by composing existing techniques. A new primitive belongs at a generic manager boundary only when a disposable fixture proves that the hand is physically unable to express the required motion or observation.
+Stage5 Browser is one physical hand an agent may use, not a collection of website scripts and not the Stage5 MCP Tools product boundary. The agent supplies authorized intent and semantic judgment; the capability supplies a broad, reusable movement vocabulary, exact target binding, bounded force, proprioception, and recovery. A new site should normally be handled by composing existing techniques. A new primitive belongs at a generic manager boundary only when a disposable fixture proves that the hand is physically unable to express the required motion or observation.
 
 Every worker command has exactly one owner in `src/protocol/command-contracts.ts`, including its phase system, dispatch class, replay rule, and structural prerequisite groups. Every public MCP tool has exactly one owner in `src/mcp/tool-contracts.ts`; its name comes from the canonical catalog in `src/mcp/tool-names.ts`. `src/protocol/capabilities.ts` is the source of truth for manager responsibilities, the non-overlapping technique vocabulary, context layers, and the shared action loop. Compile-time contracts and `tests/command-manager-contract.test.ts` prevent an unowned command, tool, technique prerequisite, or manager family from entering the product.
 
@@ -182,4 +238,4 @@ Launch diagnostics expose only allowlisted cause categories, selected backend, e
 
 ## Future boundaries
 
-An optional extension may later bridge an explicitly selected existing Chrome profile. It must remain separate from the default dedicated-profile mode. Service adapters, remote supervision, and a desktop status UI are also independent layers rather than browser-core responsibilities.
+New capabilities attach beside Stage5 Browser through the same coordination boundary; they do not enter Lounge storage or inherit authority from messages. Choose them from demonstrated cross-agent workflows, not a speculative tool checklist. An optional browser extension may later bridge an explicitly selected existing Chrome profile, but it must remain separate from the default dedicated-profile mode. Service adapters, remote supervision, and a desktop status UI are independent layers rather than browser-core or Lounge-core responsibilities.

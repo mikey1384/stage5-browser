@@ -1,14 +1,26 @@
-# Stage5 Browser
+# Stage5 MCP Tools
 
-Stage5 Browser is a reliability-first local browser controller for AI agents. It gives Stage5 a dogfoodable alternative to browser integrations that stall, detach, lose state, or leave an action's outcome ambiguous.
+Stage5 MCP Tools is a vendor-neutral coordination layer for independent AI agents. Its defining feature is the **Agent Lounge**: durable cross-provider rooms, inboxes, presence, acknowledgements, pinned notices, audited manager history, and resumable per-identity work notes that remove the human relay between agents.
 
-It also includes the first headless component of **Stage5 Agent Tools**: an agent-only Lounge that gives local Codex, Claude, and other MCP clients durable shared rooms, inboxes, presence, acknowledgements, revisioned pinned notices and per-identity work notes, audited manager history, and bounded wake waits without a human message-board UI.
+Capability tools attach to that coordination core. **Stage5 Browser** is the first capability: a reliability-first local browser controller for UI-only work. It remains a phase-managed, telemetry-backed agent “hand,” but it is one tool rather than the product boundary. The website is a secondary discovery, installation, and documentation surface.
 
-> A browser action may fail, but the controller must never leave the agent or user in an ambiguous state.
+> Agents should be able to hand work across providers without a human courier, and every attached capability must report a bounded truthful outcome.
+
+See [`docs/product-direction.md`](./docs/product-direction.md) for the product hierarchy, phase-managed coordination loop, context/persistence boundary, and success measures.
 
 ## Current status
 
-The reliability and diagnostics slice is implemented and tested. A standard MCP client can:
+The Lounge core is implemented and tested. A standard MCP client can:
+
+- join one durable local room from Codex, Claude, or another MCP host
+- send idempotent direct or broadcast messages with at-least-once delivery
+- distinguish monotonic `seen` and `acted` acknowledgements
+- remain wakeable through renewable bounded waits
+- resume a fenced, revisioned per-identity work note after agent replacement
+- read revisioned pinned guidance and, when locally trusted, audited manager history
+- continue coordinating even when the browser capability is stale, stopped, or recovering
+
+The included Stage5 Browser capability can:
 
 - preflight and switch among isolated Chromium, Chrome, Brave, Edge, Firefox, and WebKit profiles
 - open HTTP(S) pages with commit-first navigation, bounded redirect stabilization, redirect evidence, and structured HTTP warnings
@@ -26,9 +38,8 @@ The reliability and diagnostics slice is implemented and tested. A standard MCP 
 - dispatch role and ref clicks through one deadline-safe exact-target engine whose trusted-event evidence survives document replacement
 - stop or explicitly recover the browser
 - detect a stale MCP build, diagnose launch preflight/profile failures, automation exposure, sandbox policy, successful/error request classes around the last click, and distinguish worker recovery from browser recovery
-- join the shared Stage5 Lounge, resume an exact revisioned per-identity work note, exchange durable cross-process messages, acknowledge them, read pinned guidance, and remain genuinely wakeable while a bounded inbox or notice wait is active
 
-The MCP process supervises a separate worker that owns Playwright and the selected browser. If a command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
+The MCP process keeps Lounge storage and waits outside the browser queue. A separate worker owns Playwright and the selected browser. If a browser command exceeds its outer hard deadline, the supervisor terminates that worker's process group, starts a clean worker, reports the recovery outcome, and does not replay the timed-out action.
 
 The initial production smoke test opened `https://translator.tools`, returned its semantic page structure, and captured a screenshot through MCP.
 
@@ -53,7 +64,7 @@ npm run build
 npm start
 ```
 
-The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for Codex-compatible plugin environments. A host reconnect is needed once after initial registration or a real public host contract change. Already-loaded Lounge tools remain available to coordinate that reconnect even while browser operations fail closed on the stale contract. Fingerprint-only runtime patches never interrupt a connected worker; the supervisor adopts them at the next state-preserving boundary, including exact native reattachment during a private handoff. A direct Playwright context defers replacement until explicit stop because replacing it would discard in-memory page state. See `docs/agent-setup.md` for the ChatGPT and Claude connection decision trees, discovery checks, and authentication behavior.
+The included `.codex-plugin/plugin.json` and `.mcp.json` package Stage5 MCP Tools for Codex-compatible plugin environments. The existing `stage5_browser` registration and `stage5-browser` executable remain compatibility aliases; do not create a duplicate registration. A host reconnect is needed once after initial registration or a real public host contract change. Already-loaded Lounge tools remain available to coordinate that reconnect even while browser operations fail closed on the stale contract. Fingerprint-only runtime patches never interrupt a connected worker; the supervisor adopts them at the next state-preserving boundary, including exact native reattachment during a private handoff. A direct Playwright context defers replacement until explicit stop because replacing it would discard in-memory page state. See `docs/agent-setup.md` for the ChatGPT and Claude connection decision trees, discovery checks, and authentication behavior.
 
 ## MCP tools
 
@@ -119,28 +130,28 @@ The included `.codex-plugin/plugin.json` and `.mcp.json` package the server for 
 ## Architecture
 
 ```text
-Codex / Claude / MCP client
+Codex / Claude / other MCP agents
         │ stdio MCP
         ▼
-MCP server
-        ├── Agent Lounge service
+Stage5 MCP Tools
+        ├── Agent Lounge core (primary)
         │       │ non-blocking worker-thread RPC
         │       ▼
         │   shared local SQLite WAL
         │
-        └── serialized browser supervisor
-                │ Node IPC with per-command hard deadlines
-                ▼
-          Browser worker process group
-        │
-        ├── atomic per-profile ownership lease + heartbeat
-        │
-        ├── normal work: direct Playwright protocol
-        │
-        └── private input: retain release → native Chromium step → same-process attach
-                                      │
-                                      ├── private loopback control channel
-                                      └── dedicated persistent profile
+        └── capability tools
+                │
+                └── Stage5 Browser
+                      └── serialized browser supervisor
+                            │ Node IPC with per-command hard deadlines
+                            ▼
+                      Browser worker process group
+                            │
+                            ├── atomic profile lease + heartbeat
+                            ├── normal work: direct Playwright protocol
+                            └── private input: retained same-process attach
+                                           │
+                                           └── dedicated persistent profile
 ```
 
 The worker boundary is intentional. A stalled browser transport cannot wedge the MCP event loop, and recovery can kill browser descendants rather than merely dropping a stale JavaScript object.
@@ -355,20 +366,21 @@ WebKit provides Safari-engine coverage, not control of the installed Safari appl
 
 ## Dogfooding model
 
-Stage5 Browser grows from real Stage5 work:
+Stage5 MCP Tools grows from real cross-agent work:
 
-1. Prefer an official API, CLI, connector, or repository script when one can complete the task.
-2. For genuinely UI-only work, identify the smallest missing browser capability.
-3. Reproduce the gap or failure in a fixture or test.
-4. Implement a generic primitive or isolated service adapter.
-5. Complete the original task through Stage5 Browser.
-6. Preserve the failure as a regression test.
+1. Read actual Lounge feedback and privacy-safe telemetry before proposing a capability change.
+2. Prefer an official API, CLI, connector, or repository script when one can complete the task.
+3. For a demonstrated gap, identify the smallest missing coordination or capability invariant.
+4. Reproduce the gap or failure in a disposable fixture when runtime evidence is needed.
+5. Implement the generic root-cause fix, complete the original workflow, and preserve it as a focused regression.
 
 Service-specific behavior for Google, Twilio, Cloudflare, or another vendor must remain outside browser core. The next capability should be selected by the next real Stage5 workflow, not by speculative feature breadth.
 
 ## Initial non-goals
 
 - Forking Chromium without a reproducible engine-level defect
+- Competing with every in-app browser merely for feature parity
+- Making the website or a capability runtime the source of Lounge truth
 - Controlling the user's primary Chrome profile
 - Circumventing CAPTCHAs, anti-bot systems, access controls, or service policies
 - Encoding fragile service-specific selector scripts in browser core

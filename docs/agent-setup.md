@@ -2,7 +2,7 @@
 
 ## Confirm the MCP connection
 
-Stage5 Browser should be registered at user scope when agents need it from multiple repositories. The active local registration points directly to this checkout's `dist/launcher.js`; it is not a cached marketplace-plugin installation and does not need redeployment after a compatible patch.
+Stage5 MCP Tools should be registered at user scope when agents need its Lounge or capability tools from multiple repositories. The active local registration retains the compatibility name `stage5_browser` and points directly to this checkout's `dist/launcher.js`; it is not a cached marketplace-plugin installation and does not need redeployment after a compatible patch. Do not add a duplicate `stage5_mcp_tools` entry during the rename.
 
 Ordinary builds and tests run headless and must not interrupt the user's desktop. The macOS native-window activation smoke is different: its purpose is to hide, restore, and foreground a disposable browser, so focus movement is unavoidable for that single test. It is gated behind both `STAGE5_BROWSER_NATIVE_WINDOW_SMOKE=1` and `STAGE5_BROWSER_ALLOW_FOCUS_CHANGE=1`. Enable it only when native activation is the behavior under test, disclose the expected interruption, and do not create a repetitive action-time approval ritual or run the smoke for unrelated changes.
 
@@ -20,7 +20,7 @@ The expected result includes an enabled `stage5_browser` entry whose command res
 
 Use this decision tree:
 
-1. If the current agent exposes the number of Stage5 Browser tools declared at `stage5Browser.toolCount` in `package.json`, call `browser_status`; do not touch host configuration.
+1. If the current agent exposes the number of Stage5 MCP Tools declared at `stage5Browser.toolCount` in `package.json`, use the Lounge tools directly or call `browser_status` for the browser capability; do not touch host configuration.
 2. If `codex mcp list` does not contain `stage5_browser`, the server is not registered for that Codex host. Register it before browser work.
 3. If the CLI reports it enabled but the current ChatGPT agent lacks the tools or the app does not show the server, the running app loaded its host configuration before registration. Fully quit and reopen ChatGPT once, then start or resume an agent run. Do not rebuild, reinstall, redeploy, or add a duplicate server.
 4. Once connected, `browser_status` should report the version and tool count declared in `package.json`, with `restartRequired: false`.
@@ -44,7 +44,7 @@ Scope: User config (available in all your projects)
 Status: ✔ Connected
 ```
 
-Inside an interactive Claude Code session, `/mcp` provides the equivalent connection view. If `ToolSearch` cannot find Stage5 Browser, check the MCP connection first instead of inspecting configuration files or constructing JSON-RPC by hand.
+Inside an interactive Claude Code session, `/mcp` provides the equivalent connection view. If `ToolSearch` cannot find Stage5 MCP Tools, check the MCP connection first instead of inspecting configuration files or constructing JSON-RPC by hand.
 
 Claude Code builds its MCP tool catalog when the agent process starts. A server registered after a long-running session began will not appear in that session. Exit the process and resume the conversation with:
 
